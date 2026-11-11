@@ -13,7 +13,7 @@
   <template x-if="showUser"><div class="stack-lg">
     <div class="page-head glass">
       <div class="flex items-center gap-4">
-        <span class="avatar avatar-lg" aria-hidden="true" x-text="user.initial"></span>
+        {{template "avatar" (dict "a" "user.avatar" "size" "lg")}}
         <div>
           <h1 class="page-title" x-text="user.title">User</h1>
           <p class="page-sub mt-1"><span x-show="user.hasUsername"><span x-text="user.username"></span> · </span><span :class="user.roleClass" x-text="user.roleText"></span> <span :class="user.statusClass" x-text="user.statusText"></span></p>
@@ -59,6 +59,11 @@
         </dl>
       </div>
     </section>
+
+    <template x-if="manageable"><section class="glass-card" aria-labelledby="picture-h">
+      <h2 class="section-title mb-4" id="picture-h">Picture</h2>
+      {{template "picture-controls"}}
+    </section></template>
 
     {{$addHelp := "Email is not set up on this server, so an address added here counts as verified at once."}}{{if .Site.Mail}}{{$addHelp = "We email the user a link to verify it. Until they follow it, the address matches no sign-ins and cannot be made primary."}}{{end}}
     {{$help := "Sign-ins from GitHub, Google and other providers that use one of these verified addresses find this user."}}{{if .Data.Self}}{{$help = "Your own addresses: changes ask you to confirm it is you, and addresses you add stay unverified until you follow the link mailed to them."}}{{$addHelp = "We email a link to this address to verify it. Adding an address asks you to confirm it is you."}}{{end}}

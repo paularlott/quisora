@@ -158,6 +158,12 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 		return nil, err
 	}
 	a.Server = srv
+	// Pictures given by URL (SCIM, sign-in providers) are fetched with the guard of every call to an address others
+	// supply, and this server's own organizations' pictures (an organization provider's) are read from itself.
+	roots, _ := secure.RootPool(c.Server.ExtraCAFile) // checked by config.Validate
+	a.Svc.PictureClient = secure.OutboundClient(c.OutboundReach, roots, log)
+	a.Svc.PictureClient.Transport = srv.SelfTransport(a.Svc.PictureClient.Transport)
+	a.Svc.Counters = a.Eph
 	srv.Bearer = bearer(a)
 	srv.Health = &health{node: node, svc: a.Svc, keyReported: a.keyReportCurrent}
 	// The master key this node seals with is reported before anything it seals can be stored (the signing keys made at

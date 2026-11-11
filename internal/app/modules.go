@@ -180,11 +180,11 @@ func modules(ctx context.Context, a *App) []web.Module {
 	}
 
 	hub := events.NewHub()
-	hub.UserInfo = func(id string) (string, bool) {
+	hub.UserInfo = func(id string) (string, model.Role) {
 		if u, err := a.Svc.Users.Get(context.WithoutCancel(ctx), id); err == nil {
-			return u.OrgID, u.Role == model.RoleSuperAdmin
+			return u.OrgID, u.Role
 		}
-		return "", false
+		return "", ""
 	}
 	a.onChange = append(a.onChange, hub.Publish)
 

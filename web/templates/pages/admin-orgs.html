@@ -103,6 +103,11 @@
       </fieldset>
 
       <fieldset class="fieldset">
+        <legend>Profile pictures</legend>
+        {{template "check-field" (dict "name" "pictures_by_admins" "label" "Only administrators set pictures" "switch" true "help" "People cannot change their own picture; administrators, the directory (SCIM) and sign-in providers still can.")}}
+      </fieldset>
+
+      <fieldset class="fieldset">
         <legend>API tokens for applications</legend>
         <div class="field">
           <label class="label" for="f-api_tokens">Who may make them</label>

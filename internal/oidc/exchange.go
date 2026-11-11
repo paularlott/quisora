@@ -23,9 +23,10 @@ import (
 // token, or another client it was issued for), or a client of the same organization allowed to introspect every
 // token there (introspect_org: a resource server, whose tokens name it by resource URI rather than client id). The
 // user must have access to the calling client, as for a sign-in to it. The new token carries no more than the
-// subject token's scopes and the calling client's, names only resources registered for the calling client, never
-// outlives the subject token, and belongs to the same grant: signing the user out ends it too. No refresh or ID token
-// is issued.
+// subject token's scopes and the calling client's, no authorization details of a type the subject token lacks, names
+// only resources registered for the calling client (and, when the client exchanges its own token, only those the
+// subject token is for), never outlives the subject token, and belongs to the same grant: signing the user out ends it
+// too. No refresh or ID token is issued.
 //
 // A DPoP-bound subject token stays bound (RFC 9449): it is exchanged only with a DPoP proof of the key it is bound to,
 // and the new token is bound to that key too. Otherwise whoever sees the token, such as an API it was sent to, could
@@ -115,6 +116,25 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	if !subset(res, c.Resources) {
 		return nil, oerr("invalid_target", "the resource is not registered for this client")
 	}
+	// A client exchanging its own token narrows it: only APIs the subject token is for, which the user authorized (as
+	// a refresh may ask for no others, RFC 8707 §2.2). Another client may name its own APIs: what exchange is for.
+	if cl.ClientID == c.ClientID() && !subset(res, cl.Aud) {
+		return nil, oerr("invalid_target", "a client exchanging its own token may name only resources the subject token is for")
+	}
+	// Authorization details: at most the types the subject token carries, which kept to what the authorization (or an
+	// earlier narrowing) allowed; the request may narrow them further. The details themselves still come from the
+	// calling client's types and the user's access as they are now (authDetails), so what was taken away since stays
+	// away.
+	held, err := detailTypes(cl.AuthorizationDetails)
+	if err != nil {
+		return nil, invalid
+	}
+	asked := ad != nil
+	if !asked {
+		ad = held
+	} else if !subset(ad, held) {
+		return nil, oerr("invalid_authorization_details", "authorization_details names a type the subject token does not carry")
+	}
 	act, oe := exchangeActor(c, cl)
 	if oe != nil {
 		return nil, oe
@@ -137,6 +157,9 @@ func (p *Provider) tokenExchange(ctx context.Context, c *model.Client, form url.
 	tr, err := p.mint(ctx, is, false)
 	if err != nil {
 		return nil, serverError(err)
+	}
+	if !asked && is.details == nil {
+		tr.details = nil // the response states details only when the token carries some or the request asked (§7)
 	}
 	tr.issuedType = tokenTypeAccess
 	p.auditClient(ctx, c, u, "oauth.token_exchange", map[string]string{"user_id": u.ID,
@@ -177,4 +200,24 @@ func actDepth(act json.RawMessage) int {
 		act = a.Act
 	}
 	return n
+}
+
+// detailTypes are the types of a token's authorization_details claim, never nil: empty when it carries none.
+func detailTypes(raw json.RawMessage) ([]string, error) {
+	types := []string{}
+	if len(raw) == 0 {
+		return types, nil
+	}
+	var list []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, err
+	}
+	for _, d := range list {
+		if !slices.Contains(types, d.Type) {
+			types = append(types, d.Type)
+		}
+	}
+	return types, nil
 }

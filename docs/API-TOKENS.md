@@ -133,6 +133,25 @@ Entra ID and Okta send requests that a strict reading of RFC 7644 would refuse. 
   phone number per user.
 - A PUT of a user without `phoneNumbers` leaves the number as it was.
 
+### Pictures (`photos`)
+
+A user's `photos` is their profile picture (RFC 7643 section 4.1.2): `[{"value": "<url>", "type": "photo", "primary":
+true}]`, where the URL is Quisora's own, `https://<server>/o/<org id>/pictures/<random id>` (the `picture` claim of
+the [profile scope](oauth/sign-in.md#profile-pictures)), or no `photos` at all without one. To set it, send the primary
+(else first) value as
+
+- an `https` URL: fetched once, at the time, through the same guarded client as client JWKS and back-channel logout
+  (no private address unless `server.allowed_networks` or `server.allow_private_networks` allows it, no redirects,
+  15 seconds, at most 5 MB), never linked to from then on; or
+- a `data:` URI of a JPEG, PNG or WebP image, which must fit in the 1 MB SCIM request (send a larger one by URL).
+
+Either way Quisora makes its own 256 × 256 picture of it, and refuses anything else (another scheme, a GIF or SVG, an
+image it cannot read or fetch) with `400` `invalidValue`. Sending back the URL Quisora returned, or the URL or image the
+picture was made from, changes nothing, so a client that writes back what it read, or sends the same photo on every
+sync, does not make a new picture each time. A PUT without `photos` leaves the picture as it is; `photos` sent empty or
+`null`, or removed by a PATCH (`"remove"` of `photos` or `photos[type eq "photo"]`), removes it. One user's picture
+changes at most 20 times an hour, from wherever the changes come (`429` past that).
+
 ## Backups (`backup`)
 
 ```bash

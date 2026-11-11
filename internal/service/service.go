@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"os/user"
 	"slices"
@@ -197,6 +198,15 @@ type Service struct {
 
 	// SSHRevokedSignIns are the sign-ins taken back, whose certificates are revoked (RevokeSSHCertsFrom).
 	SSHRevokedSignIns *store.Table[model.SSHRevokedSignIn, *model.SSHRevokedSignIn]
+	// Pictures are users' profile pictures (pictures.go).
+	Pictures *store.Table[model.UserPicture, *model.UserPicture]
+
+	// PictureClient fetches the pictures given by URL (SCIM, sign-in providers): the guarded outbound client, set by
+	// the app (nil: none is fetched).
+	PictureClient *http.Client
+	// Counters are the windowed counters of the short-lived state (ephemeral.Store) for the limits the service keeps
+	// itself (PictureChangesPerHour); set by the app (nil: none is kept).
+	Counters Counters
 
 	ssh sshState // key changes and the revocation lists made on this node (ssh_keys.go, ssh_krl.go)
 
@@ -220,6 +230,12 @@ type Service struct {
 	// OnAppAccessEnding is called just before a user's grants to one client are removed (RevokeAppAccess), so that
 	// client can be sent back-channel logout tokens and the grants stop working at once. Set by the app.
 	OnAppAccessEnding func(ctx context.Context, userID, clientID string)
+}
+
+// Counters are windowed counters (ephemeral.Store's Incr): Incr adds delta to the count of key in namespace ns, which
+// starts again after window, and returns the count.
+type Counters interface {
+	Incr(ctx context.Context, ns, key string, delta int64, window time.Duration) (int64, error)
 }
 
 // sessionsEnding runs the OnSessionsEnding hook if set.
@@ -265,6 +281,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Replays:    store.NewTable[model.Replay](s),
 
 		SSHRevokedSignIns: store.NewTable[model.SSHRevokedSignIn](s),
+		Pictures:          store.NewTable[model.UserPicture](s),
 
 		orgCache:  ttlcache.New[*model.Org](orgTTL, 20_000),
 		skinCache: ttlcache.New[*model.Skin](orgTTL, 1_000),

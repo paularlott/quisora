@@ -333,6 +333,8 @@ are untouched. Pre-release: no data migration; a store written by the old gossip
   - `KindSSHRevokedSignIn` (an SSH sign-in taken back): the record's own ID (the sign-in's), though it belongs to an
     organization: the revocation list reads one per certificate, nearly all absent, and a miss is answered from the
     partition its id names.
+  - `KindUserPicture` (a user's profile picture): the record's own ID, though it belongs to an organization: it is read
+    by its id alone (its public URL), and its tens of KB would otherwise all sit in the organization's partition.
 - Partition number: 0 for "", else `partition.PartitionOf(key, 64)`.
 - A record never changes partition (its organization never changes).
 

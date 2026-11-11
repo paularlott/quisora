@@ -82,11 +82,13 @@ Any request may send `authorization_details` to narrow the token to some types: 
 pushed one), the device authorization request, and token requests (code exchange, refresh, token exchange, client
 credentials). Quisora reads the `type` of each object; the token then carries only the granted details of those types.
 The types named at authorization are kept with the refresh grant: later token requests may narrow them further, never
-widen them. When a request asks and nothing is granted, the token response says `"authorization_details": []`.
+widen them. A [token exchange](token-exchange.md) is bound by the subject token in the same way: the new token carries
+only types the subject token carries (all of them when the exchange names none). When a request asks and nothing is
+granted, the token response says `"authorization_details": []`.
 
 A request is refused with `invalid_authorization_details` when the parameter is not a JSON array of objects each with
 a `type`, when a common field has the wrong shape, when it names a type the client is not registered for, or when a
-token request names a type its authorization did not.
+token request names a type its authorization did not (for a token exchange, one the subject token does not carry).
 
 ```bash
 curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=refresh_token -d "refresh_token=$REFRESH" \

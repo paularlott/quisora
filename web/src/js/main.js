@@ -7,13 +7,14 @@ import dialog from './lib/dialog.js'
 import theme from './lib/theme.js'
 import copy from './lib/copy.js'
 import shell from './lib/shell.js'
+import avatar from './lib/avatar.js'
 import live from './lib/live.js'
 import otp from './lib/otp.js'
 import detailsField from './lib/detailsfield.js'
 import * as pages from './pages/index.js'
 
 Alpine.plugin(focus)
-for (const register of [announce, dialog, theme, copy, shell, live, otp, detailsField]) register(Alpine)
+for (const register of [announce, dialog, theme, copy, shell, avatar, live, otp, detailsField]) register(Alpine)
 for (const register of Object.values(pages)) register(Alpine)
 window.Alpine = Alpine
 Alpine.start()

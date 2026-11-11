@@ -261,7 +261,7 @@ func TestAuthorizationDetailsDevice(t *testing.T) {
 	}
 }
 
-// A token exchange issues the details of the calling client's access and types, not the subject token's.
+// A token exchange issues the details of the calling client's access and types, of the types the subject token carries.
 func TestAuthorizationDetailsExchange(t *testing.T) {
 	t.Parallel()
 	h, cl, secret := adSetup(t)

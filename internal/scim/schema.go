@@ -101,6 +101,14 @@ var userAttrs = []attrDef{
 		attr("type", "string", "Label", canon("work", "home", "mobile", "fax", "pager", "other")),
 		attr("primary", "boolean", "Primary phone number"),
 	)),
+	attr("photos", "complex", "Profile picture: returned as the URL the server serves it at (a 256-pixel square JPEG or PNG). "+
+		"Set from the primary (else first) value other than that URL: an https URL, fetched once, or a data: URI of a JPEG, PNG "+
+		"or WebP image (at most 5 MB, within the request size limit); the server makes its own picture of it. Left out of a "+
+		"PUT, the picture stays; sent empty, or removed by a PATCH, it is removed", multi, subs(
+		attr("value", "reference", "Picture URL", exact, refs("external")),
+		attr("type", "string", "Label", canon("photo", "thumbnail")),
+		attr("primary", "boolean", "Primary picture"),
+	)),
 	attr("groups", "complex", "Groups the user belongs to", multi, readOnly, subs(
 		attr("value", "string", "Group id", readOnly, exact),
 		attr("$ref", "reference", "Group location", readOnly, exact, refs("Group")),

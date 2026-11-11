@@ -2,6 +2,7 @@
 package model
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"math/bits"
 	"slices"
@@ -52,6 +53,9 @@ const (
 	// KindSSHRevokedSignIn records the sign-ins taken back whose SSH certificates are revoked, until those have all
 	// expired (SSHRevokedSignIn).
 	KindSSHRevokedSignIn Kind = "sshrevoked"
+
+	// KindUserPicture holds users' profile pictures (UserPicture), each read by its own id.
+	KindUserPicture Kind = "userpicture"
 )
 
 // Meta is embedded in every stored entity.
@@ -87,6 +91,8 @@ type Index struct {
 	//   - KindSSHRevokedSignIn: the record's own ID (a sign-in's), though it is scoped to its organization: the
 	//     revocation list reads one for each certificate's sign-in, nearly all of them not there, and a cluster node
 	//     answers such a miss from the one partition its id names (the organization's would need every partition);
+	//   - KindUserPicture: the record's own ID, though it is scoped to its organization: a picture is read by its id
+	//     alone (its public address), so a cluster node answers for it from the one partition its id names;
 	//   - KindEphemeral and KindQueue: "". They are node-local (or shared-database) state that is never replicated by
 	//     partition, so the key is never used.
 	Partition string
@@ -168,6 +174,14 @@ func FormatID(b [16]byte) string {
 // maxID is the id of the largest 128-bit value (FormatID of 16 bytes 0xff). A string of IDLen base-62 digits that
 // sorts after it is a value no 16 bytes hold, so not an id: each id has exactly one spelling.
 const maxID = "7n42DGM5Tflk9n8mt7Fhc7"
+
+// NewRandomID returns an id (FormatID) of 128 random bits, for a record whose id is itself a secret (a user
+// picture's, which is its public address): NewID's start is its creation time.
+func NewRandomID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return FormatID(b)
+}
 
 // IsID reports whether s is an id in its one spelling (FormatID). An organization's name never is (ValidOrgName), so a
 // path segment names an organization by id or by name unambiguously (/o/<id or name>).

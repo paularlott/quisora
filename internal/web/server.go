@@ -179,6 +179,7 @@ func (s *Server) baseRoutes() {
 	s.Mux.HandleFunc("GET /branding/{name}", s.branding)
 	s.Mux.HandleFunc("GET /branding/skins/{file}", s.skinStylesheet)
 	s.Mux.Handle("GET /o/{org}/branding/{name}", s.InOrg(http.HandlerFunc(s.orgBranding)))
+	s.Mux.Handle("GET /o/{org}/pictures/{id}", s.InOrg(http.HandlerFunc(s.orgPicture)))
 	s.Mux.HandleFunc("GET /api-docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api-docs/", http.StatusMovedPermanently)
 	})

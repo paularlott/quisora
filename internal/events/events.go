@@ -71,9 +71,13 @@ type subscriber struct {
 	ch     chan Event
 	orgID  string // organization the viewer administers
 	super  bool
-	who    string // the viewer, for the per-viewer cap
-	lagged bool   // events were dropped: the client must reload everything
+	actor  *service.Actor // the viewer: what of a user's records they may see is the service's rule for this actor
+	who    string         // the viewer, for the per-viewer cap
+	lagged bool           // events were dropped: the client must reload everything
 }
+
+// rules judges what an actor may see; its methods that the hub uses read no state of the service.
+var rules = &service.Service{}
 
 // Hub fans change events out to subscribers.
 type Hub struct {
@@ -81,52 +85,62 @@ type Hub struct {
 	subs  map[*subscriber]struct{}
 	perID map[string]int
 	now   func() time.Time
-	// UserInfo returns a user's organization id ("" when the user is unknown) and whether they are a super admin, for
-	// records about a user. Set before the hub is used; nil leaves every user unknown (non-super viewers get no
-	// event about one, and a user's own records are sent to everyone without an id).
-	UserInfo func(userID string) (org string, super bool)
+	// UserInfo returns a user's organization id ("" when the user is unknown) and role, for records about a user. Set
+	// before the hub is used; nil leaves every user unknown (viewers below super admin get no event about one).
+	UserInfo func(userID string) (org string, role model.Role)
 	infoMu   sync.Mutex
 	infoOf   map[string]userInfo
+	infoGen  uint64 // bumped by every remember: a lookup that began before it must not be stored
 }
 
 type userInfo struct {
-	org   string
-	super bool
+	org  string
+	role model.Role
 }
 
 // maxInfoCache bounds the user -> info cache; it starts over when full.
 const maxInfoCache = 10000
 
-func (h *Hub) setInfo(userID string, in userInfo) {
-	h.infoMu.Lock()
+// setInfoLocked stores in (infoMu held).
+func (h *Hub) setInfoLocked(userID string, in userInfo) {
 	if h.infoOf == nil || len(h.infoOf) >= maxInfoCache {
 		h.infoOf = map[string]userInfo{}
 	}
 	h.infoOf[userID] = in
-	h.infoMu.Unlock()
 }
 
-// info returns what is known of a user (one store read when not cached); ok is false for an unknown user.
+// info returns what is known of a user (one store read when not cached); ok is false for an unknown user. A lookup
+// that overlapped a remember (a write of any user record: the generation moved) is never stored, as it may predate
+// the write; it is repeated, and after a few overlaps the user counts as unknown (events about them are dropped).
 func (h *Hub) info(userID string) (userInfo, bool) {
 	if userID == "" {
 		return userInfo{}, false
 	}
-	h.infoMu.Lock()
-	in, ok := h.infoOf[userID]
-	h.infoMu.Unlock()
-	if ok {
-		return in, true
+	for range 3 {
+		h.infoMu.Lock()
+		in, ok := h.infoOf[userID]
+		gen := h.infoGen
+		h.infoMu.Unlock()
+		if ok {
+			return in, true
+		}
+		if h.UserInfo == nil {
+			return userInfo{}, false
+		}
+		org, role := h.UserInfo(userID)
+		if org == "" {
+			return userInfo{}, false
+		}
+		in = userInfo{org, role}
+		h.infoMu.Lock()
+		if h.infoGen == gen {
+			h.setInfoLocked(userID, in)
+			h.infoMu.Unlock()
+			return in, true
+		}
+		h.infoMu.Unlock()
 	}
-	if h.UserInfo == nil {
-		return userInfo{}, false
-	}
-	org, super := h.UserInfo(userID)
-	if org == "" {
-		return userInfo{}, false
-	}
-	in = userInfo{org, super}
-	h.setInfo(userID, in)
-	return in, true
+	return userInfo{}, false
 }
 
 // remember keeps the role of a user that was written, so a promotion or demotion applies to the next event. A
@@ -135,13 +149,14 @@ func (h *Hub) remember(rec *store.Record) {
 	if rec.Kind != model.KindUser || rec.Deleted {
 		return
 	}
-	if super, ok := rec.Fields["super_admin"].(bool); ok && rec.Scope != "" {
-		h.setInfo(rec.ID, userInfo{rec.Scope, super})
+	h.infoMu.Lock()
+	defer h.infoMu.Unlock()
+	h.infoGen++
+	if role, _ := rec.Fields["role"].(string); role != "" && rec.Scope != "" {
+		h.setInfoLocked(rec.ID, userInfo{rec.Scope, model.Role(role)})
 		return
 	}
-	h.infoMu.Lock()
 	delete(h.infoOf, rec.ID)
-	h.infoMu.Unlock()
 }
 
 // concerns returns the user a record is about ("" when none), and whether the record is hidden from non-super
@@ -201,9 +216,10 @@ func (h *Hub) Publish(rec *store.Record) {
 		ev.org = ""
 	}
 	user, hide := concerns(rec)
+	var in userInfo
+	known := false
 	if user != "" && (plain || userScoped[rec.Kind]) {
-		in, ok := h.info(user)
-		hide = hide || !ok || in.super
+		in, known = h.info(user)
 		if userScoped[rec.Kind] {
 			ev.User, ev.org = rec.Scope, in.org
 		}
@@ -217,7 +233,7 @@ func (h *Hub) Publish(rec *store.Record) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
-		if !s.wants(ev) || (hide && !s.super) {
+		if !s.wants(ev) || !s.sees(rec.Kind, user, hide, in, known) {
 			continue
 		}
 		e := ev
@@ -230,6 +246,46 @@ func (h *Hub) Publish(rec *store.Record) {
 			s.lagged = true
 		}
 	}
+}
+
+// sees reports whether s may be told of a change of a record of kind k about user (in: what the hub knows of them;
+// hide: the record is hidden below super admin whoever it is about). It mirrors what the management API shows s:
+//   - the user's record, their group memberships and (for administrators) their SSH certificates: whoever the service
+//     lets s see at all (Visibility: not Hidden; a manager sees an administrator as a directory entry);
+//   - their sessions, passkeys, API tokens, provider links, grants and consents: those of users s may manage
+//     (CanManageUser: a manager manages plain users, an administrator everyone but super admins);
+//   - SSH certificates at all, and the audit log: administrators of the organization (service accounts need the ssh
+//     scope for certificates);
+//   - anything about a user the hub cannot tell is dropped (fail closed). Super admins see everything.
+func (s *subscriber) sees(k model.Kind, user string, hide bool, in userInfo, known bool) bool {
+	if s.super {
+		return true
+	}
+	if hide || s.actor == nil {
+		return false
+	}
+	switch k {
+	case model.KindAudit:
+		return rules.CanAdminOrg(s.actor, s.orgID)
+	case model.KindSSHCert:
+		if !rules.CanAdminOrg(s.actor, s.orgID) || (s.actor.ClientID != "" && !s.actor.HasScope(service.ScopeSSH)) {
+			return false
+		}
+	}
+	if user == "" {
+		return true
+	}
+	if !known {
+		return false
+	}
+	u := &model.User{Meta: model.Meta{ID: user}, OrgID: in.org, Role: in.role}
+	if in.role == model.RoleSuperAdmin || rules.Visibility(s.actor, u) == service.Hidden {
+		return false
+	}
+	if userScoped[k] {
+		return rules.CanManageUser(s.actor, u)
+	}
+	return true
 }
 
 func (s *subscriber) wants(ev Event) bool {
@@ -307,7 +363,7 @@ func (m *Module) stream(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, service.ErrForbidden)
 		return
 	}
-	sub := &subscriber{ch: make(chan Event, bufferSize), orgID: orgID, super: a.IsSuper(), who: viewer(a)}
+	sub := &subscriber{ch: make(chan Event, bufferSize), orgID: orgID, super: a.IsSuper(), actor: a, who: viewer(a)}
 	m.serve(w, r, sub, func() bool { return m.stillAllowed(r, orgID, sub.super) })
 }
 

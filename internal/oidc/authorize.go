@@ -885,7 +885,7 @@ func (p *Provider) respond(w http.ResponseWriter, r *http.Request, f *flow, para
 
 var scopeDescriptions = map[string]string{
 	"openid":         "Sign you in and identify you",
-	"profile":        "Your name, username, language and time zone",
+	"profile":        "Your name, username, picture, language and time zone",
 	"email":          "Your email address",
 	"phone":          "Your phone number",
 	"groups":         "The groups you belong to",

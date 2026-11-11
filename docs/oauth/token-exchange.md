@@ -70,16 +70,23 @@ The new token's claims:
 | --- | --- |
 | `subject_token` | The user's access token, issued by this Quisora. Not a refresh token, not a client credentials token. A DPoP-bound token (`cnf.jkt`) stays bound: it is exchanged only with a [DPoP proof](dpop.md) made with its own key, and the new token is bound to that key. A service that was merely sent the token holds no such key and cannot exchange it. An unbound token gets a token bound to the exchanging client's own DPoP key when the request carries a proof. |
 | `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` (or `…:jwt`). |
-| `resource` or `audience` | The APIs the new token is for: only those registered on the calling client. |
+| `resource` or `audience` | The APIs the new token is for: only those registered on the calling client. A client exchanging its own token may name only APIs the subject token is for (those the user authorized), as a refresh may. Without it, the new token is for the calling client alone. |
 | `scope` | Optional: at most the subject token's scopes that the calling client also has. Without it, all of those. `offline_access` is dropped. |
+| `authorization_details` | Optional: at most the [authorization details](authorization-details.md) types the subject token carries, of those the calling client is registered for. Without it, all of the subject token's types. |
 | `requested_token_type` | Optional; only access tokens are issued. |
 | `actor_token` | Not supported: the authenticated client is the actor. |
 
 ## What the new token is
 
-- **No more than what came in.** At most the subject token's scopes (and the calling client's), only the resources
-  registered for the calling client, and it expires no later than the subject token (so `expires_in` can be less
-  than usual).
+- **No more than what came in.** At most the subject token's scopes (and the calling client's), authorization details
+  only of the types the subject token carries, only the resources registered for the calling client (for a client
+  exchanging its own token, only those the subject token is for), and it expires no later than the subject token (so
+  `expires_in` can be less than usual). A token narrowed once stays narrowed: exchanging it again cannot bring back a
+  scope or type it lacks, nor, by the same client, an API.
+- **No more than the calling client has now.** The scopes, resources and authorization details types are checked
+  against the calling client as it is now, and the details themselves are the user's current access to it: a type
+  the client is no longer registered for, or access taken away since, is left out (naming such a type in
+  `authorization_details` is refused).
 - **The user's, acted on by the client.** `sub` and the user's claims are the user's; `act` names the calling client.
   An API exchanging a token that already has an `act` nests it (`act.act` …), up to four actors deep. A client
   narrowing a token issued to itself adds no actor.
@@ -99,8 +106,9 @@ asked for it.
 | `invalid_grant`: *the subject token is bound to a DPoP key* | A DPoP-bound subject token exchanged without a proof, or with a proof made with another key. |
 | `invalid_grant`: *the subject token must be a user's token* | A client credentials token cannot be exchanged. |
 | `invalid_grant`: *the user has no access to this application* | The user cannot use the calling client. |
-| `invalid_target` | A `resource` or `audience` not registered on the calling client. |
+| `invalid_target` | A `resource` or `audience` not registered on the calling client, or, for a client exchanging its own token, one the subject token is not for. |
 | `invalid_scope` | A scope beyond the subject token's or the calling client's. |
+| `invalid_authorization_details` | `authorization_details` names a type the subject token does not carry, or one the calling client is not registered for. |
 | `unauthorized_client` | The client lacks the grant, or is a public client (token exchange is for confidential clients only). |
 | `temporarily_unavailable` (503) | A check the exchange depends on could not be made (a store read failed). The subject token is not known to be bad: keep it and retry. |
 

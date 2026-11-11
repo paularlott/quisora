@@ -117,6 +117,8 @@ func (m *Module) routes() []Route {
 		{"DELETE", o + "/users/{id}", m.deleteUser, service.ScopeUsers},
 		{"DELETE", o + "/users/{id}/password", m.removePassword, service.ScopeUsers},
 		{"DELETE", o + "/users/{id}/totp", m.removeUserTOTP, service.ScopeUsers},
+		{"PUT", o + "/users/{id}/picture", m.setUserPicture, service.ScopeUsers},
+		{"DELETE", o + "/users/{id}/picture", m.removeUserPicture, service.ScopeUsers},
 		{"POST", o + "/users/{id}/lock-out", m.lockOutUser, service.ScopeUsers},
 		{"POST", o + "/users/{id}/invite", m.inviteUser, service.ScopeUsers},
 		{"POST", o + "/users/{id}/emails", m.addEmail, service.ScopeUsers},

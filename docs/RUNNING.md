@@ -1003,6 +1003,11 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
   system shows them as resident (several GB at this size), but they are file pages it can drop at any time, not
   allocations. Housekeeping never reads a whole collection: the end-date sweep and filtered queries on large kinds
   use indexes (`model.Due`, `model.Field.Index`).
+- Profile pictures are stored in the database, one record each: a 256 × 256 JPEG or PNG, about 10–20 KB (a flat
+  graphic less, a transparent photo more). Every node holds them all: at 5,000 organizations × 1,000 users with a
+  picture each that is about 50–100 GB more per node, on disk and in backups, so size the disks for the share of users
+  who will have one. Uploads are decoded one at a time per node; one at the largest allowed size (8192 × 8192 pixels)
+  takes up to about 512 MB while it is, so leave that much room above the figures here where pictures are set.
 - Set `GOMEMLIMIT` (read by the Go runtime, for example `GOMEMLIMIT=1536MiB` for a 2 GB node). Each password hash
   leaves 19 MiB of garbage, and without a limit the runtime lets the heap grow to twice what is live before collecting:
   a burst of password sign-ins (64 concurrent clients, 15 cores) took the process to about 1.2 GB resident, and with

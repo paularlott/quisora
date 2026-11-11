@@ -46,14 +46,17 @@ type userView struct {
 	// CanVerifyEmail says the caller may mark the user's unverified addresses verified (never their own); present
 	// on GET of one user.
 	CanVerifyEmail *bool `json:"can_verify_email,omitempty"`
+	// Picture is the absolute URL of the user's profile picture (not of a directory entry); left out when none.
+	Picture string `json:"picture,omitempty"`
 }
 
-func viewOf(u *model.User) userView {
+func (m *Module) userView(u *model.User) userView {
 	le := u.LinkedEmails
 	if le == nil {
 		le = []model.LinkedEmail{}
 	}
-	return userView{User: u, HasPassword: u.PasswordHash != "", Tags: nonNilTags(u.Tags), Name: u.FullName(), LinkedEmails: le}
+	return userView{User: u, HasPassword: u.PasswordHash != "", Tags: nonNilTags(u.Tags), Name: u.FullName(), LinkedEmails: le,
+		Picture: m.s.Svc.PictureURL(u)}
 }
 
 func nonNilTags(t []string) []string {
@@ -130,7 +133,7 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 			web.WriteError(w, err)
 			return
 		}
-		view := viewOf(u)
+		view := m.userView(u)
 		can := m.s.Svc.CanManageUser(a, u)
 		view.CanManage = &can
 		view.Directory = m.s.Svc.Visibility(a, u) == service.Directory
@@ -174,7 +177,7 @@ func (m *Module) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]userView, len(items))
 	for i, u := range items {
-		views[i] = viewOf(u)
+		views[i] = m.userView(u)
 		can := m.s.Svc.CanManageUser(a, u)
 		views[i].CanManage = &can
 		views[i].Directory = m.s.Svc.Visibility(a, u) == service.Directory
@@ -191,7 +194,7 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	view := viewOf(u)
+	view := m.userView(u)
 	if m.s.Svc.Visibility(a, u) == service.Directory {
 		// someone above the caller: who they are, nothing else (u is already the directory entry)
 		no := false
@@ -270,7 +273,7 @@ func (m *Module) createUser(w http.ResponseWriter, r *http.Request) {
 	resp := struct {
 		userView
 		Invite *inviteResult `json:"invite,omitempty"`
-	}{userView: viewOf(u)}
+	}{userView: m.userView(u)}
 	if in.Invite != nil {
 		res, err := m.issueInvite(r, org, a, u, in.Invite.Email)
 		if err != nil {
@@ -318,7 +321,7 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 			m.mailSent(r, org, a, upd.ID)
 		}
 	}
-	web.WriteJSON(w, http.StatusOK, viewOf(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
 }
 
 func (m *Module) deleteUser(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +341,55 @@ func (m *Module) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w)
+}
+
+// pictureBody sets a profile picture: Image is a JPEG, PNG or WebP image as a data: URI, at most 5 MB.
+type pictureBody struct {
+	Image string `json:"image"`
+}
+
+// setUserPicture handles PUT /users/{id}/picture {"image": "data:image/...;base64,..."}: sets the user's profile
+// picture (whoever may change the user; the user themselves unless the organization has its administrators set
+// pictures). Answers the user.
+func (m *Module) setUserPicture(w http.ResponseWriter, r *http.Request) {
+	org, a, found := m.orgFor(w, r)
+	if !found {
+		return
+	}
+	u, found := m.userFor(w, r, org, a)
+	if !found {
+		return
+	}
+	var in pictureBody
+	if !web.DecodeJSON(w, r, &in) {
+		return
+	}
+	upd, err := m.s.Svc.SetPicture(r.Context(), a, u.ID, func() (*service.PictureImage, error) {
+		return service.PictureFromDataURI(in.Image)
+	})
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
+}
+
+// removeUserPicture handles DELETE /users/{id}/picture: removes the user's profile picture (as setUserPicture).
+func (m *Module) removeUserPicture(w http.ResponseWriter, r *http.Request) {
+	org, a, found := m.orgFor(w, r)
+	if !found {
+		return
+	}
+	u, found := m.userFor(w, r, org, a)
+	if !found {
+		return
+	}
+	upd, err := m.s.Svc.SetPicture(r.Context(), a, u.ID, nil)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
 }
 
 // removePassword deletes the user's password; they sign in again only through a new invitation.
@@ -408,7 +460,7 @@ func (m *Module) lockOutUser(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, viewOf(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
 }
 
 type inviteResult struct {
@@ -634,7 +686,7 @@ func (m *Module) addEmail(w http.ResponseWriter, r *http.Request) {
 			m.mailSent(r, org, a, upd.ID)
 		}
 	}
-	web.WriteJSON(w, http.StatusCreated, viewOf(upd))
+	web.WriteJSON(w, http.StatusCreated, m.userView(upd))
 }
 
 // resendEmail handles POST /users/{id}/emails/{address}/verify: mails the user a new verification link for one of
@@ -683,7 +735,7 @@ func (m *Module) markEmailVerified(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, viewOf(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
 }
 
 // removeEmail handles DELETE /users/{id}/emails/{address}.
@@ -705,7 +757,7 @@ func (m *Module) removeEmail(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, viewOf(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
 }
 
 // primaryEmail handles POST /users/{id}/emails/{address}/primary.
@@ -727,7 +779,7 @@ func (m *Module) primaryEmail(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, viewOf(upd))
+	web.WriteJSON(w, http.StatusOK, m.userView(upd))
 }
 
 // connectionsUser resolves the user of a connections route: one the actor may manage, or the actor themselves. It

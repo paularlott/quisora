@@ -139,6 +139,8 @@ func (m *Module) fromService(err error) *Error {
 		return errf(503, "", "This server cannot make changes right now (it cannot reach enough of its cluster); nothing was changed, retry shortly")
 	case errors.Is(err, service.ErrInvalid):
 		return badValue("%s", err.Error())
+	case errors.Is(err, service.ErrLimit):
+		return errf(429, "", "%s", web.Capitalise(strings.TrimPrefix(err.Error(), service.ErrLimit.Error()+": ")))
 	}
 	if m.srv != nil && m.srv.Log != nil {
 		m.srv.Log.Error("scim", "error", err)

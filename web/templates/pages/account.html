@@ -45,6 +45,12 @@
     </form>
   </section>
 
+  <!-- Picture ---------------------------------------------------------------------------------------------- -->
+  <section class="glass-card" id="picture" aria-labelledby="picture-h" x-data="accountPicture">
+    <h2 class="section-title mb-4" id="picture-h" tabindex="-1">Picture</h2>
+    {{template "picture-controls"}}
+  </section>
+
   <!-- Email addresses ----------------------------------------------------------------------------------- -->
   {{template "emails-card" (dict "comp" "accountEmails" "id" "emails" "help" "Sign-ins from GitHub, Google and other providers that use one of your verified addresses find your account." "lockedHelp" "Your administrator adds and removes these. Verify each one from the link we email to it; a verified address can be made primary.")}}
 

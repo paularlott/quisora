@@ -37,7 +37,7 @@
     {{if .User}}
     <div class="menu-wrap" @click.outside="closeUser">
       <button type="button" class="user-chip" x-ref="userButton" aria-haspopup="true" aria-controls="user-menu" aria-expanded="false" :aria-expanded="userExpanded" @click="toggleUser">
-        <span class="avatar" aria-hidden="true">{{template "icon" "user"}}</span>
+        <span class="inline-flex" x-data="headerAvatar" data-id="{{.User.ID}}" data-given="{{.User.GivenName}}" data-family="{{.User.FamilyName}}" data-username="{{.User.Username}}"{{if .User.Picture}} data-picture="/o/{{.User.OrgID}}/pictures/{{.User.Picture}}"{{end}}>{{template "avatar" (dict "a" "a")}}</span>
         <span class="user-chip-name">{{.User.FullName}}</span>
         <span class="sr-only">Account menu</span>
         {{template "icon" "chevron-down"}}

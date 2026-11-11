@@ -78,6 +78,9 @@ type Claims struct {
 	GivenName      string
 	FamilyName     string
 	Username       string
+	// Picture is the URL of the person's picture at the provider (an OpenID provider's picture claim, GitHub's
+	// avatar_url): copied once into an account the sign-in creates or links that has none (service.CopyPicture).
+	Picture string
 	// AMR is how the provider says the person signed in to it (its ID token's amr, model.CleanAMR): passed on in
 	// Quisora's tokens, never read for Quisora's own decisions. Empty for providers that send none (GitHub).
 	AMR []string
@@ -490,6 +493,7 @@ func (s *Service) resolve(ctx context.Context, org *model.Org, p *model.Provider
 		return nil, false, err
 	}
 	s.Svc.AuditUser(ctx, actor, u, "user.provision", map[string]string{"provider": p.Name})
+	s.Svc.CopyPicture(ctx, u.ID, c.Picture, actor.Name)
 	return u, true, nil
 }
 
@@ -558,6 +562,7 @@ func (s *Service) linkByEmail(ctx context.Context, org *model.Org, p *model.Prov
 	if err != nil {
 		return nil, err
 	}
+	s.Svc.CopyPicture(ctx, u.ID, c.Picture, actor.Name)
 	return u, nil
 }
 
@@ -631,9 +636,10 @@ func (s *Service) githubClaims(ctx context.Context, p *model.Provider, secret, c
 	hdr := map[string]string{"Authorization": "Bearer " + tok.AccessToken, "Accept": "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28", "User-Agent": "quisora"}
 	var user struct {
-		ID    json.Number `json:"id"`
-		Login string      `json:"login"`
-		Name  string      `json:"name"`
+		ID        json.Number `json:"id"`
+		Login     string      `json:"login"`
+		Name      string      `json:"name"`
+		AvatarURL string      `json:"avatar_url"`
 	}
 	if err := s.getJSON(ctx, s.GitHubAPIURL+"/user", &user, hdr); err != nil {
 		return Claims{}, err
@@ -641,7 +647,7 @@ func (s *Service) githubClaims(ctx context.Context, p *model.Provider, secret, c
 	if _, err := strconv.ParseInt(user.ID.String(), 10, 64); err != nil {
 		return Claims{}, fmt.Errorf("%w: bad user id", ErrUpstream)
 	}
-	c := Claims{Subject: user.ID.String(), Name: user.Name, Username: user.Login}
+	c := Claims{Subject: user.ID.String(), Name: user.Name, Username: user.Login, Picture: user.AvatarURL}
 	var emails []struct {
 		Email    string `json:"email"`
 		Primary  bool   `json:"primary"`

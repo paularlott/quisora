@@ -116,7 +116,7 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 | Scope | Claims (ID token and userinfo) |
 | --- | --- |
 | `openid` | `sub` (the user's ID, which never changes), and makes it an OpenID Connect sign-in: an ID token. |
-| `profile` | `name`, `preferred_username`, `given_name`, `family_name`, `locale`, `zoneinfo`, `updated_at` |
+| `profile` | `name`, `preferred_username`, `given_name`, `family_name`, `picture` ([below](#profile-pictures)), `locale`, `zoneinfo`, `updated_at` |
 | `email` | `email`, `email_verified` |
 | `phone` | `phone_number`, `phone_number_verified` |
 | `groups` | `groups`: the names of the user's groups |
@@ -135,6 +135,22 @@ Scopes of your own (`orders:read`) are listed on the client and simply passed th
 what they mean. The [application roles](../API-TOKENS.md#application-roles) an administrator gives users on a tenant's
 access list arrive in `roles`, and the [authorization details](authorization-details.md) given there (RFC 9396), for
 applications registered for their types, in `authorization_details`.
+
+### Profile pictures
+
+`picture` is the absolute URL of the user's profile picture, `https://<server>/o/<org id>/pictures/<random id>`, and
+is left out when the user has none. It is an image, never a page: a 256 × 256 pixel JPEG or PNG that Quisora made
+itself from what was uploaded, and serves to anyone holding the URL with no sign-in, so put it straight in an
+`<img>` (it is served with `Cross-Origin-Resource-Policy: cross-origin`). The random part of the URL is what keeps it
+private to those given it; a new picture always has a new URL (each is cached for a year, as it never changes), and
+an old URL answers 404 once the picture is replaced or removed or the user is deleted. Compare `picture`, not the
+image, to see whether it changed.
+
+People set their own picture on their account page, unless their organization has its administrators set pictures
+(`settings.pictures_by_admins`); managers and administrators set them in the console or through the management API
+(`PUT /api/orgs/{org}/users/{id}/picture`), provisioning systems through SCIM's `photos`, and an account a sign-in
+provider creates or links takes the provider's picture (GitHub's avatar, an OpenID provider's `picture`) once, when it
+has none. Each is a JPEG, PNG or WebP image of at most 5 MB and 8192 pixels a side, cropped to its centre square.
 
 ### Which upstream account: the idp scope
 

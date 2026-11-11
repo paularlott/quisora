@@ -25,6 +25,29 @@ export const accountStub = (security) => async (p) => {
   await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80))
 }
 
+// Reload the account page with top-level fields of its answer altered (accountStub alters the security summary).
+const accountStubTop = (fields) => async (p) => {
+  await p.route('**/api-internal/account', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const res = await route.fetch()
+    await route.fulfill({ response: res, json: { ...(await res.json()), ...fields } })
+  })
+  await p.reload({ waitUntil: 'load' })
+  await p.waitForTimeout(800)
+}
+// Scroll the account page's picture card into view once it is filled.
+const pictureCardStep = async (p) => {
+  await p.locator('#picture').waitFor(); await p.waitForTimeout(600)
+  await p.locator('#picture-h').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)); await p.waitForTimeout(300)
+}
+// Grace Hopper (who has a picture) from the users list, found by searching it.
+const graceStep = async (p) => { await p.locator('#list-search').fill('grace'); await p.getByRole('link', { name: 'Grace Hopper' }).click(); await p.waitForSelector('text=Profile') }
+// The picture card of a user's page in the console.
+const userPictureStep = async (p) => {
+  await p.getByRole('heading', { name: 'Picture' }).waitFor(); await p.waitForTimeout(400)
+  await p.getByRole('heading', { name: 'Picture' }).scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)); await p.waitForTimeout(300)
+}
+
 // Scroll the email addresses card into view once its list has loaded.
 const emailsStep = async (p) => {
   await p.getByRole('list', { name: 'Email addresses' }).waitFor()
@@ -116,6 +139,12 @@ export const PAGES = [
       await p.getByRole('button', { name: 'Create user' }).click()
       await p.getByRole('dialog', { name: 'Invitation link' }).waitFor()
       await p.waitForTimeout(450)
+    }] },
+  // The picture card on a user's page: initials (Alan), and a picture (Grace) with its Remove confirmation.
+  { name: 'user-picture', path: `${A}/users`, as: 'admin', steps: [...userStep, userPictureStep] },
+  { name: 'user-picture-set', path: `${A}/users`, as: 'admin', steps: [waitRows, graceStep, userPictureStep, async (p) => { await p.locator('.avatar-img').first().waitFor() }] },
+  { name: 'user-picture-remove', path: `${A}/users`, as: 'admin', dialog: true, steps: [waitRows, graceStep, userPictureStep, async (p) => {
+      await p.getByRole('button', { name: 'Remove picture' }).click(); await p.getByRole('dialog', { name: 'Remove picture' }).waitFor(); await p.waitForTimeout(450)
     }] },
   { name: 'user-disabled', path: `${A}/users`, as: 'admin', steps: [waitRows, async (p) => { await p.getByRole('link', { name: 'Dennis Ritchie' }).click(); await p.waitForSelector('text=Left the company') }] },
   { name: 'users-edit-disable', path: `${A}/users`, as: 'admin', dialog: true, steps: [...userStep, open('Edit user'), async (p) => {
@@ -313,6 +342,18 @@ PAGES.push(
   { name: 'account-totp-remove', path: '/o/acme/account', as: 'user', dialog: true, steps: [accountStub({ totp: true }), async (p) => {
       await p.getByRole('button', { name: /Remove… Authenticator App/ }).click(); await p.getByRole('dialog', { name: 'Remove Authenticator App' }).waitFor(); await p.waitForTimeout(450)
     }] },
+  // The picture card: initials (Alan has no picture), a picture (Grace's) with Remove and its confirmation, the server
+  // refusing a file at the field, and the card read-only where administrators set the pictures.
+  { name: 'account-picture', path: '/o/acme/account', as: 'user', steps: [pictureCardStep] },
+  { name: 'account-picture-set', path: '/o/acme/account', as: 'manager', steps: [pictureCardStep, async (p) => { await p.locator('#picture .avatar-img').waitFor() }] },
+  { name: 'account-picture-remove', path: '/o/acme/account', as: 'manager', dialog: true, steps: [pictureCardStep, async (p) => {
+      await p.locator('#picture').getByRole('button', { name: 'Remove picture' }).click(); await p.getByRole('dialog', { name: 'Remove picture' }).waitFor(); await p.waitForTimeout(450)
+    }] },
+  { name: 'account-picture-error', path: '/o/acme/account', as: 'user', steps: [pictureCardStep, async (p) => {
+      await p.locator('#f-image').setInputFiles({ name: 'bad.png', mimeType: 'image/png', buffer: Buffer.from('this is not an image') })
+      await p.locator('#e-image').filter({ hasText: /./ }).waitFor(); await p.waitForTimeout(300)
+    }] },
+  { name: 'account-picture-readonly', path: '/o/acme/account', as: 'user', steps: [accountStubTop({ can_change_picture: false }), pictureCardStep] },
   { name: 'account-admin', path: '/o/acme/account', as: 'admin', steps: [async (p) => { await p.waitForTimeout(800) }] },
   { name: 'logout', path: '/o/acme/logout', as: 'user' },
 )

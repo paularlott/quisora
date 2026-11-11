@@ -91,6 +91,7 @@ func New(t testing.TB, o Options) *Env {
 	if log == nil {
 		log = logger.NewNullLogger()
 	}
+	svc.Counters = eph // as the app does (PictureClient is left to the tests that fetch pictures)
 	srv, err := web.New(cfg, svc, eph, log)
 	if err != nil {
 		t.Fatal(err)

@@ -152,6 +152,7 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 		return
 	}
 	m.Upstream.KeepConnected(ctx, res)
+	m.s.Svc.CopyPicture(ctx, u.ID, res.Claims.Picture, "provider:"+res.Provider.Name) // only when the account has none
 	// A connected provider is a new way in: the account's security generation moves on (ending what was in flight
 	// for it), and the re-authentication this session gave to connect it carries over to the new generation.
 	if fresh, err := m.s.Svc.AdvanceSecurity(ctx, u.ID); err == nil {

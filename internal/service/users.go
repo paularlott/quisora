@@ -932,10 +932,12 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 	// its user, so none counts any more, and the orphan sweep removes their records (sweep.go), as it clears the
 	// manager of the users they managed (a deletion whose outcome was not known is followed by the sweep alone). The
 	// applications are told (back-channel logout), and their reports get no manager. Their memberships stand on them
-	// too: every reader of a group's members leaves out those whose user is gone (memberIDs).
+	// too: every reader of a group's members leaves out those whose user is gone (memberIDs). Their picture is served
+	// no more (it stands on them too), and is removed now: it is public to whoever has its address.
 	s.sessionsEnding(ctx, u.ID, nil)
 	s.endGuestSessions(ctx, u)
 	s.clearManagerOf(ctx, u)
+	s.dropPicture(ctx, u.Picture)
 	return nil
 }
 

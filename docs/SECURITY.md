@@ -18,7 +18,7 @@ backup. It does not defend against someone who controls a node's host, its proce
 | SSH certificates | Certificates only after a second-factor sign-in, short-lived, with principals from the user's username, `group:` groups and `role:` roles (a username holds no colon, so none can be named like a group); a revocation list worked out from the user's state, which also revokes CA keys outright; the CA keys sealed with the master key | `AuthorizedPrincipalsFile` on every server, privileged accounts mapped by group and never by username; the fetch timer and its [monitoring](ssh/README.md#monitoring); `RevokedHostKeys` on clients and short host certificates; a login that works while Quisora does not ([guide](ssh/README.md#if-quisora-is-not-reachable)) |
 | Database and backups | Secrets sealed with the master key (TOTP secrets, signing and provider keys, tenants' SSH CA keys, upstream tokens); passwords hashed (argon2id) and the hashes sealed with the master key too (the pepper); bearer secrets stored as hashes; backups encrypted with a password | Encryption at rest of the storage (or BadgerDB's `encryption_key`); verified TLS to a database server |
 | Node ↔ node (gossip) | Messages encrypted and authenticated with `cluster.key`; incompatible builds refused; a catch-up stream goes from the database to the other node's database without touching the disk in between | `cluster.key` kept like the master key; the gossip port reachable by cluster members only; BadgerDB with `storage.badgerdb.sync_writes = true` |
-| Outbound (providers, JWKS, back-channel logout) | The address actually dialled is checked: no private or loopback addresses but the networks in `allowed_networks` (or all of them with `allow_private_networks`), and never metadata, link-local or special-purpose addresses | — |
+| Outbound (providers, JWKS, back-channel logout, pictures given by URL) | The address actually dialled is checked: no private or loopback addresses but the networks in `allowed_networks` (or all of them with `allow_private_networks`), and never metadata, link-local or special-purpose addresses | — |
 | Operator (CLI, configuration) | Fully trusted; CLI actions audited with the OS user and host | Who can log in to the hosts and read the configuration |
 
 In a gossip cluster (`cluster.bind`): **BadgerDB must run with `storage.badgerdb.sync_writes = true`** (the default; a gossip
@@ -40,6 +40,18 @@ its total and its search leave them out. Each event is marked when it is written
 not their names: a rename reveals nothing), and never re-marked: what a user did before they were made a super admin
 stays visible to the admins who saw it then. An event names a user in its actor, target and detail; only the first two
 are judged, so a super admin named only in an event's detail (a group membership change) is still shown by id.
+
+**Profile pictures are public to whoever has their URL.** A user's picture is served without authentication at
+`/o/<org id>/pictures/<id>`, because applications show it in an `<img>` on their own pages; the id is 128 random bits,
+new for every picture and unrelated to the user's id, and is the only thing that keeps the picture from others (anyone
+an application or a token shows it to can pass it on). Only a user's current picture is served: a replaced or removed
+one, or a deleted user's, answers 404 at once and is removed from the store. Each upload is decoded and encoded afresh
+(JPEG, PNG and WebP in; nothing else, no SVG, no GIF), so no metadata (a phone photo's location), no script and no
+second file format hidden in it reaches what is stored, and it is served as an image that cannot be anything else
+(`Content-Security-Policy: default-src 'none'; sandbox`, `nosniff`). An upload is at most 5 MB and 8192 pixels a side
+(the size it decodes to, not its bytes, is what it costs: two are decoded at a time per node), and one user's picture
+changes at most 20 times an hour. A picture given by URL (SCIM, a sign-in provider) is fetched once through the
+outbound guard and never linked to: applications never reach another site through Quisora's pictures.
 
 **SSH certificates: known limits.** The [guide](ssh/README.md#known-limits) has the detail.
 

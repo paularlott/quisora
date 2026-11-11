@@ -51,6 +51,10 @@ type OrgSettings struct {
 	// and groups for its managers and administrators. Off by default (and for an organization saved before the setting
 	// existed): while off, its address and metadata answer 404 and the console does not show it.
 	MCPServer bool `msgpack:"mcp,omitempty" json:"mcp_server"`
+	// PicturesByAdmins stops users setting their own profile picture: only those who manage users (managers and above)
+	// and the directory (SCIM, sign-in providers) set pictures. Off by default (and for an organization saved before
+	// the setting existed): users choose their own.
+	PicturesByAdmins bool `msgpack:"pba,omitempty" json:"pictures_by_admins"`
 }
 
 // Equal reports whether two settings are the same (OrgSettings holds a slice, so == does not compile).
@@ -279,6 +283,9 @@ type User struct {
 	// (service.Service.WithSignIn).
 	LastLogin time.Time `msgpack:"-" json:"last_login"`
 	Tags      []string  `msgpack:"tg" json:"tags"`
+	// Picture is the id of the user's profile picture (UserPicture), "" for none. Shown as its absolute URL
+	// (service.Service.PictureURL): a new picture is a new record, so its URL never changes what it shows.
+	Picture string `msgpack:"pic,omitempty" json:"-"`
 	// LinkedEmails are further addresses of the user. They share the per-org email namespace with Email (no address
 	// is anyone's primary or linked address twice) and let upstream providers that report one of them find the user.
 	LinkedEmails []LinkedEmail `msgpack:"le" json:"linked_emails"`
@@ -1457,6 +1464,26 @@ type SSHRevokedSignIn struct {
 func (r *SSHRevokedSignIn) Kind() Kind { return KindSSHRevokedSignIn }
 func (r *SSHRevokedSignIn) Index() Index {
 	return Index{Scope: r.OrgID, Partition: r.ID, Expires: r.Expires}
+}
+
+// UserPicture is a user's profile picture, made by package picture (a square JPEG or PNG). Its id is new for every
+// picture and random (NewRandomID): it is the picture's public address (/o/<org id>/pictures/<id>), which anyone
+// holding it may read, so it is never guessed from the user. The user names their current picture (User.Picture);
+// any other is a leftover of a change and served by nobody, and the orphan sweep removes it.
+type UserPicture struct {
+	Meta
+	OrgID  string `msgpack:"o" json:"org_id"`
+	UserID string `msgpack:"ui" json:"user_id"`
+	Type   string `msgpack:"t" json:"-"` // image/jpeg or image/png
+	Data   []byte `msgpack:"d" json:"-"`
+	// Source names what the picture was made from: the URL it was fetched from, or "sha256:" and the hash of the
+	// image given. A directory that sends the same one again changes nothing.
+	Source string `msgpack:"s,omitempty" json:"-"`
+}
+
+func (p *UserPicture) Kind() Kind { return KindUserPicture }
+func (p *UserPicture) Index() Index {
+	return Index{Scope: p.OrgID, Partition: p.ID} // read by its id only
 }
 
 // clipRunes cuts s to at most n characters: a queryable field longer than its column is refused with the record.

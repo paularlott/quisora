@@ -56,6 +56,9 @@ func (rq *request) userResource(u *model.User, groups []*model.Group, withGroups
 		}
 		res["emails"] = emails
 	}
+	if photos := rq.photosValue(u); photos != nil {
+		res["photos"] = photos
+	}
 	if withGroups {
 		res["groups"] = rq.groupsValue(groups)
 	}
@@ -569,10 +572,34 @@ func (rq *request) createUser() {
 		writeError(rq.w, errNeedsSession("granting an administrator role"))
 		return
 	}
+	// The picture is made before the user is created, so a refused one creates nobody.
+	pc, e := rq.photoChange(body, nil)
+	if e != nil {
+		writeError(rq.w, e)
+		return
+	}
+	var img *service.PictureImage
+	if pc != nil && pc.make != nil {
+		var err error
+		if img, err = pc.make(); err != nil {
+			rq.fail(err)
+			return
+		}
+	}
 	u, err := rq.m.srv.Svc.CreateUser(rq.ctx, rq.actor, rq.org.ID, in)
 	if err != nil {
 		rq.fail(err)
 		return
+	}
+	if img != nil {
+		// The user exists: a picture that cannot be stored now is left out (the resource returned has no photos)
+		// rather than failing a creation a retry would find done.
+		withPic, err := rq.m.srv.Svc.SetPicture(rq.ctx, rq.actor, u.ID, func() (*service.PictureImage, error) { return img, nil })
+		if err != nil {
+			rq.m.srv.Log.Warn("scim: the new user's picture was not stored", "user", u.ID, "error", err)
+		} else {
+			u = withPic
+		}
 	}
 	attrs, excl := rq.getParams()
 	res, err := rq.userResource(u, nil, true)
@@ -608,17 +635,25 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 			return e
 		}
 		in = diffUser(u, in)
-		if emptyInput(in) {
-			result = u
-			return nil
+		pc, e := rq.photoChange(next, u)
+		if e != nil {
+			return e
 		}
-		if in.Role != nil && *in.Role != u.Role && in.Role.Rank() >= model.RoleAdmin.Rank() {
-			return errNeedsSession("granting an administrator role")
+		result = u
+		if !emptyInput(in) {
+			if in.Role != nil && *in.Role != u.Role && in.Role.Rank() >= model.RoleAdmin.Rank() {
+				return errNeedsSession("granting an administrator role")
+			}
+			// The change was worked out from this copy (and If-Match checked against it): it applies to this copy
+			// only. A user changed since is stale: retried from fresh data, or 412 with If-Match.
+			in.IfVersion = u.Version
+			if result, err = rq.m.srv.Svc.UpdateUser(rq.ctx, rq.actor, id, in); err != nil {
+				return err
+			}
 		}
-		// The change was worked out from this copy (and If-Match checked against it): it applies to this copy only.
-		// A user changed since is stale: retried from fresh data, or 412 with If-Match.
-		in.IfVersion = u.Version
-		result, err = rq.m.srv.Svc.UpdateUser(rq.ctx, rq.actor, id, in)
+		if pc != nil { // after the rest: a retry finds the rest done, and works the picture out again
+			result, err = rq.m.srv.Svc.SetPicture(rq.ctx, rq.actor, id, pc.make)
+		}
 		return err
 	})
 	if err != nil {
@@ -664,6 +699,7 @@ func (rq *request) patchUser(id string) {
 		}
 		keepTags(cur, schemaIdpUser)
 		keepValidUntil(cur)
+		keepPhotos(cur)
 		return cur, nil
 	})
 }

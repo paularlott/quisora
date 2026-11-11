@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -11,6 +12,16 @@ import (
 
 // MaxJSONBody limits request bodies decoded by DecodeJSON.
 const MaxJSONBody = 1 << 20
+
+// MaxPictureBody limits the body of a request that sets a profile picture (PUT .../picture): an image of up to 5 MB
+// (picture.MaxBytes) as a base64 data: URI in JSON.
+const MaxPictureBody = 7 << 20
+
+// isPictureUpload reports whether r sets a profile picture (the account's own, or a user's through the management
+// API), whose body may be up to MaxPictureBody.
+func isPictureUpload(r *http.Request) bool {
+	return r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/picture")
+}
 
 // WriteJSON writes v as JSON with status.
 func WriteJSON(w http.ResponseWriter, status int, v any) {
@@ -58,6 +69,9 @@ func WriteError(w http.ResponseWriter, err error) {
 		WriteJSON(w, http.StatusServiceUnavailable, ErrorBody{Error: "This server cannot make changes right now (it cannot reach enough of its cluster). Nothing was changed; please try again shortly."})
 	case errors.Is(err, service.ErrInvalid):
 		WriteJSON(w, http.StatusUnprocessableEntity, ErrorBody{Error: Capitalise(err.Error())})
+	case errors.Is(err, service.ErrLimit):
+		w.Header().Set("Retry-After", "3600")
+		WriteJSON(w, http.StatusTooManyRequests, ErrorBody{Error: Capitalise(strings.TrimPrefix(err.Error(), service.ErrLimit.Error()+": ")) + "."})
 	default:
 		WriteJSON(w, http.StatusInternalServerError, ErrorBody{Error: "Something went wrong. Please try again."})
 	}
@@ -74,9 +88,14 @@ func Capitalise(s string) string {
 	return s
 }
 
-// DecodeJSON decodes a size-limited JSON body into v, rejecting unknown fields.
+// DecodeJSON decodes a size-limited JSON body into v, rejecting unknown fields: at most MaxJSONBody, or
+// MaxPictureBody for a request that sets a profile picture.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxJSONBody))
+	limit := int64(MaxJSONBody)
+	if isPictureUpload(r) {
+		limit = MaxPictureBody
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		var tooLarge *http.MaxBytesError

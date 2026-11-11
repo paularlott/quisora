@@ -24,7 +24,7 @@ import (
 // claimScopes maps each claim that can be requested individually to the scope that holds it.
 var claimScopes = map[string]string{
 	"name": "profile", "given_name": "profile", "family_name": "profile", "preferred_username": "profile",
-	"locale": "profile", "zoneinfo": "profile", "updated_at": "profile",
+	"locale": "profile", "zoneinfo": "profile", "updated_at": "profile", "picture": "profile",
 	"email": "email", "email_verified": "email",
 	"phone_number": "phone", "phone_number_verified": "phone",
 	"groups":     "groups",

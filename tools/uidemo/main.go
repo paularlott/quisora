@@ -69,11 +69,11 @@ func main() {
 	oldKey := secure.RandomBytes(32)
 	sealer, _ := secure.NewSealer(oldKey)
 	svc := service.New(cfg, st, sealer)
-	hub.UserInfo = func(id string) (string, bool) {
+	hub.UserInfo = func(id string) (string, model.Role) {
 		if u, err := svc.Users.Get(context.Background(), id); err == nil {
-			return u.OrgID, u.Role == model.RoleSuperAdmin
+			return u.OrgID, u.Role
 		}
-		return "", false
+		return "", ""
 	}
 	ctx := context.Background()
 	super, _, err := svc.Bootstrap(ctx, "admin@example.com")
@@ -318,6 +318,9 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	servers := tenant("servers", "Servers", "Machines people reach over SSH",
 		model.TenantSettings{PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, AllProviders: true})
 	seedSSH(ctx, svc, servers, out["user"], members)
+	// Profile pictures: the manager's a transparent PNG, the administrator's and a few members' gradient photos. The
+	// other demo accounts (alan, katherine, dorothy, ...) have none, so both states can be seen.
+	seedPictures(ctx, svc, out["manager"], out["admin"], members[1], members[2], members[4], members[5])
 	curTenant := customers.ID
 
 	client := func(name, desc, method string, grants []string, uris []string) *model.Client {

@@ -32,7 +32,7 @@
         </tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
-            <td><div class="flex items-center gap-3"><span class="avatar" aria-hidden="true" x-text="row.initial"></span>
+            <td><div class="flex items-center gap-3">{{template "avatar" (dict "a" "row.avatar")}}
               <div class="min-w-0"><a class="cell-title" :href="row.href" x-text="row.title"></a><div class="cell-sub" x-text="row.sub"></div>
               <ul class="tag-badges" aria-label="Tags" x-show="row.hasTags" x-cloak><template x-for="t in row.tagItems" :key="t.value"><li><button type="button" class="badge badge-tag badge-plain" :aria-label="t.filterLabel" :data-tag="t.value" @click="filterByTag" x-text="t.value"></button></li></template></ul></div></div></td>
             <td><span :class="row.roleClass" x-text="row.roleText"></span></td>

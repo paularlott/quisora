@@ -67,7 +67,7 @@
           <caption class="sr-only">Members</caption>
           <thead><tr><th scope="col">User</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody><template x-for="m in members" :key="m.id"><tr>
-            <td><span class="cell-title" x-text="m.title"></span><div class="cell-sub" x-text="m.email"></div></td>
+            <td><div class="flex items-center gap-3">{{template "avatar" (dict "a" "m.avatar")}}<div class="min-w-0"><span class="cell-title" x-text="m.title"></span><div class="cell-sub" x-text="m.email"></div></div></div></td>
             <td class="actions"><button type="button" class="btn btn-ghost btn-icon btn-sm" x-show="m.canRemove" :aria-label="m.removeLabel" :data-id="m.id" @click="removeMember">{{template "icon" "x"}}</button></td>
           </tr></template></tbody>
         </table>

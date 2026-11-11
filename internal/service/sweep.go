@@ -25,7 +25,8 @@ import (
 // sweepKinds are the kinds the sweep reads, in turn.
 var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess,
 	model.KindClient, model.KindProvider, model.KindPasskey, model.KindIdentity, model.KindAPIToken, model.KindSignIn,
-	model.KindOrgLogo, model.KindEmailTemplates, model.KindSession, model.KindGrant, model.KindConsent, model.KindLock, model.KindSSHKey, model.KindSSHCert}
+	model.KindOrgLogo, model.KindEmailTemplates, model.KindSession, model.KindGrant, model.KindConsent, model.KindLock, model.KindSSHKey, model.KindSSHCert,
+	model.KindUserPicture}
 
 // sweepMinAge is how old a record must be before the sweep may remove it: well past the store's staleness bound, so
 // its owner, made elsewhere at the same time, is visible here.
@@ -45,7 +46,8 @@ type ownerRef struct {
 	kind model.Kind
 	id   string
 	// uses, for a provider that owns a sign-in client (Client.ProviderID), is that client: the provider must still
-	// use it, or the client is a leftover of a change of the provider's source organization.
+	// use it, or the client is a leftover of a change of the provider's source organization. For a user that owns a
+	// picture, it is that picture: the user's current one (User.Picture), or a leftover of a change.
 	uses string
 }
 
@@ -103,6 +105,8 @@ func owners(e model.Entity) []ownerRef {
 		// Not its user: a deleted user's certificate works until it expires, and is on the tenant's KRL for that long
 		// (SSHRevoked); removing the record would take it off the list. It expires on its own.
 		return []ownerRef{{kind: model.KindTenant, id: v.TenantID}}
+	case *model.UserPicture:
+		return []ownerRef{{kind: model.KindUser, id: v.UserID, uses: v.ID}}
 	case *model.Lock: // an organization's open deletion guard (SweepOrphans judges every other lock by its lease)
 		return []ownerRef{{kind: model.KindOrg, id: v.ID}}
 	}
@@ -257,6 +261,13 @@ func (s *Service) ownerGone(ctx context.Context, o ownerRef) (bool, error) {
 	}
 	if err != nil || o.uses == "" {
 		return false, mapStore(err)
+	}
+	if o.kind == model.KindUser {
+		var u model.User
+		if err := store.Decode(r, &u); err != nil {
+			return false, err
+		}
+		return u.Picture != o.uses, nil
 	}
 	var p model.Provider
 	if err := store.Decode(r, &p); err != nil {

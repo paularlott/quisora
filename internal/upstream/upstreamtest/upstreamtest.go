@@ -290,8 +290,10 @@ type FakeGitHub struct {
 	Emails []map[string]any
 	ID     int64
 	Login  string
-	mu     sync.Mutex
-	codes  map[string]string // code -> challenge
+	// AvatarURL is the user's avatar_url ("": none sent).
+	AvatarURL string
+	mu        sync.Mutex
+	codes     map[string]string // code -> challenge
 }
 
 // NewFakeGitHub starts the fake.
@@ -321,8 +323,12 @@ func NewFakeGitHub(t *testing.T) *FakeGitHub {
 	}
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		if auth(w, r) {
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": g.ID, "login": g.Login, "name": "The Octocat",
-				"email": "public@example.com"}) // the profile email is ignored: only /user/emails is trusted
+			u := map[string]any{"id": g.ID, "login": g.Login, "name": "The Octocat",
+				"email": "public@example.com"} // the profile email is ignored: only /user/emails is trusted
+			if g.AvatarURL != "" {
+				u["avatar_url"] = g.AvatarURL
+			}
+			_ = json.NewEncoder(w).Encode(u)
 		}
 	})
 	mux.HandleFunc("/user/emails", func(w http.ResponseWriter, r *http.Request) {

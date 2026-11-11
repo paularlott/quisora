@@ -183,13 +183,15 @@ func recoverer(log logger.Logger, next http.Handler) http.Handler {
 const maxFormBody = 64 << 10
 
 // limitBody caps every request body, in one place for all handlers: forms at maxFormBody, anything else (JSON,
-// SCIM) at MaxJSONBody. The server accepts no uploads. A body over the cap fails the handler's read with
-// *http.MaxBytesError.
+// SCIM) at MaxJSONBody, but for the setting of a profile picture (MaxPictureBody), the one upload the server takes. A
+// body over the cap fails the handler's read with *http.MaxBytesError.
 func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := int64(MaxJSONBody)
 		if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt == "application/x-www-form-urlencoded" {
 			limit = maxFormBody
+		} else if isPictureUpload(r) {
+			limit = MaxPictureBody
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)

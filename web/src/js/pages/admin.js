@@ -18,6 +18,8 @@ import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TE
 import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
 import { skinPreviewMixin } from '../lib/skinpreview.js'
+import { pictureMixin } from '../lib/picture.js'
+import { avatarOf } from '../lib/avatar.js'
 import { detailsText, checkDetails, describeProblem } from '../lib/authdetails.js'
 
 // newId makes an id as the server does (model.NewID): the 16 bytes of a UUIDv7 (a 48-bit millisecond timestamp, the
@@ -1234,7 +1236,7 @@ export default function (Alpine) {
         lockout_minutes: s.lockout_minutes ? String(s.lockout_minutes) : '', api_token_max_days: s.api_token_max_days > 0 ? String(s.api_token_max_days) : '',
         api_token_no_limit: s.api_token_max_days === -1,
         privileged_ttl: s.privileged_ttl ? String(Math.round(s.privileged_ttl / 3600)) : '', privileged_idle: s.privileged_idle ? String(Math.round(s.privileged_idle / 60)) : '',
-        grants_per_user: s.grants_per_user ? String(s.grants_per_user) : '',
+        grants_per_user: s.grants_per_user ? String(s.grants_per_user) : '', pictures_by_admins: !!s.pictures_by_admins,
         primary_color: (o.branding && o.branding.primary_color) || '', footer: (o.branding && o.branding.footer) || '',
         skin: (o.branding && o.branding.skin) || '' }
     },
@@ -1273,7 +1275,7 @@ export default function (Alpine) {
           password_min_length: num(f.password_min_length, 1, 'password_min_length'), lockout_attempts: num(f.lockout_attempts, 1, 'lockout_attempts'),
           lockout_minutes: num(f.lockout_minutes, 1, 'lockout_minutes'), api_token_max_days: f.api_token_no_limit ? -1 : num(f.api_token_max_days, 1, 'api_token_max_days'),
           privileged_ttl: num(f.privileged_ttl, 3600, 'privileged_ttl'), privileged_idle: num(f.privileged_idle, 60, 'privileged_idle'),
-          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user') }
+          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user'), pictures_by_admins: f.pictures_by_admins }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
         // A new organization takes its branding with it; an existing one's is changed apart, by id (the settings may
@@ -1345,7 +1347,7 @@ export default function (Alpine) {
     },
     transform(u) {
       const b = activeBadge(u.active)
-      return { ...u, title: u.name || u.username, initial: (u.name || u.username || '?').slice(0, 1).toUpperCase(), sub: u.email || u.username, roleText: ROLE_LABEL[u.role] || u.role,
+      return { ...u, title: u.name || u.username, avatar: avatarOf(u), sub: u.email || u.username, roleText: ROLE_LABEL[u.role] || u.role,
         roleClass: 'badge ' + (ROLE_BADGE[u.role] || 'badge-plain'), statusText: b.text, statusClass: b.cls,
         lastLoginText: relTime(u.last_login), href: `${this.pageUrl}/${enc(u.id)}`,
         createdText: fmtDate(u.created), noPassword: !u.has_password, ...tagView(u.tags, 'users'),
@@ -1358,7 +1360,11 @@ export default function (Alpine) {
   }))
 
   // ---- One user -------------------------------------------------------------------------------------------------
-  Alpine.data('adminUser', () => mix(formMixin(), dialogMixin(), userDialogMixin(Alpine), {
+  Alpine.data('adminUser', () => mix(formMixin(), dialogMixin(), userDialogMixin(Alpine), pictureMixin(Alpine, {
+    path: (vm) => `${vm.apiBase}/users/${enc(vm.userId)}/picture`,
+    who: (vm) => ({ self: vm.isSelf, title: vm.user.title }),
+    apply: (vm) => vm.refresh(),
+  }), {
     reloadUser() { return this.refresh(true) },
     user: null, loading: true, loadError: '', userId: '', listUrl: '', gone: false, _sig: '', _lr: null, isSelf: false,
     init() {
@@ -1379,6 +1385,7 @@ export default function (Alpine) {
         if (quiet && sig === this._sig) return
         this._sig = sig
         this.user = this.shape(raw)
+        this.setPictureUser(raw)
         this.loadError = ''
         this.gone = false
         if (quiet) announceUpdate('User details updated')
@@ -1396,11 +1403,11 @@ export default function (Alpine) {
         statusText: b.text, statusClass: b.cls, lastLoginText: fmtDateTime(u.last_login), createdText: fmtDateTime(u.created),
         emailText: u.email || '—', emailVerifiedText: u.email ? (u.email_verified ? 'Verified' : 'Not verified') : '',
         emailVerifiedClass: 'badge ml-1 ' + (u.email_verified ? 'badge-success' : 'badge-warning'),
-        groupsText: (u.groups || []).map((g) => g.display_name).join(', ') || 'None', externalText: u.external_id || '—', ...tagView(u.tags, 'users'), initial: (u.name || u.username || '?').slice(0, 1).toUpperCase(),
+        groupsText: (u.groups || []).map((g) => g.display_name).join(', ') || 'None', externalText: u.external_id || '—', ...tagView(u.tags, 'users'),
         phoneText: u.phone_number || '—', phoneVerifiedText: u.phone_number ? (u.phone_number_verified ? 'Verified' : 'Not verified') : '',
         phoneVerifiedClass: 'badge ml-1 ' + (u.phone_number_verified ? 'badge-success' : 'badge-warning'),
         statusNote: statusNote(u), hasStatusNote: !!u.status_changed,
-        directory: !!u.directory, full: !u.directory, hasUsername: !!u.username,
+        directory: !!u.directory, full: !u.directory, hasUsername: !!u.username, avatar: avatarOf(u),
         ...profileDetails(u, this.listUrl),
         linkedView: (u.linked_emails || []).map((l) => ({ address: l.address, badgeText: l.verified ? 'Verified' : 'Not verified',
           badgeClass: 'badge ml-1 ' + (l.verified ? 'badge-success' : 'badge-warning') })),
@@ -1408,6 +1415,9 @@ export default function (Alpine) {
         mfaText: u.mfa_enrolled_at ? 'Set up ' + fmtDateTime(u.mfa_enrolled_at) : 'Not set up' }
     },
     get showUser() { return this.user !== null },
+    // the picture card: whoever may change this user may set or remove their picture (a directory entry has none)
+    get picDescription() { return this.picHas ? 'Shown next to their name in the console, and to applications they sign in to.' : 'They have no picture: their initials are shown instead.' },
+    get picReadOnlyText() { return '' },
     // Another user of a higher role is shown read-only (the server refuses any change to them anyway); your own page
     // keeps its self-service rules.
     get manageable() { return !!this.user && (this.isSelf || this.user.can_manage !== false) },
@@ -1568,10 +1578,10 @@ export default function (Alpine) {
       if (!quiet) this.membersLoading = true
       try {
         const res = await get(`${this.apiBase}/groups/${enc(this.group.id)}/members${qs({ limit: 100 })}`)
-        const items = res.items.map((m) => ({ ...m, removeLabel: 'Remove ' + (m.name || m.username) + ' from group', title: m.name || m.username,
+        const items = res.items.map((m) => ({ ...m, removeLabel: 'Remove ' + (m.name || m.username) + ' from group', title: m.name || m.username, avatar: avatarOf(m),
           canRemove: this.admin || m.role === 'user' }))
-        const sig = items.map((m) => m.id).join()
-        const changed = !quiet || sig !== this.members.map((m) => m.id).join()
+        const sigOf = (list) => list.map((m) => m.id + (m.picture || '')).join()
+        const changed = !quiet || sigOf(items) !== sigOf(this.members)
         if (changed) {
           this.members = items
           this.membersTotal = res.total

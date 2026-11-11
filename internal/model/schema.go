@@ -157,6 +157,7 @@ var Schemas = map[Kind]Schema{
 	}},
 
 	KindSSHRevokedSignIn: {KindSSHRevokedSignIn, nil}, // read by id only (the revocation lists)
+	KindUserPicture:      {KindUserPicture, nil},      // read by id only (its public address)
 
 	KindEphemeral:      {KindEphemeral, nil},
 	KindLink:           {KindLink, nil},
@@ -222,7 +223,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindSSHRevokedSignIn, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindSkin, KindLock,
+		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindSSHRevokedSignIn, KindUserPicture, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindSkin, KindLock,
 		KindReplay, KindEphemeral, KindQueue}
 }
 
@@ -265,6 +266,8 @@ func NewEntity(k Kind) Entity {
 		return &SSHCert{}
 	case KindSSHRevokedSignIn:
 		return &SSHRevokedSignIn{}
+	case KindUserPicture:
+		return &UserPicture{}
 	case KindAudit:
 		return &Audit{}
 	case KindLink:

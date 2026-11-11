@@ -11,13 +11,13 @@ import (
 
 func TestHubScoping(t *testing.T) {
 	h := NewHub()
-	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
-	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b"}
+	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a", actor: actorOf("org-a", model.RoleAdmin)}
+	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b", actor: actorOf("org-b", model.RoleAdmin)}
 	super := &subscriber{ch: make(chan Event, 8), orgID: "primary", super: true}
 	for _, s := range []*subscriber{a, b, super} {
 		h.add(s)
 	}
-	h.UserInfo = func(id string) (string, bool) { return map[string]string{"u1": "org-a"}[id], false }
+	h.UserInfo = func(id string) (string, model.Role) { return map[string]string{"u1": "org-a"}[id], model.RoleUser }
 	h.Publish(&store.Record{Kind: model.KindUser, ID: "u1", Scope: "org-a"})
 	h.Publish(&store.Record{Kind: model.KindLink, ID: "l1", Scope: "u1"})    // not streamed
 	h.Publish(&store.Record{Kind: model.KindSession, ID: "s1", Scope: "u1"}) // a user's own record: their org only
@@ -36,9 +36,9 @@ func TestHubScoping(t *testing.T) {
 
 func TestHubOverflowMarksLagged(t *testing.T) {
 	h := NewHub()
-	s := &subscriber{ch: make(chan Event, 1), orgID: "o"}
+	s := &subscriber{ch: make(chan Event, 1), orgID: "o", actor: actorOf("o", model.RoleAdmin)}
 	h.add(s)
-	f := map[string]any{"super_admin": false}
+	f := map[string]any{"role": "user"}
 	h.Publish(&store.Record{Kind: model.KindUser, ID: "1", Scope: "o", Fields: f})
 	h.Publish(&store.Record{Kind: model.KindUser, ID: "2", Scope: "o", Fields: f})
 	if !s.lagged {
@@ -65,11 +65,11 @@ func ptr[T any](v T) *T { return &v }
 // unknown, so a viewer below super admin gets nothing, and a super admin no id.
 func TestHubUserScopedOwner(t *testing.T) {
 	h := NewHub()
-	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
-	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b"}
+	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a", actor: actorOf("org-a", model.RoleAdmin)}
+	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b", actor: actorOf("org-b", model.RoleAdmin)}
 	h.add(a)
 	h.add(b)
-	h.UserInfo = func(id string) (string, bool) { return map[string]string{"u1": "org-a"}[id], false }
+	h.UserInfo = func(id string) (string, model.Role) { return map[string]string{"u1": "org-a"}[id], model.RoleUser }
 	h.Publish(&store.Record{Kind: model.KindPasskey, ID: "pk1", Scope: "u1", Deleted: true})
 	if e := <-a.ch; e.User != "u1" || e.ID != "pk1" || e.Op != "delete" {
 		t.Errorf("same org: %+v", e)
@@ -81,7 +81,7 @@ func TestHubUserScopedOwner(t *testing.T) {
 	}
 	h2 := NewHub()
 	c := &subscriber{ch: make(chan Event, 8), orgID: "org-a", super: true}
-	d := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
+	d := &subscriber{ch: make(chan Event, 8), orgID: "org-a", actor: actorOf("org-a", model.RoleAdmin)}
 	h2.add(c)
 	h2.add(d)
 	h2.Publish(&store.Record{Kind: model.KindAPIToken, ID: "t1", Scope: "u1"})
@@ -126,8 +126,8 @@ func TestStreamsCappedPerViewer(t *testing.T) {
 // A tenant's SSH CA keys and certificates are streamed to their organization (the tenant page's SSH card).
 func TestHubSSHKinds(t *testing.T) {
 	h := NewHub()
-	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
-	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b"}
+	a := &subscriber{ch: make(chan Event, 8), orgID: "org-a", actor: actorOf("org-a", model.RoleAdmin)}
+	b := &subscriber{ch: make(chan Event, 8), orgID: "org-b", actor: actorOf("org-b", model.RoleAdmin)}
 	h.add(a)
 	h.add(b)
 	h.Publish(&store.Record{Kind: model.KindSSHKey, ID: "k1", Scope: "org-a"})
@@ -143,9 +143,9 @@ func TestHubSSHKinds(t *testing.T) {
 // An SSH certificate is the organization's (the tenant page) and names its user (the admin user page lists theirs).
 func TestHubSSHCertsNameTheirUser(t *testing.T) {
 	h := NewHub()
-	admin := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
+	admin := &subscriber{ch: make(chan Event, 8), orgID: "org-a", actor: actorOf("org-a", model.RoleAdmin)}
 	h.add(admin)
-	h.UserInfo = func(id string) (string, bool) { return "org-a", false }
+	h.UserInfo = func(id string) (string, model.Role) { return "org-a", model.RoleUser }
 	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c1", Scope: "org-a", Fields: map[string]any{"user_id": "u1"}})
 	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c2", Scope: "org-a"}) // a host certificate
 	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c3", Scope: "org-b", Fields: map[string]any{"user_id": "u1"}})
@@ -164,15 +164,24 @@ func TestHubSSHCertsNameTheirUser(t *testing.T) {
 // tell), super admins get everything, and a role change applies to the next event.
 func TestHubHidesSuperAdmins(t *testing.T) {
 	h := NewHub()
-	mgr := &subscriber{ch: make(chan Event, 64), orgID: "primary"}
+	mgr := &subscriber{ch: make(chan Event, 64), orgID: "primary", actor: actorOf("primary", model.RoleAdmin)}
 	sup := &subscriber{ch: make(chan Event, 64), orgID: "primary", super: true}
 	h.add(mgr)
 	h.add(sup)
-	h.UserInfo = func(id string) (string, bool) {
-		return map[string]string{"sa": "primary", "u1": "primary"}[id], id == "sa"
+	h.UserInfo = func(id string) (string, model.Role) {
+		if id == "sa" {
+			return "primary", model.RoleSuperAdmin
+		}
+		return map[string]string{"u1": "primary"}[id], model.RoleUser
+	}
+	role := func(super bool) model.Role {
+		if super {
+			return model.RoleSuperAdmin
+		}
+		return model.RoleUser
 	}
 	userRec := func(id string, super bool) *store.Record {
-		return &store.Record{Kind: model.KindUser, ID: id, Scope: "primary", Fields: map[string]any{"super_admin": super}}
+		return &store.Record{Kind: model.KindUser, ID: id, Scope: "primary", Fields: map[string]any{"role": string(role(super))}}
 	}
 	records := func(u string) []*store.Record {
 		return []*store.Record{
@@ -227,4 +236,8 @@ func TestHubHidesSuperAdmins(t *testing.T) {
 	if got := drain(mgr); got != "" {
 		t.Errorf("manager got events about an unknown user: %q", got)
 	}
+}
+
+func actorOf(org string, role model.Role) *service.Actor {
+	return &service.Actor{UserID: "viewer-" + string(role), OrgID: org, Role: role}
 }

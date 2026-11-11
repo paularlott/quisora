@@ -420,7 +420,7 @@ func (p *Provider) buildDiscovery(orgID string) []byte {
 			service.ScopeSCIM}, // scim: client credentials tokens of SCIM provisioning clients
 		"claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "idp", "sid", "org",
 			"org_name", "tenant", "tenant_name", "org_role", "email", "email_verified", "name", "preferred_username", "given_name", "family_name",
-			"locale", "zoneinfo", "updated_at", "phone_number", "phone_number_verified", "groups", "tags", "roles", "enterprise",
+			"locale", "zoneinfo", "updated_at", "picture", "phone_number", "phone_number_verified", "groups", "tags", "roles", "enterprise",
 			"idp_sub", "idp_tenant", "idp_login"},
 		"prompt_values_supported":                        []string{"none", "login", "consent", "select_account"},
 		"claim_types_supported":                          []string{"normal"},

@@ -135,6 +135,9 @@ func TestDiscovery(t *testing.T) {
 		if d["pushed_authorization_request_endpoint"] != issuer+"/oauth/par" || d["require_pushed_authorization_requests"] != false {
 			t.Errorf("par: %v %v", d["pushed_authorization_request_endpoint"], d["require_pushed_authorization_requests"])
 		}
+		if !slices.Contains(strsOf(d["claims_supported"]), "picture") {
+			t.Errorf("claims_supported lacks picture: %v", d["claims_supported"])
+		}
 		if !slices.Contains(strsOf(d["claims_supported"]), "tags") {
 			t.Errorf("claims_supported lacks tags: %v", d["claims_supported"])
 		}

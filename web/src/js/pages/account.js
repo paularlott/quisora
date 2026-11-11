@@ -11,6 +11,7 @@ import { emailsMixin } from '../lib/emails.js'
 import { comboMixin, localeSource, zoneSource } from '../lib/combo.js'
 import { createCredential, getAssertion, passkeysSupported } from './login.js'
 import { refetchOnReturn } from '../lib/live.js'
+import { pictureMixin } from '../lib/picture.js'
 
 const enc = encodeURIComponent
 
@@ -243,6 +244,29 @@ export default function (Alpine) {
       this.verifyBusy = true
       try { await post(accountApi('/email/verify')); toast('Verification email sent.') } catch (e) { toast(e.message, 'error') } finally { this.verifyBusy = false }
     },
+  }))
+
+  // ---- Picture ---------------------------------------------------------------------------------------------------
+  // Your picture is shown from the account store (so a change made elsewhere shows when the page reloads it, see
+  // accountProfile). An organization may leave pictures to its administrators (can_change_picture): then it is read-only.
+  Alpine.data('accountPicture', () => mix(formMixin(), pictureMixin(Alpine, {
+    path: () => accountApi('/picture'), who: () => ({ self: true, title: '' }),
+    apply: () => Alpine.store('account').reload(),
+  }), {
+    loading: true,
+    async init() {
+      window.addEventListener('account-reloaded', () => this.refresh())
+      await this.refresh()
+    },
+    async refresh() {
+      try {
+        const r = await Alpine.store('account').load()
+        this.setPictureUser(r.user)
+        this.canChange = r.can_change_picture !== false
+      } catch { /* the profile card shows the error */ } finally { this.loading = false }
+    },
+    get picDescription() { return this.picHas ? 'Applications you sign in to can show this picture next to your name.' : 'You have no picture: your initials are shown instead.' },
+    get picReadOnlyText() { return 'Your organization’s administrators set pictures. Ask one of them to change yours.' },
   }))
 
   // ---- Email addresses -----------------------------------------------------------------------------------------

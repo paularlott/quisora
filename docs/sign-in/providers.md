@@ -86,6 +86,14 @@ The first time someone signs in through a provider, Quisora decides which accoun
 
 **Allowed email domains** apply at every step, also to accounts already linked.
 
+**Pictures.** When a sign-in creates an account (step 3), links one by email (step 2), or a user connects the provider
+on their account page, and the account has no picture yet, Quisora copies the provider's picture once: an OpenID
+provider's `picture` claim (ask for the `profile` scope), GitHub's avatar. It is fetched in the background through the
+same guarded client as the provider's endpoints, made into Quisora's own picture and served from Quisora
+([pictures](../oauth/sign-in.md#profile-pictures)); the provider's address is never shown to applications. A picture
+that cannot be fetched or read is logged and left out, and a picture the user or an administrator chose is never
+replaced (audited as `user.picture.set` by `provider:<name>`).
+
 Users can connect and disconnect providers themselves: **Your account → Sign-in providers** (after confirming it is
 them). Disconnecting is refused when it is their only way to sign in. Administrators see a user's linked providers on
 their page and can disconnect them (`GET`/`DELETE /api/orgs/acme/users/<id>/providers`).
@@ -160,6 +168,7 @@ lab, set `server.allow_private_networks` to allow every private address. A provi
 | `identity.link.email` | An account was linked by its verified email |
 | `identity.link.refused` | A manager or administrator was not linked by email |
 | `user.provision` | An account was created automatically |
+| `user.picture.set` by `provider:<name>` | The provider's picture was copied into an account that had none |
 | `identity.unlink` | Links removed because the provider changed, or because the user was promoted to a privileged role (`reason`) |
 | `identity.refresh.refused` | A leaver: the provider refused the refresh token, sessions ended |
 | `account.provider.connect`, `account.provider.connect_refused`, `account.provider.disconnect` | A user connected or disconnected a provider |
