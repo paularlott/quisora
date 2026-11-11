@@ -2,7 +2,7 @@
 
 Quisora run against the OpenID Foundation conformance suite (built from source, October 2026) with the harness in
 [conformance/](../conformance/README.md). Static clients, discovery, authorization code flow with PKCE S256. The
-results below are from commit `819d804` (profile pictures and the second review's fixes), run on 11 November
+results below are from commit `527d185` (profile pictures and the third review's fixes), run on 11 November
 2026, against a freshly seeded node.
 
 The suite's test logic is unmodified. Its OIDC client sends no PKCE, so the seeded confidential clients have
