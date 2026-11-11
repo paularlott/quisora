@@ -370,9 +370,7 @@ func (m *Module) setUserPicture(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSON(w, r, &in) {
 		return
 	}
-	upd, err := m.s.Svc.SetPicture(r.Context(), a, u.ID, func() (*service.PictureImage, error) {
-		return service.PictureFromDataURI(r.Context(), in.Image)
-	})
+	upd, err := m.s.Svc.SetPicture(r.Context(), a, u.ID, &in.Image)
 	if err != nil {
 		web.WriteError(w, err)
 		return

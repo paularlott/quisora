@@ -270,9 +270,7 @@ func (m *Module) putPicture(w http.ResponseWriter, r *http.Request, a acct) {
 	if !decode(w, r, &in) {
 		return
 	}
-	u, err := m.s.Svc.SetPicture(r.Context(), a.actor, a.u.ID, func() (*service.PictureImage, error) {
-		return service.PictureFromDataURI(r.Context(), in.Image)
-	})
+	u, err := m.s.Svc.SetPicture(r.Context(), a.actor, a.u.ID, &in.Image)
 	m.pictureDone(w, r, a, u, err)
 }
 

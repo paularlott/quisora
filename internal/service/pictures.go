@@ -23,7 +23,9 @@ import (
 // (the account page, the management API, SCIM) or fetched once from an https URL (SCIM, a sign-in provider), and served
 // at its own random address, /o/<org id>/pictures/<id>, to anyone who has it: applications show it in an <img>. A
 // change makes a new record with a new id, points the user at it, then removes the old one; the user record decides
-// which picture is theirs, so a picture it does not name (a failure part-way) is served to nobody and swept.
+// which picture is theirs, so a picture it does not name (a failure part-way) is served to nobody and swept. Every
+// change goes one way: checked before the image is made (PictureAllowed), then written as a change of the user
+// (UserInput.Picture, UpdateUser or CreateUserLinked), in the one write of the user.
 
 // PictureChangesPerHour bounds the changes of one user's picture, from wherever they come: each stores a new image.
 const PictureChangesPerHour = 20
@@ -191,15 +193,16 @@ func (s *Service) SamePicture(ctx context.Context, u *model.User, source string)
 	return err == nil && p.Source == source
 }
 
-// MaySetPicture reports whether a may set or remove u's picture (maySetPicture), for pages deciding what to show.
+// MaySetPicture reports whether a may set or remove u's picture at all (pictureRule; nothing is counted), for pages
+// deciding what to show.
 func (s *Service) MaySetPicture(ctx context.Context, a *Actor, u *model.User) bool {
-	return s.maySetPicture(ctx, a, u) == nil
+	return s.pictureRule(ctx, a, u) == nil
 }
 
-// maySetPicture is who may set or remove u's picture (OrgSettings.Pictures, as stored now): nobody when the
-// organization's pictures are off (ErrPicturesOff); else whoever may manage u (managers and above, service accounts,
+// pictureRule is who may change u's picture, by the organization's setting (OrgSettings.Pictures, as stored now):
+// nobody while its pictures are off (ErrPicturesOff); else whoever may manage u (managers and above, service accounts,
 // the directory, the system), and u themselves unless the organization has its administrators set pictures.
-func (s *Service) maySetPicture(ctx context.Context, a *Actor, u *model.User) error {
+func (s *Service) pictureRule(ctx context.Context, a *Actor, u *model.User) error {
 	o, err := s.Orgs.Get(ctx, u.OrgID)
 	if err != nil {
 		return mapStore(err)
@@ -217,13 +220,19 @@ func (s *Service) maySetPicture(ctx context.Context, a *Actor, u *model.User) er
 	return nil
 }
 
-// pictureRate counts a change of user userID's picture and refuses one past PictureChangesPerHour. A counter that
-// cannot be read refuses the change: it is not a verdict either way, and the change can wait.
-func (s *Service) pictureRate(ctx context.Context, userID string) error {
-	if s.Counters == nil {
+// PictureAllowed checks a change of u's picture by a before its image is decoded or fetched, so a refusal costs
+// nothing: pictureRule, and for a new picture (set) the hourly limit, counted here, once for each attempt (one whose
+// image then fails counts too, so nobody keeps the decoder busy past it): past PictureChangesPerHour it is refused
+// (ErrPictureRate), and a counter that cannot be read refuses it too (ErrUnavailable: not a verdict either way, and
+// the change can wait). Removing a picture is not counted. The change itself (UpdateUser) checks pictureRule again.
+func (s *Service) PictureAllowed(ctx context.Context, a *Actor, u *model.User, set bool) error {
+	if err := s.pictureRule(ctx, a, u); err != nil {
+		return err
+	}
+	if !set || s.Counters == nil {
 		return nil
 	}
-	n, err := s.Counters.Incr(ctx, pictureRateNS, userID, 1, time.Hour)
+	n, err := s.Counters.Incr(ctx, pictureRateNS, u.ID, 1, time.Hour)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -233,78 +242,30 @@ func (s *Service) pictureRate(ctx context.Context, userID string) error {
 	return nil
 }
 
-// SetPicture gives user userID the picture newPicture makes, or removes theirs (newPicture nil), as a: see maySetPicture. A change
-// counts against PictureChangesPerHour before the picture is made, so a refusal costs nothing. Audited as
-// user.picture.set or user.picture.remove. It returns the user as written.
-func (s *Service) SetPicture(ctx context.Context, a *Actor, userID string, newPicture func() (*PictureImage, error)) (*model.User, error) {
-	return s.setPicture(ctx, a, userID, newPicture, false)
-}
-
-// setPicture is SetPicture; keep (a copy made by the system: CopyPicture) changes nothing when the user has a picture
-// as the write finds them, and is checked as the system's (only that the organization's pictures are on) and not
-// counted.
-func (s *Service) setPicture(ctx context.Context, a *Actor, userID string, newPicture func() (*PictureImage, error), keep bool) (*model.User, error) {
+// SetPicture gives user userID the picture of image, a data: URI (DataURIImage), or removes theirs (image nil), as a:
+// checked before the image is made (PictureAllowed), then written as any change of the user is (UserInput.Picture,
+// UpdateUser). A change of the picture alone loses nobody's edit, so a user changed meanwhile is read again and the
+// change tried again (a few times), with the image already made. It returns the user as written.
+func (s *Service) SetPicture(ctx context.Context, a *Actor, userID string, image *string) (*model.User, error) {
 	u, err := s.Users.Get(ctx, userID)
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	who := a
-	if keep {
-		who = System
-	}
-	if err := s.maySetPicture(ctx, who, u); err != nil {
+	if err := s.PictureAllowed(ctx, a, u, image != nil); err != nil {
 		return nil, err
 	}
-	var rec *model.UserPicture
-	action := "user.picture.remove"
-	if newPicture != nil {
-		if !keep {
-			if err := s.pictureRate(ctx, u.ID); err != nil {
-				return nil, err
-			}
-		}
-		img, err := newPicture()
-		if err != nil {
+	pc := &PictureChange{}
+	if image != nil {
+		if pc.Image, err = PictureFromDataURI(ctx, *image); err != nil {
 			return nil, err
 		}
-		if rec, err = s.storePicture(ctx, u, img); err != nil {
-			return nil, err
-		}
-		action = "user.picture.set"
-	} else if u.Picture == "" {
-		return u, nil // none to remove
 	}
-	// The user is written as read (a compare-and-swap), so a change made meanwhile is never undone: read again, and
-	// checked again, it is tried a few times.
 	for attempt := 0; ; attempt++ {
-		if keep && u.Picture != "" {
-			s.dropPicture(ctx, rec.ID)
-			return u, nil
-		}
-		old := u.Picture
-		u.Picture = ""
-		if rec != nil {
-			u.Picture = rec.ID
-		}
-		err = s.AuditedUser(ctx, a, u, action, nil, func() error { return s.Users.Update(ctx, u) })
-		if err == nil {
-			s.dropPicture(ctx, old)
-			return u, nil
-		}
-		if !errors.Is(err, store.ErrStale) || attempt == 2 {
-			break
-		}
-		if u, err = s.Users.Get(ctx, userID); err != nil {
-			break
-		}
-		if err = s.maySetPicture(ctx, who, u); err != nil {
-			break
+		u, err = s.UpdateUser(ctx, a, userID, UserInput{Picture: pc})
+		if attempt == 2 || !errors.Is(err, ErrStale) && !errors.Is(err, store.ErrStale) {
+			return u, err
 		}
 	}
-	if rec != nil && !outcomeUnknown(err) { // a write that may have landed may name it
-		s.dropPicture(ctx, rec.ID)
-	}
-	return nil, mapStore(err)
 }
 
 // storePicture stores img as a new picture of u, which no user names yet: the user's write that names it comes next,
@@ -318,23 +279,19 @@ func (s *Service) storePicture(ctx context.Context, u *model.User, img *PictureI
 	return rec, nil
 }
 
-// pictureInput checks in.Picture, the change of u's picture that comes with a change of u (as a), and stores the
-// picture it sets (storePicture), pointing u at it, or points u at none: the caller's one write of u then makes the
-// change with the rest. It returns the picture u named before (the caller removes it once the write is done: dropPicture)
-// and the one stored (removed when the write fails), and the change for the audit detail; nothing when in.Picture is nil
-// or changes nothing.
+// pictureInput checks in.Picture, the change of u's picture that comes with a change of u (as a: pictureRule), and
+// stores the picture it sets (storePicture), pointing u at it, or points u at none: the caller's one write of u then
+// makes the change with the rest, and pictureWritten finishes it. It returns the picture u named before and the one
+// stored, and the change ("set" or "remove"); nothing when in.Picture is nil or changes nothing.
 func (s *Service) pictureInput(ctx context.Context, a *Actor, u *model.User, in UserInput) (old, made, change string, err error) {
 	pc := in.Picture
 	if pc == nil || pc.Image == nil && u.Picture == "" {
 		return "", "", "", nil
 	}
-	if err := s.maySetPicture(ctx, a, u); err != nil {
+	if err := s.pictureRule(ctx, a, u); err != nil {
 		return "", "", "", err
 	}
-	if err := s.pictureRate(ctx, u.ID); err != nil {
-		return "", "", "", err
-	}
-	old, change = u.Picture, "removed"
+	old, change = u.Picture, "remove"
 	u.Picture = ""
 	if pc.Image != nil {
 		rec, err := s.storePicture(ctx, u, pc.Image)
@@ -345,6 +302,17 @@ func (s *Service) pictureInput(ctx context.Context, a *Actor, u *model.User, in 
 		u.Picture, made, change = rec.ID, rec.ID, "set"
 	}
 	return old, made, change, nil
+}
+
+// pictureWritten finishes a change of a user's picture (pictureInput) once the user's write ended with err: done, the
+// picture it named before goes; refused, the new one goes (unless the write may have landed: it may name it).
+func (s *Service) pictureWritten(ctx context.Context, old, made string, err error) {
+	switch {
+	case err == nil:
+		s.dropPicture(ctx, old)
+	case !outcomeUnknown(err):
+		s.dropPicture(ctx, made)
+	}
 }
 
 // dropPicture removes picture id ("": none), which no user names: tidying, which the orphan sweep does when it fails.
@@ -358,9 +326,9 @@ func (s *Service) dropPicture(ctx context.Context, id string) {
 }
 
 // CopyPicture gives user userID, an account a sign-in provider (by: "provider:<name>") just created or linked, the
-// picture the provider has for them at rawURL, when they have none: fetched once, in the background, and stored like
-// any other (never shown from the provider's address). A failure is logged and changes nothing; a picture the user
-// or an administrator set is never replaced.
+// picture the provider has for them at rawURL, when they have none: fetched once, in the background, and written as
+// any change of the user is (UpdateUser, by the system under the name by), to the user only as read without one. A
+// failure is logged and changes nothing; a picture the user or an administrator set is never replaced.
 func (s *Service) CopyPicture(ctx context.Context, userID, rawURL, by string) {
 	if rawURL == "" {
 		return
@@ -373,8 +341,23 @@ func (s *Service) CopyPicture(ctx context.Context, userID, rawURL, by string) {
 		if o, err := s.Orgs.Get(ctx, u.OrgID); err != nil || !o.Settings.PicturesOn() {
 			return // the organization's pictures are off: none is fetched
 		}
-		a := &Actor{OrgID: u.OrgID, Role: model.RoleManager, Name: by}
-		_, err = s.setPicture(ctx, a, userID, func() (*PictureImage, error) { return s.FetchPicture(ctx, rawURL) }, true)
+		sys := *System
+		sys.Name = by
+		if err := s.PictureAllowed(ctx, &sys, u, true); err != nil { // counted, once for the account
+			s.Log.Info("the picture of a sign-in provider's account was not copied", "user", userID, "by", by, "error", err)
+			return
+		}
+		img, err := s.FetchPicture(ctx, rawURL)
+		// Written only to the user as read without a picture (IfVersion): one changed meanwhile is read again.
+		for attempt := 0; err == nil && attempt < 3; attempt++ {
+			_, err = s.UpdateUser(ctx, &sys, userID, UserInput{Picture: &PictureChange{Image: img}, IfVersion: u.Version})
+			if !errors.Is(err, ErrStale) && !errors.Is(err, store.ErrStale) {
+				break
+			}
+			if u, err = s.Users.Get(ctx, userID); err != nil || u.Picture != "" {
+				return
+			}
+		}
 		if err != nil {
 			s.Log.Info("the picture of a sign-in provider's account was not copied", "user", userID, "by", by, "error", err)
 		}

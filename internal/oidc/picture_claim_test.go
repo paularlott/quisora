@@ -32,9 +32,8 @@ func TestPictureClaim(t *testing.T) {
 	m := image.NewNRGBA(image.Rect(0, 0, 3, 3))
 	var b bytes.Buffer
 	_ = png.Encode(&b, m)
-	u, err := h.env.Svc.SetPicture(context.Background(), service.System, h.user.ID, func() (*service.PictureImage, error) {
-		return service.PictureFromDataURI(context.Background(), "data:image/png;base64,"+base64.StdEncoding.EncodeToString(b.Bytes()))
-	})
+	uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(b.Bytes())
+	u, err := h.env.Svc.SetPicture(context.Background(), service.System, h.user.ID, &uri)
 	if err != nil {
 		t.Fatal(err)
 	}

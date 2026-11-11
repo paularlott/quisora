@@ -11,12 +11,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
 // testPNG is a small PNG of colour c.
@@ -37,10 +42,8 @@ func testPNG(t testing.TB, c color.NRGBA) []byte {
 
 func dataURI(b []byte) string { return "data:image/png;base64," + base64.StdEncoding.EncodeToString(b) }
 
-// fromURI is the picture maker of a data: URI, as the account page and the management API give it.
-func fromURI(uri string) func() (*service.PictureImage, error) {
-	return func() (*service.PictureImage, error) { return service.PictureFromDataURI(context.Background(), uri) }
-}
+// fromURI is an image given as a data: URI, as the account page and the management API give it (SetPicture).
+func fromURI(uri string) *string { return &uri }
 
 // setPictures sets the organization's pictures setting (model.OrgSettings.Pictures).
 func (e *env) setPictures(orgID string, v string) {
@@ -461,8 +464,145 @@ func TestPictureWithUpdate(t *testing.T) {
 	if ev := e.audited(o.ID, "user.update"); len(ev) == 0 || ev[len(ev)-1].Detail["picture"] != "set" {
 		t.Fatalf("audit: %+v", ev)
 	}
+	// The picture alone: audited as such.
+	n := len(e.audited(o.ID, "user.picture.remove"))
 	got, err = e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Picture: &service.PictureChange{}})
 	if err != nil || got.Picture != "" {
 		t.Fatalf("remove: %q %v", got.Picture, err)
+	}
+	if len(e.audited(o.ID, "user.picture.remove")) != n+1 {
+		t.Fatal("a removal alone is not audited as user.picture.remove")
+	}
+	// None to remove, nothing else asked: nothing written.
+	again, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Picture: &service.PictureChange{}})
+	if err != nil || again.Version != got.Version || len(e.audited(o.ID, "user.picture.remove")) != n+1 {
+		t.Fatalf("removing none: %v, version moved %v", err, again.Version != got.Version)
+	}
+}
+
+// pictureCount is how many changes of user userID's picture the hourly limit has counted.
+func pictureCount(t *testing.T, eph *ephemeral.Local, userID string) int64 {
+	t.Helper()
+	n, err := eph.Incr(context.Background(), "picture.rate", userID, 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Each attempt to set a picture is counted before its image is made, a failing one too; a removal is not; and
+// uploads at once for one user never get past the limit.
+func TestPictureCounting(t *testing.T) {
+	e := newEnv(t)
+	eph := ephemeral.NewLocal("n1")
+	t.Cleanup(eph.Close)
+	e.svc.Counters = eph
+	o := e.org("count")
+	u := e.user(o.ID, "u", model.RoleUser)
+
+	if _, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, fromURI("data:image/png;base64,"+base64.StdEncoding.EncodeToString([]byte("junk")))); fieldOf(err) != "image" {
+		t.Fatalf("junk: %v", err)
+	}
+	if n := pictureCount(t, eph, u.ID); n != 1 {
+		t.Fatalf("a failing image counted %d", n)
+	}
+	if _, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, fromURI(dataURI(testPNG(t, color.NRGBA{1, 1, 1, 255})))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := pictureCount(t, eph, u.ID); n != 2 {
+		t.Fatalf("after a set and a removal: %d counted, want 2", n)
+	}
+	if !e.svc.MaySetPicture(e.ctx, actor(u), e.fresh(u)) || pictureCount(t, eph, u.ID) != 2 {
+		t.Fatal("MaySetPicture counted")
+	}
+
+	// 30 at once with the limit at 20: exactly 10 refused by the limit (whatever else refuses the others: busy, stale).
+	v := e.user(o.ID, "v", model.RoleUser)
+	img := fromURI(dataURI(testPNG(t, color.NRGBA{2, 2, 2, 255})))
+	var wg sync.WaitGroup
+	var ok, limited atomic.Int32
+	for range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := e.svc.SetPicture(e.ctx, actor(v), v.ID, img)
+			switch {
+			case err == nil:
+				ok.Add(1)
+			case errors.Is(err, service.ErrPictureRate):
+				limited.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok.Load() > service.PictureChangesPerHour || limited.Load() != 30-service.PictureChangesPerHour {
+		t.Fatalf("30 at once: %d set, %d refused by the limit", ok.Load(), limited.Load())
+	}
+}
+
+// staleOnce makes the next write of a user stale (someone else wrote it first), once armed.
+type staleOnce struct {
+	store.Store
+	armed atomic.Bool
+}
+
+func (s *staleOnce) stale(kind model.Kind) bool {
+	return kind == model.KindUser && s.armed.CompareAndSwap(true, false)
+}
+
+func (s *staleOnce) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if s.stale(rec.Kind) {
+		return store.ErrStale
+	}
+	return s.Store.CompareAndPut(ctx, rec, expect)
+}
+
+func (s *staleOnce) Tx(ctx context.Context, ops []store.Op) error {
+	for _, op := range ops {
+		if s.stale(op.Rec.Kind) {
+			return store.ErrStale
+		}
+	}
+	return s.Store.Tx(ctx, ops)
+}
+
+// A change of the picture alone loses nobody's edit: a user changed meanwhile is read again and the change made, counted
+// once. A change of other attributes with it is refused as stale instead.
+func TestPictureRetriedWhenStale(t *testing.T) {
+	st := &staleOnce{Store: memstore.New()}
+	t.Cleanup(func() { _ = st.Close() })
+	e := newEnvOn(t, st)
+	eph := ephemeral.NewLocal("n1")
+	t.Cleanup(eph.Close)
+	e.svc.Counters = eph
+	o := e.org("stale")
+	u := e.user(o.ID, "u", model.RoleUser)
+
+	st.armed.Store(true)
+	got, err := e.svc.SetPicture(e.ctx, actor(u), u.ID, fromURI(dataURI(testPNG(t, color.NRGBA{3, 3, 3, 255}))))
+	if err != nil || got.Picture == "" || e.fresh(u).Picture != got.Picture || st.armed.Load() {
+		t.Fatalf("after a stale write: %v (stale write used %v)", err, !st.armed.Load())
+	}
+	if n := pictureCount(t, eph, u.ID); n != 1 {
+		t.Fatalf("counted %d, want 1", n)
+	}
+	stored, _, _ := e.svc.Pictures.List(e.ctx, store.ListQuery{})
+	if len(stored) != 1 {
+		t.Fatalf("%d pictures stored, want 1 (the stale attempt's removed)", len(stored))
+	}
+
+	pic, err := service.PictureFromDataURI(e.ctx, dataURI(testPNG(t, color.NRGBA{4, 4, 4, 255})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.armed.Store(true)
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{GivenName: ptr("Pat"), Picture: &service.PictureChange{Image: pic}}); !errors.Is(err, service.ErrStale) {
+		t.Fatalf("a change with other attributes: %v, want stale", err)
+	}
+	if e.fresh(u).Picture != got.Picture {
+		t.Fatal("the stale change changed the picture")
 	}
 }

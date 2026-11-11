@@ -127,11 +127,13 @@ func TestLinkCopiesPictureOnlyWhenNone(t *testing.T) {
 	}
 
 	has := e.mkUser(t, "has", "has@example.com", true)
-	own, err := e.svc.SetPicture(e.ctx, service.System, has.ID, func() (*service.PictureImage, error) {
-		var b bytes.Buffer
-		_ = png.Encode(&b, image.NewGray(image.Rect(0, 0, 3, 3)))
-		return service.MakePicture(e.ctx, b.Bytes(), "own")
-	})
+	var b bytes.Buffer
+	_ = png.Encode(&b, image.NewGray(image.Rect(0, 0, 3, 3)))
+	img, err := service.MakePicture(e.ctx, b.Bytes(), "own")
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := e.svc.UpdateUser(e.ctx, service.System, has.ID, service.UserInput{Picture: &service.PictureChange{Image: img}})
 	if err != nil {
 		t.Fatal(err)
 	}

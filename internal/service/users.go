@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -72,8 +73,8 @@ type UserInput struct {
 	LinkedEmails *[]string `json:"-"`
 	// Picture changes the user's profile picture in the same write as the rest (SCIM, whose photos come with the other
 	// attributes): the picture is made beforehand, so a refused one changes nothing, and stored as its own record just
-	// before the user's write names it. Who may is maySetPicture's rule, and it counts against PictureChangesPerHour.
-	// Nil leaves the picture unchanged.
+	// before the user's write names it. Who may is pictureRule's; the caller counts a new one against
+	// PictureChangesPerHour before making it (PictureAllowed). Nil leaves the picture unchanged.
 	Picture *PictureChange `json:"-"`
 	// IfVersion, when set, applies the update only to the user as read at that version (a read-modify-write, a SCIM
 	// If-Match): a user changed since is ErrStale, and nothing is written.
@@ -541,9 +542,7 @@ func (s *Service) CreateUserLinked(ctx context.Context, a *Actor, orgID string, 
 	}
 	err = s.createUser(ctx, u, links)
 	s.auditOutcome(ctx, a, err, events...)
-	if err != nil && !outcomeUnknown(err) { // a write that may have landed may name it
-		s.dropPicture(ctx, madePic)
-	}
+	s.pictureWritten(ctx, "", madePic, err)
 	if err != nil {
 		if lerr := s.linkConflict(ctx, err, u, imports); lerr != nil {
 			return nil, lerr
@@ -795,13 +794,19 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	if endsSessions {
 		u.SessionEpoch = NewCredEpoch()
 	}
-	// Last before the write, so nothing refuses the change once the new picture is stored.
+	// Last before the write, so nothing refuses the change once the new picture is stored. A change of the picture
+	// alone is audited as such (user.picture.set or .remove); with other changes, it is a detail of the update.
 	oldPic, madePic, picChange, err := s.pictureInput(ctx, a, u, in)
 	if err != nil {
 		return nil, err
 	}
-	if picChange != "" {
+	switch {
+	case picChange != "" && action == "user.update" && len(detail) == 0:
+		action = "user.picture." + picChange
+	case picChange != "":
 		detail["picture"] = picChange
+	case in.Picture != nil && onlyPicture(in) && len(detail) == 0:
+		return u, nil // no picture to remove, and nothing else asked: nothing to write
 	}
 	err = s.AuditedUser(ctx, a, u, action, detail, func() error {
 		err := s.writeUser(ctx, u, also)
@@ -819,14 +824,17 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 		}
 		return err
 	})
+	s.pictureWritten(ctx, oldPic, madePic, err)
 	if err != nil {
-		if !outcomeUnknown(err) { // a write that may have landed may name it
-			s.dropPicture(ctx, madePic)
-		}
 		return nil, s.userConflict(ctx, err, u)
 	}
-	s.dropPicture(ctx, oldPic)
 	return u, nil
+}
+
+// onlyPicture reports whether in asks for nothing but a change of the picture.
+func onlyPicture(in UserInput) bool {
+	in.Picture, in.IfVersion = nil, 0
+	return reflect.ValueOf(in).IsZero()
 }
 
 // maySetExternalID reports whether a may set or change a user's external id (User.ExternalID, SCIM's externalId):

@@ -99,6 +99,13 @@ func (rq *request) photoChange(res map[string]any, u *model.User) (*service.Pict
 		return nil, nil // made from this already
 	}
 	if rq.made.img == nil || rq.made.source != source {
+		// Refused, and counted, before it is fetched or made: once a request (a retry finds it made). A new user's
+		// is checked as it is created.
+		if u != nil {
+			if err := rq.m.srv.Svc.PictureAllowed(rq.ctx, rq.actor, u, true); err != nil {
+				return nil, err
+			}
+		}
 		var img *service.PictureImage
 		var err error
 		if raw != nil {

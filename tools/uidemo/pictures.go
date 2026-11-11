@@ -20,9 +20,9 @@ func seedPictures(ctx context.Context, svc *service.Service, users ...*model.Use
 		if i == 0 {
 			raw = circlePNG()
 		}
-		_, err := svc.SetPicture(ctx, service.System, u.ID, func() (*service.PictureImage, error) {
-			return service.MakePicture(ctx, raw, service.HashSource(raw))
-		})
+		img, err := service.MakePicture(ctx, raw, service.HashSource(raw))
+		must(err)
+		_, err = svc.UpdateUser(ctx, service.System, u.ID, service.UserInput{Picture: &service.PictureChange{Image: img}})
 		must(err)
 	}
 }
