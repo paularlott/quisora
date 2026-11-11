@@ -146,7 +146,11 @@ func (s *Service) personalWords(ctx context.Context, u *model.User) []string {
 // (weakPassword), with u's own details as words it must not be built on.
 func (s *Service) CheckPassword(ctx context.Context, u *model.User, pw string) error {
 	pw = secure.NormalizePassword(pw) // judged as it is hashed
-	if err := s.validatePassword(s.OrgOrNil(ctx, u.OrgID), pw); err != nil {
+	o, err := s.OrgPolicy(ctx, u.OrgID)
+	if err != nil {
+		return err
+	}
+	if err := s.validatePassword(o, pw); err != nil {
 		return err
 	}
 	if why := weakPassword(pw, s.personalWords(ctx, u)); why != "" {

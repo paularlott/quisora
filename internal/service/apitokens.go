@@ -146,7 +146,11 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 		}
 	}
 	days := in.Expires
-	max := s.APITokenMaxDays(s.OrgOrNil(ctx, a.OrgID))
+	o, err := s.OrgPolicy(ctx, a.OrgID)
+	if err != nil {
+		return nil, "", err
+	}
+	max := s.APITokenMaxDays(o)
 	if max <= 0 && (days < 0 || days > maxTokenDays) {
 		// no server maximum: a lifetime that is typed in is still a sensible number; longer means never (empty)
 		return nil, "", Invalid("expires_days", "must be between 1 and "+itoa(maxTokenDays)+", or empty for no expiry")

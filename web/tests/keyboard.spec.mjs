@@ -1021,7 +1021,7 @@ test('account page: the time zone list is drawn over the cards below it', async 
   await page.locator('#f-zoneinfo').fill('e')
   await expect(page.getByRole('listbox', { name: 'Time zone' })).toBeVisible()
   const r = await page.evaluate(() => {
-    const l = document.getElementById('l-zoneinfo').getBoundingClientRect(), e = document.getElementById('picture').getBoundingClientRect() // the card below the profile
+    const l = document.getElementById('l-zoneinfo').getBoundingClientRect(), e = document.getElementById('emails').getBoundingClientRect()
     const el = document.elementFromPoint(l.left + 20, Math.max(l.top, e.top) + 10)
     return { overlap: l.bottom > e.top, onTop: !!el?.closest('#l-zoneinfo') }
   })

@@ -1415,14 +1415,14 @@ export default function (Alpine) {
         mfaText: u.mfa_enrolled_at ? 'Set up ' + fmtDateTime(u.mfa_enrolled_at) : 'Not set up' }
     },
     get showUser() { return this.user !== null },
-    // the picture card: whoever may change this user may set or remove their picture (a directory entry has none)
-    get picDescription() { return this.picHas ? 'Shown next to their name in the console, and to applications they sign in to.' : 'They have no picture: their initials are shown instead.' },
-    get picReadOnlyText() { return '' },
+    // the picture in the header: whoever may change this user may set or remove it, while the organization has pictures on
+    // (a directory entry has none, and no control)
+    get picEnabled() { return !!this.user && this.user.pictures_enabled !== false },
+    get canChange() { return this.picEnabled && this.manageable },
+    get picReadOnly() { return false },
     // Another user of a higher role is shown read-only (the server refuses any change to them anyway); your own page
     // keeps its self-service rules.
     get manageable() { return !!this.user && (this.isSelf || this.user.can_manage !== false) },
-    // the picture card: not while the organization's pictures are off
-    get pictureCard() { return this.manageable && this.user.pictures_enabled !== false },
     get readOnly() { return !!this.user && !this.manageable },
     get readOnlyFull() { return this.readOnly && !this.user.directory },
     get readOnlyText() {

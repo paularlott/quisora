@@ -8,6 +8,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // An organization's own password, lockout, API token and privileged session policy: each within its bounds, or 0
@@ -161,5 +162,47 @@ func TestGrantsPerUserPolicy(t *testing.T) {
 	}
 	if got := c.svc.GrantsPerUser(nil); got != 1000 {
 		t.Errorf("unreadable organization: %d", got)
+	}
+}
+
+// An organization's policy that cannot be read is an error, never the server's in its place: an organization asking
+// for a longer password or a shorter token than the server must not be judged by the server's defaults while its
+// record is unreadable.
+func TestOrgPolicyUnreadableFailsClosed(t *testing.T) {
+	c := newCast(t)
+	c.svc.Cfg.Limits.PasswordMinLength, c.svc.Cfg.Tokens.APITokenMaxDays = 15, 365
+	o, _ := c.svc.GetOrg(c.ctx, nil, c.a.ID)
+	st := o.Settings
+	st.PasswordMinLength, st.APITokenMaxDays = 20, 30
+	if _, err := c.svc.UpdateOrg(c.ctx, service.System, c.a.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	good := c.svc.Orgs.S
+	c.svc.Orgs.S = &faultStore{Store: good, beforeGet: func(k model.Kind, _ string) error {
+		if k == model.KindOrg {
+			return store.ErrUnavailable
+		}
+		return nil
+	}}
+	pw := "violet maple ox and" // 19 characters: the server's 15 would take it, the organization's 20 does not
+	if err := c.svc.CheckPassword(c.ctx, c.aUser, pw); !errors.Is(err, service.ErrUnavailable) {
+		t.Errorf("password judged without the organization's policy: %v, want ErrUnavailable", err)
+	}
+	if _, _, err := c.svc.CreateAPIToken(c.ctx, actor(c.aManager), service.APITokenInput{Name: "long", Scopes: []string{"api"}, Expires: 300}); !errors.Is(err, service.ErrUnavailable) {
+		t.Errorf("a 300-day token made without the organization's 30-day maximum: %v, want ErrUnavailable", err)
+	}
+	if _, err := c.svc.OrgPolicy(c.ctx, c.a.ID); !errors.Is(err, service.ErrUnavailable) {
+		t.Errorf("OrgPolicy: %v", err)
+	}
+	c.svc.Orgs.S = good
+	if err := c.svc.CheckPassword(c.ctx, c.aUser, pw); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("once readable, 19 characters for the organization's 20: %v", err)
+	}
+	if _, _, err := c.svc.CreateAPIToken(c.ctx, actor(c.aManager), service.APITokenInput{Name: "long", Scopes: []string{"api"}, Expires: 300}); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("once readable, 300 days for the organization's 30: %v", err)
+	}
+	// no organization at all: the server's
+	if o, err := c.svc.OrgPolicy(c.ctx, ""); o != nil || err != nil {
+		t.Errorf("no organization: %v %v", o, err)
 	}
 }

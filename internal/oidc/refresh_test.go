@@ -808,3 +808,39 @@ func TestUserGrantsCapped(t *testing.T) {
 		}
 	}
 }
+
+// The organization's cap of grants that cannot be read ends nothing: the server's default may be far below an
+// organization that raised its own, and ending grants by it would sign people out of applications they still use.
+func TestGrantCapUnreadableEndsNothing(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	svc := h.env.Svc
+	cl, secret := h.newClient(nil)
+	org, err := svc.Orgs.Get(ctx, h.env.Primary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	org.Settings.GrantsPerUser = 50 // the organization's own, above the server's lowered below
+	if _, err := svc.UpdateOrg(ctx, service.System, org.ID, service.OrgInput{Settings: &org.Settings}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Cfg.Limits.GrantsPerUser = 10
+	for range 15 {
+		h.login(cl, secret, url.Values{"scope": {"openid offline_access"}})
+	}
+	svc.WaitBackground()
+	before, err := svc.Grants.All(ctx, h.user.ID)
+	if err != nil || len(before) != 15 {
+		t.Fatalf("set-up: %d grants, %v", len(before), err)
+	}
+	good := svc.Orgs.S
+	svc.Orgs.S = failReads(good, model.KindOrg)
+	if _, _, err := h.p.capGrants(ctx, org.ID, h.user.ID, ""); err == nil {
+		t.Fatal("the cap counted without the organization's policy")
+	}
+	svc.Orgs.S = good
+	if after, _ := svc.Grants.All(ctx, h.user.ID); len(after) != 15 {
+		t.Fatalf("%d grants left of 15: ended by the server's cap", len(after))
+	}
+}

@@ -1,11 +1,17 @@
 {{template "base" .}}
 {{define "content"}}
 <div class="stack-lg">
-  <div class="page-head">
-    <div>
-      <p class="eyebrow">{{with .Org}}{{.DisplayName}}{{end}}</p>
-      <h1 class="page-title">Your account</h1>
-      <p class="page-sub">Your details, how you sign in, and where you are signed in.</p>
+  <!-- Identity: the picture (the control that changes it), the name and who you are -------------------------- -->
+  <div class="page-head glass" x-data="accountHeader">
+    <div class="identity">
+      {{template "picture-pick"}}
+      <div class="identity-main">
+        <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
+        <h1 class="page-title" x-text="fullName">{{.User.FullName}}</h1>
+        <p class="identity-line"><span x-text="u.username"></span><span aria-hidden="true">·</span><span :class="roleClass" x-text="roleText"></span></p>
+        <p class="identity-line" x-show="hasEmail" x-cloak><span x-text="u.email"></span><span :class="emailBadgeClass" x-text="emailBadge"></span></p>
+        {{template "picture-notes"}}
+      </div>
     </div>
   </div>
 
@@ -14,11 +20,7 @@
     <h2 class="section-title mb-4" id="profile-h" tabindex="-1">Profile</h2>
     <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
     <div class="alert alert-info mb-4" role="status" x-show="hasNotice" x-cloak>{{template "icon" "info"}}<span x-text="emailNotice"></span></div>
-    <dl class="kv mb-6">
-      <div><dt>Username</dt><dd x-text="info.username"></dd></div>
-      <div><dt>Organization</dt><dd x-text="info.org"></dd></div>
-      <div><dt>Role</dt><dd x-text="info.role"></dd></div>
-      <div><dt>Last sign-in</dt><dd x-text="info.lastLogin"></dd></div>
+    <dl class="kv mb-6" x-show="hasWork" x-cloak>
       <template x-for="r in workRows" :key="r.key"><div><dt x-text="r.label"></dt><dd x-text="r.value"></dd></div></template>
     </dl>
     <p class="help mb-6" x-show="hasWork" x-cloak>Your work details are kept by your administrator.</p>
@@ -37,18 +39,11 @@
       </div>
       <div class="toolbar">
         <div class="toolbar-group">
-          <span :class="emailBadgeClass" x-show="hasEmailBadge" x-cloak x-text="emailBadge"></span>
           <button type="button" class="btn btn-secondary btn-sm" x-show="showVerify" x-cloak :disabled="verifyBusy" @click="sendVerification"><span x-text="verifyLabel">Send verification email</span></button>
         </div>
         <button type="submit" class="btn btn-primary" :aria-busy="busyAttr" :disabled="busy"><span class="spinner" x-show="busy" x-cloak aria-hidden="true"></span><span x-text="saveLabel">Save profile</span></button>
       </div>
     </form>
-  </section>
-
-  <!-- Picture ---------------------------------------------------------------------------------------------- -->
-  <section class="glass-card" id="picture" aria-labelledby="picture-h" x-data="accountPicture" x-show="enabled" x-cloak>
-    <h2 class="section-title mb-4" id="picture-h" tabindex="-1">Picture</h2>
-    {{template "picture-controls"}}
   </section>
 
   <!-- Email addresses ----------------------------------------------------------------------------------- -->
@@ -208,6 +203,7 @@
       <div>
         <h2 class="section-title" id="sessions-h" tabindex="-1">Sessions</h2>
         <p class="muted">Browsers and devices where you are signed in.</p>
+        <p class="muted" x-show="hasLastLogin" x-cloak>Last sign-in: <span x-text="lastLoginText"></span></p>
       </div>
       <button type="button" class="btn btn-secondary" x-show="hasOthers" x-cloak @click="revokeOthers">{{template "icon" "logout"}} Sign out all other sessions</button>
     </div>

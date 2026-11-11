@@ -30,12 +30,16 @@ export function checkPicture(file) {
 export function pictureMixin(Alpine, { path, who, apply }) {
   return {
     pic: null, // the user as the API gave it (picture: its URL)
-    canChange: true,
+    canChange: true, // the person may set it (and pictures are on)
+    picEnabled: true, // the organization has pictures on
     setPictureUser(u) { this.pic = u },
     get picAvatar() { return avatarOf(this.pic || {}) },
     get picHas() { return !!this.pic && !!this.pic.picture },
     get picNone() { return !this.picHas },
-    get picReadOnly() { return !this.canChange },
+    // read-only: the picture is shown, the organization leaves changing it to administrators; with pictures off, initials only
+    get picReadOnly() { return this.picEnabled && !this.canChange },
+    get picStill() { return !this.canChange },
+    get picHelp() { return `Select the picture to ${this.picHas ? 'change' : 'upload'} it. JPEG, PNG or WebP, up to 5 MB; it is cropped to a square.` },
 
     // picAction is the name of the picture's button: what choosing it does.
     get picAction() { return this.picHas ? 'Change picture' : 'Upload a picture' },

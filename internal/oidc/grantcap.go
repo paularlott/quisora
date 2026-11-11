@@ -54,7 +54,11 @@ func (p *Provider) noteGrant(ctx context.Context, orgID, userID, keep string) {
 // certificates revoked), and nothing else of the user is: not their sessions, not their other grants. Each is
 // audited (oauth.grant.evict).
 func (p *Provider) capGrants(ctx context.Context, orgID, userID, keep string) (left, limit int, err error) {
-	limit = p.svc.GrantsPerUser(p.svc.OrgOrNil(ctx, orgID))
+	o, err := p.svc.OrgPolicy(ctx, orgID)
+	if err != nil {
+		return 0, 0, err // nothing ended: the server's cap may be far below the organization's
+	}
+	limit = p.svc.GrantsPerUser(o)
 	grants, err := p.svc.Grants.All(ctx, userID)
 	if err != nil || len(grants) <= limit {
 		return len(grants), limit, err

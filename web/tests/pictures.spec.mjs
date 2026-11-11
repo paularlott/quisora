@@ -37,7 +37,7 @@ test('account: upload a picture, replace it, remove it after confirming', async 
   await page.goto(ACCOUNT, { waitUntil: 'load' })
   await clearOwn(page)
   await page.reload({ waitUntil: 'load' })
-  const card = page.locator('#picture')
+  const card = page.locator('.page-head')
   try {
     // no picture: initials, in the card and in the header's account menu
     await expect(card.locator('.avatar')).toHaveText('KJ')
@@ -94,7 +94,7 @@ test('account: clicking the picture opens the file chooser, and the chosen file 
   await page.goto(ACCOUNT, { waitUntil: 'load' })
   await clearOwn(page)
   await page.reload({ waitUntil: 'load' })
-  const card = page.locator('#picture')
+  const card = page.locator('.page-head')
   try {
     const pick = card.getByRole('button', { name: 'Upload a picture' })
     await expect(pick).toHaveAttribute('id', 'f-image')
@@ -122,14 +122,14 @@ test('account: a picture changed elsewhere shows when the page comes back', asyn
   await page.goto(ACCOUNT, { waitUntil: 'load' })
   await clearOwn(page)
   await page.reload({ waitUntil: 'load' })
-  const card = page.locator('#picture')
+  const card = page.locator('.page-head')
   try {
     await expect(card.locator('.avatar')).toHaveText('KJ')
     // another tab of the same person sets it
     const other = await context.newPage()
     await other.goto(ACCOUNT, { waitUntil: 'load' })
-    await other.locator('#picture').locator('#f-image-file').setInputFiles(await png(other, '#15803d'))
-    await expect(other.locator('#picture .avatar-img')).toBeVisible()
+    await other.locator('.page-head').locator('#f-image-file').setInputFiles(await png(other, '#15803d'))
+    await expect(other.locator('.page-head .avatar-img')).toBeVisible()
     await other.close()
     // this tab comes back to the foreground (more than 5 s after it loaded, as the page waits)
     await page.waitForTimeout(5200)
@@ -141,7 +141,7 @@ test('account: a picture changed elsewhere shows when the page comes back', asyn
 test('account: a wrong type or a file over 5 MB is refused before it is sent', async ({ page }) => {
   await signIn(page, 'otp')
   await page.goto(ACCOUNT, { waitUntil: 'load' })
-  const card = page.locator('#picture')
+  const card = page.locator('.page-head')
   await expect(card.locator('.avatar')).toBeVisible()
   const puts = []
   page.on('request', (r) => { if (r.method() === 'PUT' && r.url().endsWith('/picture')) puts.push(r.url()) })
@@ -155,7 +155,7 @@ test('account: a wrong type or a file over 5 MB is refused before it is sent', a
 
   await input.setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: Buffer.alloc(5 * 1024 * 1024 + 1) })
   await expect(card.locator('#e-image')).toHaveText('The image is larger than 5 MB.')
-  const r = await axe(page, { include: '#picture' })
+  const r = await axe(page, { include: '.page-head' })
   expect(r.violations.length, fmt(r.violations)).toBe(0)
   expect(puts).toEqual([])
 })
@@ -163,7 +163,7 @@ test('account: a wrong type or a file over 5 MB is refused before it is sent', a
 test('account: the server\'s refusal of an image is shown at the field and announced', async ({ page }) => {
   await signIn(page, 'otp')
   await page.goto(ACCOUNT, { waitUntil: 'load' })
-  const card = page.locator('#picture')
+  const card = page.locator('.page-head')
   await expect(card.locator('.avatar')).toBeVisible()
   await card.locator('#f-image-file').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not really an image') })
   await expect(card.locator('#e-image')).toHaveText(/\S/)
@@ -191,7 +191,7 @@ test('user page: an administrator sets, replaces and removes another user\'s pic
   const u = await apiCall(page, 'POST', `${API}/users`, { username: id, email: id + '@acme.example', given_name: 'Pia', family_name: 'Picture' })
   try {
     await page.goto(`/admin/orgs/acme/users/${u.id}`, { waitUntil: 'load' })
-    const card = page.getByRole('region', { name: 'Picture' })
+    const card = page.locator('.page-head')
     const head = page.locator('.page-head .avatar')
     await expect(head).toHaveText('PP')
     await expect(card.locator('.avatar')).toHaveText('PP')
@@ -228,6 +228,69 @@ test('user page: an administrator sets, replaces and removes another user\'s pic
     await card.locator('#f-image-file').setInputFiles({ name: 'a.gif', mimeType: 'image/gif', buffer: Buffer.from('GIF89a') })
     await expect(card.locator('#e-image')).toHaveText('Use a JPEG, PNG or WebP image.')
   } finally { await apiCall(page, 'DELETE', `${API}/users/${u.id}`).catch(() => {}) }
+})
+
+test('account: the header names you, shows who you are, and holds the picture control instead of a card', async ({ page }) => {
+  await signIn(page, 'manager') // Grace Hopper
+  await page.goto(ACCOUNT, { waitUntil: 'load' })
+  const head = page.locator('.page-head')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Grace Hopper')
+  await expect(head.locator('.eyebrow')).toHaveText('Your account · Acme Corporation')
+  await expect(head).toContainText('grace')
+  await expect(head.locator('.badge').first()).toHaveText('Manager')
+  await expect(head).toContainText('grace@acme.example')
+  await expect(head.getByText(/^(Not v|V)erified$/)).toBeVisible()
+  await expect(page).toHaveTitle(/^My account/)
+  // the card is gone, and so is the read-only grid: username, organization and role are in the header
+  await expect(page.locator('#picture')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Picture', exact: true })).toHaveCount(0)
+  const profile = page.locator('#profile')
+  await expect(profile.getByText('Username', { exact: true })).toHaveCount(0)
+  await expect(profile.getByText('Last sign-in')).toHaveCount(0)
+  // the last sign-in is a line of the sessions card
+  await expect(page.locator('#sessions').getByText(/^Last sign-in:/)).toBeVisible()
+  // the help and Remove picture sit in the header, under its lines
+  await expect(head.locator('#h-image')).toContainText('JPEG, PNG or WebP, up to 5 MB')
+  await expect(head.getByRole('button', { name: 'Remove picture' })).toBeVisible()
+})
+
+test('account: Enter and Space on the picture open the file chooser', async ({ page }) => {
+  await signIn(page, 'otp')
+  await page.goto(ACCOUNT, { waitUntil: 'load' })
+  const pick = page.locator('.page-head').getByRole('button', { name: /^(Upload a picture|Change picture)$/ })
+  await expect(pick).toBeVisible()
+  for (const key of ['Enter', 'Space']) {
+    await pick.focus()
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press(key)])
+    expect(await chooser.element().getAttribute('id')).toBe('f-image-file')
+    await chooser.setFiles([]) // closed with nothing chosen, as a person would: the browser opens one chooser at a time
+  }
+})
+
+test('account header at phone width: the picture, name and lines stack without overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 })
+  await signIn(page, 'manager')
+  await page.goto(ACCOUNT, { waitUntil: 'load' })
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Grace Hopper')
+  await page.waitForTimeout(500)
+  const over = await page.evaluate(() => {
+    const h = document.querySelector('.page-head').getBoundingClientRect()
+    return { page: document.documentElement.scrollWidth > window.innerWidth, inside: [...document.querySelectorAll('.page-head *')].filter((e) => e.getBoundingClientRect().right > h.right + 1 && e.offsetParent !== null).length }
+  })
+  expect(over).toEqual({ page: false, inside: 0 })
+})
+
+test('user page: a manager sees a user above them as initials only, with no picture control', async ({ page }) => {
+  await signIn(page, 'manager') // Grace may not change Ada (an administrator): a directory entry
+  await page.goto('/admin/orgs/acme/users', { waitUntil: 'load' })
+  await page.locator('#list-search').fill('ada')
+  await page.getByRole('link', { name: 'Ada Lovelace' }).click()
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Ada Lovelace')
+  await page.waitForTimeout(500)
+  await expect(page.locator('.page-head .avatar')).toHaveText('AL')
+  await expect(page.locator('.page-head #f-image')).toHaveCount(0)
+  await expect(page.locator('.page-head').getByRole('button', { name: 'Remove picture' })).toHaveCount(0)
+  await expect(page.locator('.page-head .picture-note')).toBeHidden()
 })
 
 test('avatars: the picture where there is one, initials on a colour where not', async ({ page }) => {

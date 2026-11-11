@@ -23,7 +23,7 @@ test('an organization that leaves pictures to its administrators: the account pa
     await setPictures(page, 'admins')
     await signIn(page, 'manager') // Grace has a picture
     await page.goto(ACCOUNT, { waitUntil: 'load' })
-    const card = page.locator('#picture')
+    const card = page.locator('.page-head')
     await expect(card.locator('.avatar-img')).toBeVisible()
     await expect(card.getByText('administrators set pictures')).toBeVisible()
     // the picture is shown, not a control: no button, no pencil, and clicking it opens no file chooser
@@ -34,23 +34,30 @@ test('an organization that leaves pictures to its administrators: the account pa
     await card.locator('.picture-still').click()
     await page.waitForTimeout(500)
     expect(chose).toBe(false)
-    const r = await axe(page, { include: '#picture' })
+    const r = await axe(page, { include: '.page-head' })
     expect(r.violations.length, fmt(r.violations)).toBe(0)
   } finally { await setPictures(page, 'everyone') }
   await signIn(page, 'manager')
   await page.goto(ACCOUNT, { waitUntil: 'load' })
-  await expect(page.locator('#picture').getByRole('button', { name: 'Change picture' })).toBeVisible()
+  await expect(page.locator('.page-head').getByRole('button', { name: 'Change picture' })).toBeVisible()
 })
 
-test('an organization with pictures off: no picture card on the account page or the user page, initials in the header', async ({ page }) => {
+test('an organization with pictures off: no picture control on the account page or the user page, initials only', async ({ page }) => {
   try {
     await setPictures(page, 'off')
     await signIn(page, 'manager') // Grace has a picture
     await page.goto(ACCOUNT, { waitUntil: 'load' })
     await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible()
     await page.waitForTimeout(500) // the account loaded
-    await expect(page.locator('#picture')).toBeHidden()
-    await expect(page.getByRole('heading', { name: 'Picture', exact: true })).toHaveCount(0)
+    const head = page.locator('.page-head')
+    await expect(head.locator('.avatar')).toHaveText('GH')
+    await expect(head.locator('.avatar-img')).toBeHidden()
+    await expect(head.locator('#f-image')).toHaveCount(0)
+    await expect(head.getByRole('button')).toHaveCount(0)
+    await expect(head.locator('.picture-note')).toBeHidden() // pictures off: no note either
+    await expect(head.getByRole('heading', { level: 1 })).toHaveText('Grace Hopper')
+    const off = await axe(page, { include: '.page-head' })
+    expect(off.violations.length, fmt(off.violations)).toBe(0)
     const header = page.locator('[x-data="headerAvatar"]')
     await expect(header.locator('.avatar-img')).toBeHidden()
     await expect(header).toContainText('GH')
@@ -61,11 +68,12 @@ test('an organization with pictures off: no picture card on the account page or 
     await page.getByRole('link', { name: 'Grace Hopper' }).click()
     await page.waitForSelector('text=Profile')
     await page.waitForTimeout(500)
-    await expect(page.getByRole('heading', { name: 'Picture', exact: true })).toHaveCount(0)
+    await expect(page.locator('.page-head #f-image')).toHaveCount(0)
+    await expect(page.locator('.page-head .avatar')).toHaveText('GH')
   } finally { await setPictures(page, 'everyone') }
   await signIn(page, 'manager')
   await page.goto(ACCOUNT, { waitUntil: 'load' })
-  await expect(page.locator('#picture').getByRole('button', { name: 'Change picture' })).toBeVisible()
+  await expect(page.locator('.page-head').getByRole('button', { name: 'Change picture' })).toBeVisible()
 })
 
 test('the organization editor saves each "Profile pictures" choice', async ({ page }) => {

@@ -1382,8 +1382,13 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 		web.WriteError(w, err)
 		return
 	}
+	o, err := m.s.Svc.OrgPolicy(r.Context(), a.u.OrgID)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "scopes": scopes,
-		"max_days": m.s.Svc.APITokenMaxDays(m.s.Svc.OrgOrNil(r.Context(), a.u.OrgID)), "apps": apps})
+		"max_days": m.s.Svc.APITokenMaxDays(o), "apps": apps})
 }
 
 // updateToken changes a token's name, applications or scopes. It can give a narrowed token its full access back, so

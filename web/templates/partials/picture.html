@@ -3,31 +3,29 @@
      is always beside it, so it is hidden from assistive technology. */}}
 {{define "avatar"}}<span class="avatar{{with .size}} avatar-{{.}}{{end}}" :data-tone="{{.a}}.tone" aria-hidden="true"><img class="avatar-img" :src="{{.a}}.src" alt="" loading="lazy" decoding="async" x-show="{{.a}}.hasPicture" x-cloak><span x-show="{{.a}}.noPicture" x-text="{{.a}}.initials"></span></span>{{end}}
 
-{{/* The picture controls of a component with pictureMixin (lib/picture.js) and formMixin. The picture itself is the
-     control (#f-image, a button: "Upload a picture", or "Change picture" once there is one) that opens the file chooser
-     of the hidden input #f-image-file (a chosen file is sent at once); errors show at it, as at a field. Remove, or a
-     note when the person may not change it. Getters of the component: picAvatar, picHas, canChange, picReadOnly,
-     picDescription, picReadOnlyText, picAction. */}}
-{{define "picture-controls"}}<div class="picture-row">
-  {{/* one of the two, so the page holds one picture: the button where it may be changed, else the picture alone */}}
-  <template x-if="canChange">
-    <button type="button" class="picture-pick" id="f-image" aria-describedby="h-image e-image" :aria-invalid="invalid.image" :disabled="busy" @click="choosePicture">
-      <span class="sr-only" x-text="picAction"></span>{{/* its name: the avatar inside is hidden from assistive technology */}}
-      {{template "avatar" (dict "a" "picAvatar" "size" "xl")}}
-      <span class="picture-pick-hint" aria-hidden="true">{{template "icon" "pencil"}}</span>
-    </button>
-  </template>
-  <template x-if="picReadOnly">
-    <div class="picture-still">{{template "avatar" (dict "a" "picAvatar" "size" "xl")}}</div>
-  </template>
-  <div class="picture-main stack">
-    <p class="muted" id="h-picture" x-text="picDescription"></p>
-    <p class="alert" x-show="picReadOnly" x-cloak>{{template "icon" "info"}}<span x-text="picReadOnlyText"></span></p>
-    <div x-show="canChange" x-cloak>
-      <input id="f-image-file" name="image" type="file" accept="image/jpeg,image/png,image/webp" hidden @change="pickPicture">
-      <p class="help" id="h-image">Choose the picture to upload one: JPEG, PNG or WebP, up to 5 MB. It is cropped to a square.</p>
-      <p class="field-error" id="e-image" x-text="errors.image"></p>
-    </div>
-    <div x-show="canChange" x-cloak><button type="button" class="btn btn-secondary btn-sm" x-show="picHas" x-cloak :disabled="busy" @click="removePicture">{{template "icon" "trash"}} Remove picture</button></div>
+{{/* The picture of an identity header (account page, user page of the console): a component with pictureMixin
+     (lib/picture.js) and formMixin. Where the person may change it the picture itself is the control (#f-image, a button:
+     "Upload a picture", or "Change picture" once there is one) that opens the file chooser of the hidden input
+     #f-image-file (a chosen file is sent at once); otherwise the picture alone. Getters of the component: picAvatar, picHas,
+     canChange, picStill (no control), picAction. */}}
+{{define "picture-pick"}}<template x-if="canChange">
+  <button type="button" class="picture-pick" id="f-image" aria-describedby="h-image e-image" :aria-invalid="invalid.image" :disabled="busy" @click="choosePicture">
+    <span class="sr-only" x-text="picAction"></span>{{/* its name: the avatar inside is hidden from assistive technology */}}
+    {{template "avatar" (dict "a" "picAvatar" "size" "xl")}}
+    <span class="picture-pick-hint" aria-hidden="true">{{template "icon" "pencil"}}</span>
+  </button>
+</template>
+<template x-if="picStill"><div class="picture-still">{{template "avatar" (dict "a" "picAvatar" "size" "xl")}}</div></template>{{end}}
+
+{{/* What goes with the picture, under the header's lines: the help (formats, size) and the error of the picture's
+     button where it may be changed, with Remove picture; else a note that administrators set pictures (picReadOnly).
+     Getters: canChange, picHelp, picHas, picReadOnly, picReadOnlyText. */}}
+{{define "picture-notes"}}<div class="picture-notes">
+  <input id="f-image-file" name="image" type="file" accept="image/jpeg,image/png,image/webp" hidden @change="pickPicture">
+  <div x-show="canChange" x-cloak>
+    <p class="help" id="h-image" x-text="picHelp"></p>
+    <p class="field-error" id="e-image" x-text="errors.image"></p>
+    <button type="button" class="btn-link" x-show="picHas" x-cloak :disabled="busy" @click="removePicture">Remove picture</button>
   </div>
+  <p class="help picture-note" x-show="picReadOnly" x-cloak>{{template "icon" "info"}}<span x-text="picReadOnlyText"></span></p>
 </div>{{end}}

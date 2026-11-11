@@ -6,7 +6,7 @@ import { dialogMixin } from '../lib/dialog.js'
 import { focusWhenShown } from '../lib/focus.js'
 import { toast, announce } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
-import { fmtDateTime, relTime, fmtDate, isSet } from '../lib/format.js'
+import { fmtDateTime, relTime, fmtDate, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { emailsMixin } from '../lib/emails.js'
 import { comboMixin, localeSource, zoneSource } from '../lib/combo.js'
 import { createCredential, getAssertion, passkeysSupported } from './login.js'
@@ -246,15 +246,16 @@ export default function (Alpine) {
     },
   }))
 
-  // ---- Picture ---------------------------------------------------------------------------------------------------
-  // Your picture is shown from the account store (so a change made elsewhere shows when the page reloads it, see
-  // accountProfile). An organization may leave pictures to its administrators (can_change_picture): then it is read-only.
-  // One with pictures off (pictures_enabled false) has none: the card is not shown.
-  Alpine.data('accountPicture', () => mix(formMixin(), pictureMixin(Alpine, {
+  // ---- Identity header --------------------------------------------------------------------------------------------
+  // The page's header: your picture (the control that changes it), name, username, role and email address, all read from
+  // the account store (so a change made elsewhere shows when the page reloads it, see accountProfile). An organization
+  // may leave pictures to its administrators (can_change_picture: the picture is shown, not a control) or have them off
+  // (pictures_enabled false: initials only).
+  Alpine.data('accountHeader', () => mix(formMixin(), pictureMixin(Alpine, {
     path: () => accountApi('/picture'), who: () => ({ self: true, title: '' }),
     apply: () => Alpine.store('account').reload(),
   }), {
-    loading: true, enabled: false,
+    u: {},
     async init() {
       window.addEventListener('account-reloaded', () => this.refresh())
       await this.refresh()
@@ -262,12 +263,18 @@ export default function (Alpine) {
     async refresh() {
       try {
         const r = await Alpine.store('account').load()
+        this.u = r.user
         this.setPictureUser(r.user)
-        this.canChange = r.can_change_picture !== false
-        this.enabled = r.pictures_enabled !== false
-      } catch { /* the profile card shows the error */ } finally { this.loading = false }
+        this.picEnabled = r.pictures_enabled !== false
+        this.canChange = this.picEnabled && r.can_change_picture !== false
+      } catch { /* the profile card shows the error */ }
     },
-    get picDescription() { return this.picHas ? 'Applications you sign in to can show this picture next to your name.' : 'You have no picture: your initials are shown instead.' },
+    get fullName() { return [this.u.given_name, this.u.family_name].filter(Boolean).join(' ') || this.u.username || '' },
+    get roleText() { return ROLE_LABEL[this.u.role] || this.u.role },
+    get roleClass() { return 'badge ' + (ROLE_BADGE[this.u.role] || 'badge-plain') },
+    get hasEmail() { return !!this.u.email },
+    get emailBadge() { return this.u.email_verified ? 'Verified' : 'Not verified' },
+    get emailBadgeClass() { return 'badge ' + (this.u.email_verified ? 'badge-success' : 'badge-warning') },
     get picReadOnlyText() { return 'Your organization’s administrators set pictures. Ask one of them to change yours.' },
   }))
 
@@ -552,9 +559,14 @@ export default function (Alpine) {
 
   // ---- Sessions ----------------------------------------------------------------------------------------------
   Alpine.data('accountSessions', () => ({
-    items: [], loading: true, loadError: '', busy: false,
-    init() { refetchOnReturn(() => this.load()); return this.load() },
+    items: [], loading: true, loadError: '', busy: false, lastLoginText: '',
+    init() { refetchOnReturn(() => this.load()); window.addEventListener('account-reloaded', () => this.showLastLogin()); return this.load() },
+    async showLastLogin() {
+      try { this.lastLoginText = fmtDateTime((await Alpine.store('account').load()).user.last_login, 'Not yet') } catch { /* the profile card shows the error */ }
+    },
+    get hasLastLogin() { return this.lastLoginText !== '' },
     async load() {
+      this.showLastLogin()
       try {
         const r = await get(accountApi('/sessions'))
         this.items = r.items.map((s) => ({ ...s, agent: describeAgent(s.user_agent), lastText: s.current ? 'Now' : relTime(s.last_seen),

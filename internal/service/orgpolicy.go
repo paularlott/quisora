@@ -55,17 +55,20 @@ func (s *Service) GrantsPerUser(o *model.Org) int {
 	return s.Cfg.Limits.GrantsPerUser
 }
 
-// OrgOrNil returns organization id as stored now, or nil when it cannot be read: its policy is then the server's.
-// Not the cached copy (Org): a policy just changed applies at once.
-func (s *Service) OrgOrNil(ctx context.Context, id string) *model.Org {
+// OrgPolicy returns organization id as stored now, for its policy: not the cached copy (Org), so a policy just changed
+// applies at once. A read that fails is an error, never the server's policy in its place: an organization stricter
+// than the server (a longer password, a shorter token, a higher cap of grants) must not be judged by the server's
+// defaults because its record could not be read. The server's apply only where the organization was read and sets
+// none, or where there is no organization (id ""): nil, nil.
+func (s *Service) OrgPolicy(ctx context.Context, id string) (*model.Org, error) {
 	if id == "" {
-		return nil
+		return nil, nil
 	}
 	o, err := s.Orgs.Get(ctx, id)
 	if err != nil {
-		return nil
+		return nil, mapStore(err)
 	}
-	return o
+	return o, nil
 }
 
 // Bounds of an organization's own policy (validOrgSettings).
