@@ -178,6 +178,12 @@ type Audit struct {
 	SpoolMaxMB int `toml:"victorialogs_spool_max_mb" flag:"victorialogs-spool-max-mb" usage:"Most disk space the VictoriaLogs spool may use, in megabytes; past it the oldest events are dropped"`
 }
 
+// Bounds of limits.grants_per_user, and of an organization's own (model.OrgSettings.GrantsPerUser).
+const (
+	MinGrantsPerUser = 10
+	MaxGrantsPerUser = 100000
+)
+
 type Limits struct {
 	MaxInFlight     int `toml:"max_in_flight" flag:"max-in-flight" usage:"Concurrent requests per node before 503"`
 	LoginPerIPMin   int `toml:"login_per_ip_min" flag:"login-per-ip-min" usage:"Sign-in attempts per organization and IP per minute (0 = no limit)"`
@@ -187,7 +193,10 @@ type Limits struct {
 	// PasswordMinLength is the shortest password accepted, in characters. NIST SP 800-63B rev 4 asks for 15 where a
 	// password may be the only factor (as here, unless the organization requires a second one), and 8 at least.
 	PasswordMinLength int `toml:"password_min_length" flag:"password-min-length" usage:"Shortest password accepted, characters (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)"`
-	EphemeralMB       int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
+	// GrantsPerUser is how many refresh grants one user may hold at once (each sign-in of an application makes one);
+	// past it the least likely to be missed are ended. An organization may set its own (model.OrgSettings).
+	GrantsPerUser int `toml:"grants_per_user" flag:"grants-per-user" usage:"Refresh grants one user may hold, 10 to 100000; past it the oldest unused are ended (an organization may set its own)"`
+	EphemeralMB   int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
 }
 
 type Log struct {
@@ -223,7 +232,7 @@ func Default() *Config {
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
-		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024, PasswordMinLength: 15},
+		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
 		Log:     Log{Level: "info", Format: "console", Access: true},
 	}
 }
@@ -498,6 +507,9 @@ func (c *Config) Validate() error {
 	nonNegative("limits.login_per_ip_min", c.Limits.LoginPerIPMin)
 	nonNegative("limits.lockout_attempts", c.Limits.LockoutAttempts)
 	nonNegative("limits.password_workers", c.Limits.PasswordWorkers)
+	if c.Limits.GrantsPerUser < MinGrantsPerUser || c.Limits.GrantsPerUser > MaxGrantsPerUser {
+		errs = append(errs, fmt.Errorf("limits.grants_per_user must be between %d and %d", MinGrantsPerUser, MaxGrantsPerUser))
+	}
 	if c.Limits.LockoutAttempts > 0 {
 		positive("limits.lockout_minutes", c.Limits.LockoutMinutes)
 	}

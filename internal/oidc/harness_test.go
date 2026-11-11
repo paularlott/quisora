@@ -278,6 +278,9 @@ func (h *harness) post(path string, form url.Values, basicID, basicSecret string
 	}
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	// What the request left running (a code exchange's count of the user's grants: noteGrant) is done before the
+	// test goes on, which may swap the stores it reads.
+	h.env.Svc.WaitBackground()
 	m := map[string]any{}
 	_ = json.Unmarshal(b, &m)
 	return tokResp{resp.StatusCode, m, resp.Header}

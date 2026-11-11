@@ -86,26 +86,6 @@ func TestHubUserScopedOwner(t *testing.T) {
 	}
 }
 
-// A personal stream (the account page) carries only its user's own changes: their user record, their memberships and
-// their own records; nothing about other users, groups or clients.
-func TestHubPersonalStream(t *testing.T) {
-	h := NewHub()
-	h.OrgOfUser = func(id string) string { return map[string]string{"u1": "org-a", "u2": "org-a"}[id] }
-	me := &subscriber{ch: make(chan Event, 16), orgID: "org-a", self: "u1"}
-	h.add(me)
-	h.Publish(&store.Record{Kind: model.KindUser, ID: "u1", Scope: "org-a"})
-	h.Publish(&store.Record{Kind: model.KindUser, ID: "u2", Scope: "org-a"})
-	h.Publish(&store.Record{Kind: model.KindMember, ID: "g1:u1", Scope: "org-a"})
-	h.Publish(&store.Record{Kind: model.KindMember, ID: "g1:u2", Scope: "org-a"})
-	h.Publish(&store.Record{Kind: model.KindSession, ID: "s1", Scope: "u1"})
-	h.Publish(&store.Record{Kind: model.KindPasskey, ID: "p2", Scope: "u2"})
-	h.Publish(&store.Record{Kind: model.KindGroup, ID: "g1", Scope: "org-a"})
-	h.Publish(&store.Record{Kind: model.KindUser, ID: "u3", Deleted: true}) // scope unknown
-	if got := drain(me); got != "user:u1:put member:g1:u1:put session:s1:put" {
-		t.Errorf("personal stream got %q", got)
-	}
-}
-
 // One viewer cannot hold more than maxPerUser streams on a node; others are unaffected.
 func TestStreamsCappedPerViewer(t *testing.T) {
 	h := NewHub()
@@ -153,25 +133,21 @@ func TestHubSSHKinds(t *testing.T) {
 	}
 }
 
-// An SSH certificate is the organization's (the tenant page) and its user's own (the account page): the personal stream
-// gets the changes of the user's certificates and no one else's.
-func TestHubSSHCertsReachTheirUser(t *testing.T) {
+// An SSH certificate is the organization's (the tenant page) and names its user (the admin user page lists theirs).
+func TestHubSSHCertsNameTheirUser(t *testing.T) {
 	h := NewHub()
-	me := &subscriber{ch: make(chan Event, 8), orgID: "org-a", self: "u1"}
 	admin := &subscriber{ch: make(chan Event, 8), orgID: "org-a"}
-	h.add(me)
 	h.add(admin)
-	cert := func(id, user string) *store.Record {
-		return &store.Record{Kind: model.KindSSHCert, ID: id, Scope: "org-a", Fields: map[string]any{"user_id": user}}
+	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c1", Scope: "org-a", Fields: map[string]any{"user_id": "u1"}})
+	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c2", Scope: "org-a"}) // a host certificate
+	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c3", Scope: "org-b", Fields: map[string]any{"user_id": "u1"}})
+	if e := <-admin.ch; e.ID != "c1" || e.User != "u1" {
+		t.Errorf("user certificate: %+v", e)
 	}
-	h.Publish(cert("c1", "u1"))
-	h.Publish(cert("c2", "u2"))
-	h.Publish(cert("c3", "")) // a host certificate
-	h.Publish(&store.Record{Kind: model.KindSSHCert, ID: "c4", Scope: "org-b", Fields: map[string]any{"user_id": "u1"}})
-	if got := drain(me); got != "sshcert:c1:put" {
-		t.Errorf("personal stream got %q", got)
+	if e := <-admin.ch; e.ID != "c2" || e.User != "" {
+		t.Errorf("host certificate: %+v", e)
 	}
-	if got := drain(admin); got != "sshcert:c1:put sshcert:c2:put sshcert:c3:put" {
-		t.Errorf("the organization's stream got %q", got)
+	if got := drain(admin); got != "" {
+		t.Errorf("another organization's certificate reached org-a: %q", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 )
 
@@ -44,6 +45,14 @@ func (s *Service) APITokenMaxDays(o *model.Org) int {
 		return o.Settings.APITokenMaxDays
 	}
 	return s.Cfg.Tokens.APITokenMaxDays
+}
+
+// GrantsPerUser is how many refresh grants a user of organization o may hold: its own, else limits.grants_per_user.
+func (s *Service) GrantsPerUser(o *model.Org) int {
+	if o != nil && o.Settings.GrantsPerUser > 0 {
+		return o.Settings.GrantsPerUser
+	}
+	return s.Cfg.Limits.GrantsPerUser
 }
 
 // OrgOrNil returns organization id as stored now, or nil when it cannot be read: its policy is then the server's.
@@ -88,6 +97,7 @@ func (s *Service) validOrgPolicy(st model.OrgSettings, old *model.OrgSettings) e
 		{"lockout_attempts", st.LockoutAttempts, 1, maxLockoutAttempts},
 		{"lockout_minutes", st.LockoutMinutes, 1, maxLockoutMinutes},
 		{"api_token_max_days", st.APITokenMaxDays, 1, maxTokenDays},
+		{"grants_per_user", st.GrantsPerUser, config.MinGrantsPerUser, config.MaxGrantsPerUser},
 	} {
 		if err := in(c.field, c.v, c.lo, c.hi); err != nil {
 			return err

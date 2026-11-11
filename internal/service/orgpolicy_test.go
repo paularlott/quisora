@@ -36,6 +36,8 @@ func TestOrgPolicyValidation(t *testing.T) {
 		"privileged ttl":      func(s *model.OrgSettings) { s.PrivilegedTTL = 86401 },
 		"privileged idle":     func(s *model.OrgSettings) { s.PrivilegedIdle = 3601 },
 		"privileged negative": func(s *model.OrgSettings) { s.PrivilegedTTL = -1 },
+		"grants 9":            func(s *model.OrgSettings) { s.GrantsPerUser = 9 },
+		"grants 100001":       func(s *model.OrgSettings) { s.GrantsPerUser = 100001 },
 	} {
 		if err := set(f); !errors.Is(err, service.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
@@ -43,13 +45,13 @@ func TestOrgPolicyValidation(t *testing.T) {
 	}
 	if err := set(func(s *model.OrgSettings) {
 		s.PasswordMinLength, s.LockoutAttempts, s.LockoutMinutes, s.APITokenMaxDays = 20, 5, 60, 30
-		s.PrivilegedTTL, s.PrivilegedIdle = 3600, 600
+		s.PrivilegedTTL, s.PrivilegedIdle, s.GrantsPerUser = 3600, 600, 5000
 	}); err != nil {
 		t.Fatal(err)
 	}
 	o, _ := c.svc.GetOrg(c.ctx, nil, c.a.ID)
 	if s := o.Settings; s.PasswordMinLength != 20 || s.LockoutAttempts != 5 || s.LockoutMinutes != 60 || s.APITokenMaxDays != 30 ||
-		s.PrivilegedTTL != 3600 || s.PrivilegedIdle != 600 {
+		s.PrivilegedTTL != 3600 || s.PrivilegedIdle != 600 || s.GrantsPerUser != 5000 {
 		t.Fatalf("saved %+v", s)
 	}
 	// A privileged length saved before the server's sessions were shortened does not block other changes.
@@ -133,5 +135,31 @@ func TestOrgFooter(t *testing.T) {
 	}
 	if _, err := c.svc.UpdateBranding(c.ctx, actor(c.aManager), c.a.ID, service.BrandingInput{Footer: ptr("mine")}); !errors.Is(err, service.ErrForbidden) {
 		t.Errorf("a manager set the footer: %v", err)
+	}
+}
+
+// The refresh grants a user may hold: the organization's own where set, else the server's.
+func TestGrantsPerUserPolicy(t *testing.T) {
+	c := newCast(t)
+	c.svc.Cfg.Limits.GrantsPerUser = 1000
+	o, _ := c.svc.GetOrg(c.ctx, nil, c.a.ID)
+	st := o.Settings
+	st.GrantsPerUser = 20000
+	if _, err := c.svc.UpdateOrg(c.ctx, service.System, c.a.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.UpdateOrg(c.ctx, actor(c.aAdmin), c.a.ID, service.OrgInput{Settings: &st}); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("an organization's administrator changed its settings: %v", err)
+	}
+	a, _ := c.svc.GetOrg(c.ctx, nil, c.a.ID)
+	b, _ := c.svc.GetOrg(c.ctx, nil, c.b.ID)
+	if got := c.svc.GrantsPerUser(a); got != 20000 {
+		t.Errorf("organization's own: %d", got)
+	}
+	if got := c.svc.GrantsPerUser(b); got != 1000 {
+		t.Errorf("server's: %d", got)
+	}
+	if got := c.svc.GrantsPerUser(nil); got != 1000 {
+		t.Errorf("unreadable organization: %d", got)
 	}
 }

@@ -1176,6 +1176,7 @@ export default function (Alpine) {
         api_token_max_days: '1 to 3650. Tokens created without an expiry get this lifetime.' + dflt(n('tokendays') ? n('tokendays') + ' days' : 'no limit'),
         privileged_ttl: 'Hours before a session ends, even if it is in use.' + dflt(n('pttl') ? Math.round(n('pttl') / 3600) + 'h' : 'as everyone'),
         privileged_idle: 'Minutes of inactivity before a session ends.' + dflt(n('pidle') ? Math.round(n('pidle') / 60) + ' minutes' : 'as everyone'),
+        grants_per_user: 'How many application sign-ins one person may keep (10 to 100000); past it the least recently used end. Raise it where many machines sign in as one person.' + dflt(n('grants')),
       }
       this.initTable()
     },
@@ -1233,6 +1234,7 @@ export default function (Alpine) {
         lockout_minutes: s.lockout_minutes ? String(s.lockout_minutes) : '', api_token_max_days: s.api_token_max_days > 0 ? String(s.api_token_max_days) : '',
         api_token_no_limit: s.api_token_max_days === -1,
         privileged_ttl: s.privileged_ttl ? String(Math.round(s.privileged_ttl / 3600)) : '', privileged_idle: s.privileged_idle ? String(Math.round(s.privileged_idle / 60)) : '',
+        grants_per_user: s.grants_per_user ? String(s.grants_per_user) : '',
         primary_color: (o.branding && o.branding.primary_color) || '', footer: (o.branding && o.branding.footer) || '',
         skin: (o.branding && o.branding.skin) || '' }
     },
@@ -1270,7 +1272,8 @@ export default function (Alpine) {
           session_ttl: num(f.session_ttl, 3600, 'session_ttl'), session_idle: num(f.session_idle, 60, 'session_idle'),
           password_min_length: num(f.password_min_length, 1, 'password_min_length'), lockout_attempts: num(f.lockout_attempts, 1, 'lockout_attempts'),
           lockout_minutes: num(f.lockout_minutes, 1, 'lockout_minutes'), api_token_max_days: f.api_token_no_limit ? -1 : num(f.api_token_max_days, 1, 'api_token_max_days'),
-          privileged_ttl: num(f.privileged_ttl, 3600, 'privileged_ttl'), privileged_idle: num(f.privileged_idle, 60, 'privileged_idle') }
+          privileged_ttl: num(f.privileged_ttl, 3600, 'privileged_ttl'), privileged_idle: num(f.privileged_idle, 60, 'privileged_idle'),
+          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user') }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
         // A new organization takes its branding with it; an existing one's is changed apart, by id (the settings may
@@ -2066,8 +2069,9 @@ export default function (Alpine) {
     'identity.link.email', 'identity.link.refused', 'identity.refresh.refused', 'identity.unlink', 'invite.accept',
     'keys.create', 'keys.remove', 'keys.rotate', 'login.email_code.sent', 'login.failure', 'login.limited', 'login.lockout',
     'login.recovery_code', 'login.success', 'logout', 'mfa.import', 'oauth.client_auth.limited', 'oauth.client_credentials',
-    'oauth.code.replay', 'oauth.consent', 'oauth.device.approve', 'oauth.device.start', 'oauth.grant', 'oauth.refresh',
-    'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary', 'org.signout',
+    'oauth.code.replay', 'oauth.consent', 'oauth.device.approve', 'oauth.device.start', 'oauth.grant', 'oauth.grant.evict',
+    'oauth.refresh', 'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary',
+    'org.signout',
     'org.update', 'passkey.clone', 'password.forgot', 'password.reset', 'provider.create', 'provider.delete',
     'provider.update', 'server.signout', 'service_account.create', 'service_account.delete',
     'service_account.secret.rotate', 'service_account.update', 'signout.sweep', 'ssh.ca.create', 'ssh.ca.remove',

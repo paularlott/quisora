@@ -151,8 +151,8 @@ Settings the guides refer to: `session.ttl`, `session.idle`, `session.privileged
 
 Some settings are only the server's defaults: an organization can set its own in the console (**Organizations**, edit,
 for super admins), and the server's applies wherever it has not. They are `limits.password_min_length`,
-`limits.lockout_attempts`, `limits.lockout_minutes`, `tokens.api_token_max_days`, `session.privileged_ttl` and
-`session.privileged_idle`. `ui.footer` is the default footer: an organization's administrators can set its own on its
+`limits.lockout_attempts`, `limits.lockout_minutes`, `limits.grants_per_user`, `tokens.api_token_max_days`,
+`session.privileged_ttl` and `session.privileged_idle`. `ui.footer` is the default footer: an organization's administrators can set its own on its
 overview's branding card, and an organization without one shows the primary organization's, else `ui.footer`. TLS 1.2 connections are offered only the
 forward-secret AES-GCM cipher suites (RFC 9325, as FAPI 2.0 requires); TLS 1.3 is unaffected. Behind a proxy that ends
 TLS, the proxy's configuration decides.
@@ -399,7 +399,7 @@ empty (that is the replicated mode below).
 - A lease in the database picks the node that runs housekeeping (key rotation, purges, user end dates).
 - **With `cluster.notify`** (recommended): the nodes form a small gossip network of their own that carries only change
   notices (what changed, never the data). A change made on one node clears the others' caches and updates their open
-  admin and account pages within moments. A lost notice only waits for a cache to expire.
+  admin console pages within moments. A lost notice only waits for a cache to expire.
 - **Without it**, a node learns of another's change when its cache expires, within 5 seconds (a disabled user or a
   revoked client keeps working that long on the other nodes), and its pages do not follow other nodes' changes live.
 - Every node has the same `server.master_key`. A node with a different key refuses to start.
@@ -583,7 +583,7 @@ VictoriaLogs:
 | Area | Events |
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `mfa.import` (an authenticator secret imported with a new user: [API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)), `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
-| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
+| OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.grant.evict` (a grant ended because its user held too many: [how many](oauth/sign-in.md#refreshing)), `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
 | Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, tenants' SSH certificate authorities (`ssh.settings.update`, `ssh.ca.create`, `ssh.ca.rotate`, `ssh.ca.remove`, `ssh.cert.issue`, `ssh.cert.revoke`, `ssh.cert.refused`, `ssh.host.issue`, `ssh.host.refused`: [SSH certificates](ssh/README.md#what-is-recorded)), `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
 | API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back: anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
@@ -982,15 +982,17 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
 | Token introspection             | 48,800/s | 48,500/s |   48,100/s |
 | Password sign-in                |    487/s |    473/s |      516/s |
 
-- A gossip cluster of three BadgerDB nodes (all on that one machine, every write committed on two of them before it
-  is visible) keeps these rates with the load spread over its nodes: refresh token 52,000/s, client credentials
-  48,000/s, introspection 46,600/s, password sign-in 434/s.
+- A gossip cluster of three BadgerDB nodes (all on that one machine with the load generator, every write committed on
+  two of them before it is visible), at 5,000 organizations × 1,000 users with the load spread over its nodes: refresh
+  token 51,500/s, client credentials 57,400/s, introspection 57,500/s, password sign-in 290/s (a sign-in's writes are
+  committed on two nodes, and the three nodes share the machine's 15 cores).
 
 - A password sign-in costs ~26 ms of CPU (argon2id, 19 MiB; m=19456, t=2, p=1). Stored hashes are sealed with the
   master key, and one made with other settings is re-hashed at the user's next sign-in; a stored hash naming settings
   far outside these (over 64 MiB, 10 passes or 16 threads) is refused without hashing. Plan ~30 cores for 1,000 password sign-ins/s. A
   passkey sign-in costs ~0.15 ms.
-- Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.5M records, BadgerDB, 10.3 GB per node on disk);
+- Tested at 5,000 organizations × 1,000 users with 500,000 refresh grants (6.56M records, BadgerDB, 8.4 to 9.2 GB per
+  node on disk);
   lookups and token traffic do not slow down at that size. Memory per node (measured at 100 organizations × 1,000
   users): about 150–250 MB of Go heap idle and at most
   about 400 MB under full load without password sign-ins (every other scenario at once, 64 concurrent clients each),
@@ -1008,11 +1010,11 @@ One Apple M5 Pro (15 cores) with the load generator on the same machine; real de
   resident memory after a burst stays near its peak; the Go heap returns to its idle size (`quisora_memory_heap_bytes`).
 - At this size send audit events to VictoriaLogs ([Audit log](#audit-log)): the built-in trail's pages read through
   every event they search.
-- A new gossip node catches up at ~16,000 records/s.
-- Both of the figures above (10.3 GB per node on disk, ~16,000 records/s for an empty node to catch up) were measured on the
-  build before the partition protocol, and are to be measured again on this one: it keeps more per record (the position of the
-  write that last changed it) and copies a node by partition. (A quick run on one machine, three nodes, 400-byte records and
-  BadgerDB without fsync, copied a node at about 70,000 records/s, SQLite at about 23,000: not comparable with the figures above.)
+- A new gossip node catches up at about 16,800 records/s (all 6.56M records in 6.5 minutes, from the two others);
+  two empty nodes at once, from the one that has the data, at about 12,700 records/s each. While it copies, a node's
+  Go heap reaches about 1.7 GB, and settles at 150 to 250 MB. The operating system shows it with some 11 GB resident
+  after: BadgerDB's files, mapped into memory, which it can drop at any time. `scripts/scale-cluster.sh` reproduces
+  this (with `GRANTS=500000` for these figures).
 - The load test tool reproduces these. It is a development tool, not part of the `quisora` binary: build it with
   `task loadtest` (or `go build -o bin/loadtest ./tools/loadtest`), then use `bin/loadtest seed` and
   `bin/loadtest run`. The seeder needs `QUISORA_LOADTEST=1`, as it writes test data straight into the store.

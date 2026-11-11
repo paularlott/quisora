@@ -4,7 +4,7 @@
 #
 #   scripts/scale-cluster.sh WORKDIR [orgs] [duration]
 #
-# Environment: QUISORA (binary, default bin/quisora), LOADTEST (default bin/loadtest, built by `task loadtest`), BASE_PORT (default 38450: HTTPS on +1..+3, gossip on +11..+13).
+# Environment: GRANTS (refresh grants to seed, default the seeder's), QUISORA (binary, default bin/quisora), LOADTEST (default bin/loadtest, built by `task loadtest`), BASE_PORT (default 38450: HTTPS on +1..+3, gossip on +11..+13).
 set -euo pipefail
 
 WORK=$1 ORGS=${2:-500} DUR=${3:-30s}
@@ -47,7 +47,7 @@ say() { echo "$*" | tee -a "$WORK/summary.txt"; }
 
 # Seed node 1 offline with its own settings (a gossip node keeps sync writes on): the seeded records become the first
 # writes of their partitions, which nodes 2 and 3 copy.
-QUISORA_LOADTEST=1 "$LOADTEST" -c "$WORK/node1.toml" seed --orgs "$ORGS" --users 1000 --data "$WORK/seed.json" | tee "$WORK/seed.out" | tail -3
+QUISORA_LOADTEST=1 "$LOADTEST" -c "$WORK/node1.toml" seed --orgs "$ORGS" --users 1000 ${GRANTS:+--grants "$GRANTS"} --data "$WORK/seed.json" | tee "$WORK/seed.out" | tail -3
 
 LAST=$(python3 - "$WORK/seed.json" <<'PY'
 import json, sys

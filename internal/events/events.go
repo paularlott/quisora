@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,9 +50,11 @@ type Event struct {
 const (
 	heartbeat   = 20 * time.Second
 	bufferSize  = 64
-	maxPerNode  = 2000 // concurrent streams per node
-	maxPerUser  = 8    // concurrent streams per viewer (user, client or token owner) per node
+	maxPerNode  = 2000 // concurrent streams per node (staff only: managers and up)
 	writeWindow = 30 * time.Second
+	// maxPerUser is the concurrent streams per viewer (user, client or token owner) per node. A browser shares one
+	// stream among its tabs (per stream URL), so 4 is a few devices, or a super admin with a few organizations open.
+	maxPerUser = 4
 )
 
 // recheckEvery is how often an open stream checks again that its viewer may still have it (session still valid,
@@ -67,8 +68,7 @@ var (
 
 type subscriber struct {
 	ch     chan Event
-	orgID  string // organization the viewer administers (a personal stream: the user's own)
-	self   string // a personal stream (the account page): only changes to this user's own records
+	orgID  string // organization the viewer administers
 	super  bool
 	who    string // the viewer, for the per-viewer cap
 	lagged bool   // events were dropped: the client must reload everything
@@ -140,7 +140,7 @@ func (h *Hub) Publish(rec *store.Record) {
 	if rec.Kind == model.KindKey {
 		ev.org = ""
 	}
-	if rec.Kind == model.KindSSHCert { // org-scoped, and its user's own too (the account page lists them)
+	if rec.Kind == model.KindSSHCert { // org-scoped, and its user's own too (the admin user page lists them)
 		ev.User, _ = rec.Fields["user_id"].(string)
 	}
 	if rec.Deleted {
@@ -165,9 +165,6 @@ func (h *Hub) Publish(rec *store.Record) {
 }
 
 func (s *subscriber) wants(ev Event) bool {
-	if s.self != "" {
-		return s.ownChange(ev)
-	}
 	switch {
 	case ev.Kind == string(model.KindKey):
 		return s.super
@@ -177,23 +174,6 @@ func (s *subscriber) wants(ev Event) bool {
 		return true
 	}
 	return ev.org == s.orgID
-}
-
-// ownChange: is ev about the personal stream's user? Their user record, a membership of theirs, or one of their own
-// records (sessions, passkeys, API tokens, provider links, grants, SSH certificates), in their organization.
-func (s *subscriber) ownChange(ev Event) bool {
-	if ev.org != s.orgID {
-		return false
-	}
-	switch {
-	case ev.Kind == string(model.KindUser):
-		return ev.ID == s.self
-	case ev.Kind == string(model.KindMember):
-		return strings.HasSuffix(ev.ID, ":"+s.self)
-	case userScoped[model.Kind(ev.Kind)], ev.Kind == string(model.KindSSHCert):
-		return ev.User == s.self
-	}
-	return false
 }
 
 func (h *Hub) add(s *subscriber) bool {
@@ -230,8 +210,8 @@ func (h *Hub) Count() int {
 	return len(h.subs)
 }
 
-// Module serves GET /api/events?org=<org name> (administrators: their organization's changes) and
-// GET /api-internal/account/events (any signed-in user: changes to their own records, for the account page).
+// Module serves GET /api/events?org=<org name>: the admin console's live updates (managers and up: their
+// organization's changes).
 type Module struct {
 	Hub *Hub
 	s   *web.Server
@@ -241,30 +221,6 @@ type Module struct {
 func (m *Module) Register(s *web.Server) {
 	m.s = s
 	s.Mux.Handle("GET "+web.EventsPath, s.RequireManagement("", m.stream))
-	s.Mux.Handle("GET /o/{org}"+web.AccountEventsPath, s.InOrg(s.WithSession(http.HandlerFunc(m.accountStream))))
-}
-
-// accountStream is the account page's stream: the signed-in user's own changes (an administrator elsewhere adding
-// an address, a sign-in on another device, a link followed in another tab). Session only.
-func (m *Module) accountStream(w http.ResponseWriter, r *http.Request) {
-	u := web.User(r)
-	if web.SessionUnchecked(r) {
-		web.WriteUnchecked(w)
-		return
-	}
-	if u == nil {
-		web.WriteJSON(w, http.StatusUnauthorized, web.ErrorBody{Error: "Your session has ended. Please sign in again."})
-		return
-	}
-	sub := &subscriber{ch: make(chan Event, bufferSize), orgID: u.OrgID, self: u.ID, who: "u:" + u.ID}
-	m.serve(w, r, sub, func() bool {
-		sess := web.Session(r)
-		if sess == nil {
-			return false
-		}
-		s, cur := m.s.Sessions.Lookup(r.Context(), sess.ID)
-		return s != nil && cur != nil && cur.ID == u.ID
-	})
 }
 
 func (m *Module) stream(w http.ResponseWriter, r *http.Request) {

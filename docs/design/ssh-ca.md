@@ -417,9 +417,10 @@ re-authenticates with the password alone, which satisfies `needReauth` but does 
 for the certificate the session's own AuthTime counts. The request carries `Session` (amr and provider), so the tenant's
 sign-in methods apply, and `SSHTenantsFor` lists only the tenants whose methods allow the session. The requests count
 against the sign endpoint's rate limits (one budget; 429 "Too many certificate requests"). Via `account`; no
-`ClientID`; `SessionEpoch` and `Stamp` are the session's. A refusal is 403 with the message. The account page's event
-stream carries the user's own `sshcert` changes (the hub reads the record's `user_id`), so a revocation by an
-administrator shows at once.
+`ClientID`; `SessionEpoch` and `Stamp` are the session's. A refusal is 403 with the message. The account page has no live
+updates: a revocation by an administrator shows when the page is loaded again or its tab comes back. The admin
+console's stream names the user of an `sshcert` change (the hub reads the record's `user_id`), so the admin user page
+follows it.
 
 Account JSON API (session + CSRF): `GET /o/{org}/api-internal/account/ssh` (`tenants` with principals, the discovery
 URL and `cert_ttl`; the user's unexpired user `certificates`; `mfa`),
@@ -522,7 +523,10 @@ worked out from what is left). Open connections are ended by `fetch --end-revoke
 logins from journald (root's lines only, `_UID=0`, so neither a session nor another local user can forge one) and
 signals the connection's privileged process, only while it is still the one that logged it (root's sshd, whatever
 its parent, so connections that outlived an sshd restart or came through socket activation are included; started before
-the line on the clock since boot, so a wall-clock step cannot hide one; held by a pidfd from the check to the signal). It also ends every connection logged in longer ago than the tenant's
+the line on the clock since boot, so a wall-clock step cannot hide one; held by a pidfd from the check to the signal). Where that process leads a logind session (its cgroup is a
+`session-<id>.scope` and logind names it the leader), the whole session is ended instead (`loginctl terminate-session`),
+taking what it left running (tmux, nohup) with it; a connection made without PAM sits in the scope of whoever started
+sshd, which it does not lead, so that is never ended. It also ends every connection logged in longer ago than the tenant's
 `cert_ttl` (from the discovery document, on journald's monotonic clock, which stops in a suspend and so never ends one
 early): its certificate has expired, and one that expired before its access was removed is never on the list, so no
 connection outlives `cert_ttl`. The SSH application uses bearer tokens, not

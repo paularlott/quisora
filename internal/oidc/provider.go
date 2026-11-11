@@ -84,6 +84,11 @@ type Provider struct {
 	memGen  sync.Map // org id -> *atomic.Uint64, bumped by InvalidateMembership
 	memAll  atomic.Uint64
 
+	// grantRoom is, by user, how many more of the user's grants this node makes before it counts them again, and
+	// grantCounting the users whose grants are being counted (noteGrant).
+	grantRoom     *ttlcache.Cache[*atomic.Int64]
+	grantCounting sync.Map
+
 	// originsLoads are the reads of an organization's origins under way, by organization id: a miss waits for the one
 	// under way rather than reading every public client of the organization again (cors.go).
 	originsMu    sync.Mutex
@@ -107,6 +112,7 @@ func New(s *web.Server) *Provider {
 	p := &Provider{s: s, svc: s.Svc, cfg: s.Cfg, log: s.Log,
 		clients: ttlcache.New[*clientEntry](cacheTTL, 50_000), origins: ttlcache.New[*originSet](cacheTTL, 20_000), users: ttlcache.New[*model.User](cacheTTL, 200_000),
 		tenants: ttlcache.New[*model.Tenant](cacheTTL, 20_000), grants: ttlcache.New[grantState](grantTTL, 200_000), groups: ttlcache.New[groupEntry](cacheTTL, 200_000),
+		grantRoom: ttlcache.New[*atomic.Int64](grantRoomTTL, 100_000),
 		remoteKey: map[string]*remoteJWKS{}, bcOrgs: map[string]*bcOrg{}, originsLoads: map[string]*originsLoad{}}
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()

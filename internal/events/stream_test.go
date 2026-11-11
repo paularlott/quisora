@@ -106,34 +106,6 @@ func TestStream(t *testing.T) {
 	r2.Body.Close()
 }
 
-// Any signed-in user may open the account stream; without a session it is refused.
-func TestAccountStreamOpen(t *testing.T) {
-	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: NewHub()}} }})
-	plain, _ := env.Svc.CreateUser(context.Background(), service.System, env.Primary.ID, service.UserInput{GivenName: ptr("T"), Username: ptr("plain"), Email: ptr("plain@example.com")})
-	pc, _ := env.Session(plain)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", env.URL+web.OrgPath(env.Primary.ID, web.AccountEventsPath), nil)
-	res, err := pc.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	line, _ := bufio.NewReader(res.Body).ReadString('\n')
-	res.Body.Close()
-	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "text/event-stream" || !strings.HasPrefix(line, "retry:") {
-		t.Fatalf("account stream: %d %q", res.StatusCode, line)
-	}
-	anon := env.Client()
-	r2, err := anon.Get(env.URL + web.OrgPath(env.Primary.ID, web.AccountEventsPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
-	if r2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("no session: %d", r2.StatusCode)
-	}
-}
-
 // A subscriber that lost events is told to resynchronise instead of receiving the next event.
 func TestStreamResyncAfterLag(t *testing.T) {
 	hub := NewHub()
@@ -174,58 +146,25 @@ func TestStreamEndsWhenSessionEnds(t *testing.T) {
 	old := recheckEvery
 	recheckEvery = 50 * time.Millisecond
 	t.Cleanup(func() { recheckEvery = old })
-	for name, path := range map[string]func(primary string) string{
-		"console": func(string) string { return web.EventsPath + "?org=primary" },
-		"account": func(primary string) string { return web.OrgPath(primary, web.AccountEventsPath) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			hub := NewHub()
-			env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: hub}} }})
-			path := path(env.Primary.ID)
-			c, _ := env.ConsoleSession(env.Admin)
-			resp, sc := openStream(t, c, env.URL+path)
-			if resp.StatusCode != 200 || !waitEvent(sc, "ready") {
-				t.Fatalf("stream: %d", resp.StatusCode)
-			}
-			sessions, _ := env.Svc.Sessions.All(context.Background(), env.Admin.ID)
-			for _, s := range sessions {
-				if err := env.Server.Sessions.Delete(context.Background(), s.ID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if !waitEvent(sc, "ended") {
-				t.Fatal("the stream outlived its session")
-			}
-			for sc.Scan() { // and the server closes it
-			}
-			waitCount(t, hub, 0)
-		})
-	}
-}
-
-// A user's own records reach the account stream only for that user.
-func TestAccountStreamReceivesOwnChanges(t *testing.T) {
 	hub := NewHub()
 	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: hub}} }})
-	hub.OrgOfUser = func(string) string { return env.Primary.ID }
 	c, _ := env.ConsoleSession(env.Admin)
-	_, sc := openStream(t, c, env.URL+web.OrgPath(env.Primary.ID, web.AccountEventsPath))
-	if !waitEvent(sc, "ready") {
-		t.Fatal("no ready")
+	resp, sc := openStream(t, c, env.URL+web.EventsPath+"?org=primary")
+	if resp.StatusCode != 200 || !waitEvent(sc, "ready") {
+		t.Fatalf("stream: %d", resp.StatusCode)
 	}
-	waitCount(t, hub, 1)
-	hub.Publish(&store.Record{Kind: model.KindSession, ID: "s-other", Scope: "someone-else"})
-	hub.Publish(&store.Record{Kind: model.KindSession, ID: "s-mine", Scope: env.Admin.ID})
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.Contains(line, "s-other") {
-			t.Fatalf("another user's change leaked: %s", line)
-		}
-		if strings.Contains(line, "s-mine") {
-			return
+	sessions, _ := env.Svc.Sessions.All(context.Background(), env.Admin.ID)
+	for _, s := range sessions {
+		if err := env.Server.Sessions.Delete(context.Background(), s.ID); err != nil {
+			t.Fatal(err)
 		}
 	}
-	t.Fatal("own change not delivered")
+	if !waitEvent(sc, "ended") {
+		t.Fatal("the stream outlived its session")
+	}
+	for sc.Scan() { // and the server closes it
+	}
+	waitCount(t, hub, 0)
 }
 
 // A stream checks its viewer before it sends a change, not only on its timer: once the session has ended, the next change

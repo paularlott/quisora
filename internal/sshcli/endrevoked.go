@@ -175,9 +175,9 @@ var monoNow = monotonicNow
 // before the login it is used for and lasts at most maxAge, so a connection logged in longer ago than maxAge has a
 // certificate that has expired: one that expired before its access was removed is never on the list, and would
 // otherwise stay open. Its age is counted on the monotonic clock, which stops while the machine is suspended, so it
-// is never ended before its certificate expires (later by the time spent suspended). Ending the connection's privileged
-// process closes it and ends its session. Processes the session left running on their own (under tmux, screen or
-// nohup) are not ended. It reports how many connections it ended.
+// is never ended before its certificate expires (later by the time spent suspended). The connection is ended with its
+// login session where it has one (terminate: what the session left running, under tmux or nohup, goes too), else by
+// ending its privileged process. It reports how many connections it ended.
 func (e *Env) endRevoked(ctx context.Context, krl *sshca.KRL, cas []ssh.PublicKey, maxAge time.Duration) (int, error) {
 	if e.goos() != "linux" {
 		return 0, errors.New("--end-revoked works on Linux only: it reads sshd's log from journald")

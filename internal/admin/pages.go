@@ -214,13 +214,13 @@ func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
 
 // OrgDefaults are the server's settings an organization's own replace (model.OrgSettings): limits, tokens and session.
 type OrgDefaults struct {
-	PasswordMinLength, LockoutAttempts, LockoutMinutes, APITokenMaxDays, PrivilegedTTL, PrivilegedIdle int
+	PasswordMinLength, LockoutAttempts, LockoutMinutes, APITokenMaxDays, PrivilegedTTL, PrivilegedIdle, GrantsPerUser int
 }
 
 func (m *Module) orgDefaults() OrgDefaults {
 	c := m.s.Cfg
 	return OrgDefaults{c.Limits.PasswordMinLength, c.Limits.LockoutAttempts, c.Limits.LockoutMinutes, c.Tokens.APITokenMaxDays,
-		c.Session.PrivilegedTTL, c.Session.PrivilegedIdle}
+		c.Session.PrivilegedTTL, c.Session.PrivilegedIdle, c.Limits.GrantsPerUser}
 }
 
 func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {

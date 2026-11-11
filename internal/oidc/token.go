@@ -448,6 +448,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		}
 		g.Epoch, g.Stamp = sess.Epoch, sess.Stamp
 	}
+	p.noteGrant(ctx, g.OrgID, g.UserID, g.ID)
 	detail := map[string]string{"grant": g.ID, "user_id": u.ID, "scopes": strings.Join(g.Scopes, " "), "auth_session": g.SessionID}
 	if via != "" {
 		detail["grant_type"] = via
@@ -514,30 +515,33 @@ func (p *Provider) grantLive(ctx context.Context, g *model.Grant) (*model.User, 
 	return u, service.SessionUsableAt(s, u, want), nil
 }
 
-// revokeGrant deletes grant id (tombstone) of user userID of organization orgID, revokes the SSH certificates issued
-// under it, and forgets cached knowledge of it. The error is the deletion's or the certificates': a revocation that did
-// not persist is reported to whoever asked for it (RFC 7009 §2.2.1: 503, the client retries), never answered or
-// audited as done. The cache is told "gone" before the deletion (a check racing it must not keep the grant alive on a
+// revokeGrant deletes grants ids (tombstones) of user userID of organization orgID, revokes the SSH certificates issued
+// under them, and forgets cached knowledge of them. The error is the deletions' or the certificates': a revocation that
+// did not persist is reported to whoever asked for it (RFC 7009 §2.2.1: 503, the client retries), never answered or
+// audited as done. The cache is told "gone" before each deletion (a check racing it must not keep the grant alive on a
 // copy read just before), and emptied when the deletion fails: the grant is still in the store, and the retry must
 // find it there to end it, not answer 200 to a cached "nothing to revoke".
-func (p *Provider) revokeGrant(ctx context.Context, orgID, userID, id string) error {
-	p.grants.Put(id, grantState{})
+func (p *Provider) revokeGrant(ctx context.Context, orgID, userID string, ids ...string) error {
 	ctx = context.WithoutCancel(ctx)
-	// The grant is deleted first, whatever its certificates do: the end of a grant (a replayed refresh token's family,
-	// say) never waits on them. They are revoked after, as endSessions explains: a certificate signed under it meanwhile
-	// either is listed then or finds the grant gone and is revoked by its signer (Service.SignUserSSH), save within a
-	// gossip cluster's replication lag. Whose they are comes from the caller, not the grant, so a retry after a failure
-	// to revoke them does so again though the grant is gone by then (a grant already gone counts as deleted).
-	derr := p.svc.Grants.Delete(ctx, id)
-	if gone(derr) {
-		derr = nil
+	// The grants are deleted first, whatever their certificates do: the end of a grant (a replayed refresh token's
+	// family, say) never waits on them. They are revoked after, as endSessions explains: a certificate signed under one
+	// meanwhile either is listed then or finds the grant gone and is revoked by its signer (Service.SignUserSSH), save
+	// within a gossip cluster's replication lag. Whose they are comes from the caller, not the grant, so a retry after a
+	// failure to revoke them does so again though the grant is gone by then (a grant already gone counts as deleted).
+	// The certificates of all the grants are listed once.
+	from := make(map[string]bool, len(ids))
+	var errs []error
+	for _, id := range ids {
+		from[id] = true
+		p.grants.Put(id, grantState{})
+		if err := p.svc.Grants.Delete(ctx, id); err != nil && !gone(err) {
+			p.grants.Del(id) // may still be in the store: the retry ends it
+			errs = append(errs, err)
+		}
 	}
-	if derr != nil {
-		p.grants.Del(id) // may still be in the store: the retry ends it
-	}
-	cerr := p.svc.RevokeSSHCertsFrom(ctx, orgID, userID, map[string]bool{id: true})
-	if err := errors.Join(derr, cerr); err != nil {
-		p.log.Warn("oidc: revoking grant", "grant", id, "error", err)
+	errs = append(errs, p.svc.RevokeSSHCertsFrom(ctx, orgID, userID, from))
+	if err := errors.Join(errs...); err != nil {
+		p.log.Warn("oidc: revoking grants", "grants", ids, "error", err)
 		return unavailable(err)
 	}
 	return nil

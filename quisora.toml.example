@@ -112,6 +112,7 @@ lockout_minutes = 15
 password_workers = 0                      # concurrent password hashes (0 = number of CPUs); waiting sign-ins are served by organization in turn
 password_min_length = 15                  # shortest password accepted (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)
 ephemeral_mb = 1024                       # memory per node for short-lived sign-in state (flows, codes, pushed requests); past it they get 503
+grants_per_user = 1000                    # refresh grants one user may hold (10 to 100000); past it the least recently used are ended; an organization may set its own
 
 [log]
 level = "info"                            # trace, debug, info, warn, error

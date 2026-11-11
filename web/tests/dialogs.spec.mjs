@@ -143,9 +143,9 @@ test('header: on a page with nothing live the switch says On, not Connecting', a
   await expect(page.locator('#live-state')).toHaveText('On')
   await page.goto(`${A}/users`, { waitUntil: 'load' })
   await expect(page.locator('#live-state')).toHaveText('Connected')
-  // the account page follows the user's own stream (the super admin's, in the primary organization)
+  // the account page has no stream (it refetches when its tab comes back)
   await page.goto('/o/primary/account', { waitUntil: 'load' })
-  await expect(page.locator('#live-state')).toHaveText('Connected')
+  await expect(page.locator('#live-state')).toHaveText('On')
 })
 
 test('providers: allowed email domains are chips, none by default (any address); a bad one is refused on Save, focused and kept for correcting', async ({ page }) => {

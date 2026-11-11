@@ -696,3 +696,115 @@ func TestRevokeSupersededRefreshToken(t *testing.T) {
 		t.Fatalf("oauth.revoke: %+v", ev)
 	}
 }
+
+// A user's refresh grants are capped: past the cap, the grants without offline_access go first, the oldest first, then
+// those with it, the least recently used first, never the grant just made. Each ends as a revocation ends it (its
+// refresh token refused, its SSH certificates revoked) and is audited; the user's sessions and other grants stay.
+func TestUserGrantsCapped(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ctx := context.Background()
+	svc := h.env.Svc
+	cl, secret := h.newClient(nil)
+	gidOf := func(rt string) string { return strings.SplitN(rt, ".", 2)[0] }
+	// age sets when grant id was made and last rotated.
+	age := func(id string, created, rotated time.Duration) {
+		t.Helper()
+		g, err := svc.Grants.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Created, g.Rotated = time.Now().Add(-created), time.Time{}
+		if rotated > 0 {
+			g.Rotated = time.Now().Add(-rotated)
+		}
+		if err := svc.Grants.Update(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	login := func(scope string) (rt, sid string) {
+		t.Helper()
+		r, _ := h.login(cl, secret, url.Values{"scope": {scope}})
+		return r.str("refresh_token"), claimsOf(t, r.str("id_token"))["sid"].(string)
+	}
+
+	// The SSH application's grant, the oldest of all, with a certificate signed under it.
+	e := h.sshTenant("prod", service.SSHSettingsInput{CertTTL: ptr(3600)})
+	key, _ := sshKey(t)
+	st, m, _ := e.sign(e.mfaToken(h.user), map[string]any{"public_key": key})
+	if st != 200 {
+		t.Fatalf("sign: %d %v", st, m)
+	}
+	certs, err := svc.SSHCertsOf(ctx, h.user)
+	if err != nil || len(certs) != 1 {
+		t.Fatalf("certificates: %v %v", certs, err)
+	}
+	sshGrant, serial := certs[0].SignIn, strconv.FormatUint(certs[0].Serial, 10)
+	age(sshGrant, 30*time.Hour, 0)
+	// One grant lasting as long as its session, older than every grant with offline access.
+	session, sessionSID := login("openid")
+	age(gidOf(session), 20*time.Hour, 0)
+	// Nine with offline access: the oldest made is the most recently used; the next oldest, never used, goes.
+	var offline []string
+	for i := range 9 {
+		rt, _ := login("openid offline_access")
+		offline = append(offline, rt)
+		age(gidOf(rt), time.Duration(15-i)*time.Hour, 0)
+	}
+	age(gidOf(offline[0]), 15*time.Hour, time.Hour)
+	svc.WaitBackground()
+	// The organization's own cap, the least it may set: past it, down to 9.
+	org, err := svc.Orgs.Get(ctx, h.env.Primary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	org.Settings.GrantsPerUser = 10
+	if _, err := svc.UpdateOrg(ctx, service.System, org.ID, service.OrgInput{Settings: &org.Settings}); err != nil {
+		t.Fatal(err)
+	}
+	h.p.grantRoom.Clear() // as once this node's count of them has expired
+
+	// The twelfth grant, the newest, lasting as long as its session: it stays, three go.
+	newest, _ := login("openid")
+	svc.WaitBackground()
+	gone := map[string]bool{sshGrant: true, gidOf(session): true, gidOf(offline[1]): true}
+	all, err := svc.Grants.All(ctx, h.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 9 {
+		t.Errorf("%d grants left, want 9", len(all))
+	}
+	for _, g := range all {
+		if gone[g.ID] {
+			t.Errorf("grant %s (scopes %v) kept", g.ID, g.Scopes)
+		}
+	}
+	tokenErr(t, h.refreshWith(cl, secret, session), 400, "invalid_grant")
+	tokenErr(t, h.refreshWith(cl, secret, offline[1]), 400, "invalid_grant")
+	for _, rt := range append([]string{newest, offline[0]}, offline[2:]...) {
+		if r := h.refreshWith(cl, secret, rt); r.status != 200 {
+			t.Errorf("a kept grant's refresh: %d %v", r.status, r.m)
+		}
+	}
+	list, err := svc.SSHRevoked(ctx, e.tn.ID)
+	if err != nil || len(list) != 1 || strconv.FormatUint(list[0].Cert.Serial, 10) != serial || list[0].Reason != service.SSHReasonSignInEnded {
+		t.Errorf("the ended grant's certificate: %+v %v", list, err)
+	}
+	// The ended grant's session is not: the user is still signed in there.
+	if _, err := svc.Sessions.Get(ctx, sessionSID); err != nil {
+		t.Errorf("the session of an ended grant: %v", err)
+	}
+	if u, err := svc.Users.Get(ctx, h.user.ID); err != nil || u.SessionEpoch != h.user.SessionEpoch {
+		t.Errorf("the user: %v, %v", u, err)
+	}
+	ev := h.auditEvents("oauth.grant.evict")
+	if len(ev) != 3 {
+		t.Fatalf("oauth.grant.evict: %+v", ev)
+	}
+	for _, e := range ev {
+		if !gone[e.Detail["grant"]] || e.Detail["grant_revoked"] != "true" || e.Target != "alice" {
+			t.Errorf("oauth.grant.evict: %+v", e)
+		}
+	}
+}

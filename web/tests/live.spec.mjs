@@ -336,23 +336,72 @@ test('user page cards: sessions follow sign-ins and sign-outs elsewhere', async 
   } finally { await uctx.close(); await close() }
 })
 
-// The account page follows changes made elsewhere to the user's own records: an administrator adding and removing an
-// address shows in Email addresses without a reload.
-test('account page: addresses an administrator adds and removes appear and go', async ({ browser, baseURL }) => {
+// The account page has no live updates: it refetches what it shows when its tab comes back. An address an
+// administrator adds while the tab is hidden shows once it is shown again, without a reload.
+test('account page: a change made while the tab was hidden shows when it comes back', async ({ browser, baseURL }) => {
   const { b, close } = await twoAdmins(browser, baseURL, `${A}/audit`)
   const uctx = await browser.newContext({ ignoreHTTPSErrors: true, baseURL })
   try {
     const up = await uctx.newPage()
+    let streams = 0
+    up.on('request', (r) => { if (r.url().includes('/events')) streams++ })
     await signIn(up, 'user')
     await up.goto('/o/acme/account')
     const me = await apiCall(up, 'GET', '/o/acme/api-internal/account')
-    const id = me.user.id
     const list = up.getByRole('list', { name: 'Email addresses' })
     await expect(list).toBeVisible()
+    await up.evaluate(() => { window.__reloaded = true })
+    const visible = (v) => up.evaluate((v) => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (v ? 'visible' : 'hidden') })
+      document.dispatchEvent(new Event('visibilitychange'))
+    }, v)
+    await up.waitForTimeout(5100) // at most one refetch every 5 s, counted from the page's load
+    await visible(false)
     const address = uniq('live') + '@example.com'
-    await apiCall(b, 'POST', `${API}/users/${id}/emails`, { address })
+    await apiCall(b, 'POST', `${API}/users/${me.user.id}/emails`, { address })
+    await up.waitForTimeout(1000)
+    await expect(list).not.toContainText(address) // no stream: nothing changes while hidden
+    await visible(true)
     await expect(list).toContainText(address, { timeout: 4000 })
-    await apiCall(b, 'DELETE', `${API}/users/${id}/emails/${encodeURIComponent(address)}`)
-    await expect(list).not.toContainText(address, { timeout: 4000 })
+    expect(await up.evaluate(() => window.__reloaded)).toBe(true) // same document: no reload
+    expect(streams).toBe(0)
+    await apiCall(b, 'DELETE', `${API}/users/${me.user.id}/emails/${encodeURIComponent(address)}`)
   } finally { await uctx.close(); await close() }
+})
+
+// One stream per browser: two tabs of the console in one browser share one connection to /api/events (the tab holding
+// the lock forwards what it receives); both follow a change, and when the holder closes the other takes over.
+test('two tabs of the console share one stream, and the other takes over when the holder closes', async ({ browser, baseURL }) => {
+  const { b, close } = await twoAdmins(browser, baseURL, `${A}/audit`)
+  const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 900 }, baseURL })
+  try {
+    const streams = []
+    ctx.on('request', (r) => { if (r.url().includes('/api/events')) streams.push(r.frame().page()) })
+    const t1 = await ctx.newPage()
+    await signIn(t1, 'admin')
+    const t2 = await ctx.newPage()
+    for (const t of [t1, t2]) {
+      await t.goto(`${A}/users`)
+      await t.waitForSelector('tbody tr')
+      await expect(t.locator('#live-state')).toHaveText('Connected')
+    }
+    expect(streams.length).toBe(1)
+    const shows = async (tabs, prefix) => {
+      const name = uniq(prefix)
+      for (const t of tabs) {
+        await t.getByRole('searchbox', { name: 'Search users' }).fill(name)
+        await expect(t.getByRole('heading', { name: 'Nothing matches your search' })).toBeVisible()
+      }
+      await apiCall(b, 'POST', `${API}/users`, { username: name, email: `${name}@acme.example`, given_name: 'Tab' })
+      for (const t of tabs) await expect(t.getByRole('row', { name: new RegExp(name) })).toBeVisible({ timeout: 3500 })
+    }
+    await shows([t1, t2], 'zztabs')
+    const holder = streams[0]
+    const other = holder === t1 ? t2 : t1
+    await holder.close()
+    await expect.poll(() => streams.length).toBe(2)
+    expect(streams[1]).toBe(other)
+    await expect(other.locator('#live-state')).toHaveText('Connected')
+    await shows([other], 'zzhandover')
+  } finally { await ctx.close(); await close() }
 })

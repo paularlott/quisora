@@ -29,6 +29,8 @@ func TestValidateMessages(t *testing.T) {
 		want string
 	}{
 		"public url scheme":                      {func(c *Config) { c.Server.PublicURL = "http://x" }, "server.public_url"},
+		"grants per user low":                    {func(c *Config) { c.Limits.GrantsPerUser = 9 }, "limits.grants_per_user"},
+		"grants per user high":                   {func(c *Config) { c.Limits.GrantsPerUser = 100001 }, "limits.grants_per_user"},
 		"theme":                                  {func(c *Config) { c.UI.DefaultTheme = "blue" }, "ui.default_theme"},
 		"backend":                                {func(c *Config) { c.Storage.Backend = "mongo" }, "storage.backend"},
 		"half tls":                               {func(c *Config) { c.Server.TLSCert = "x" }, "tls_cert and server.tls_key"},

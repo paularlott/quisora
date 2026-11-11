@@ -385,8 +385,13 @@ certificate expires (later by the time spent suspended). Shortening `cert_ttl` e
 longer than the new value at the next fetch. Each one is printed (`ended the SSH connection of … (serial …, process
 …): its certificate is revoked`, or `…: open longer than the certificate lifetime (8h0m0s), its certificate has
 expired`), and a log that cannot be read
-makes `fetch` exit 1 after the files are written. Processes a session left running on their own (under `tmux`, `screen`
-or `nohup`) are not ended: in an incident, end those by hand. Add it to the service's `ExecStart`:
+makes `fetch` exit 1 after the files are written. Where the connection has a login session of its own (sshd with
+`UsePAM yes` and systemd-logind, the default on Ubuntu, Debian and Fedora: the connection's process leads a
+`session-<id>.scope`), the whole session is ended (`loginctl terminate-session`, only while that process is still its
+leader), so what the session left running in it goes too: `tmux`, `screen`, `nohup`, `setsid`. Where it has none (no
+PAM, no logind, a container), only the connection is ended, and processes it left running on their own stay. Either
+way, processes started outside the session (`systemd-run --user`, a user service, a cron job) are not ended: in an
+incident, look for those by hand. Add it to the service's `ExecStart`:
 
 ```
 ExecStart=/usr/local/bin/quisora ssh fetch --end-revoked https://id.example.com/o/<org id>/ssh/<tenant id>
@@ -932,8 +937,10 @@ their certificates go on the list as `user_disabled`.
   revoking the certificate itself. Signing out of the browser does not revoke it: it lasts to its expiry. Certificates
   issued before the sign-in was recorded follow only the latter.
 - Sessions already open on a server stay open, unless it runs `fetch --end-revoked` (which also ends every connection
-  open longer than `cert_ttl`, so one whose certificate expired before its access was removed does not stay open); and
-  processes a session left running on their own (`tmux`, `nohup`) are not ended even then.
+  open longer than `cert_ttl`, so one whose certificate expired before its access was removed does not stay open). It
+  ends the connection's whole login session where it has one (logind), `tmux` and `nohup` included; processes started
+  outside the session (`systemd-run --user`, user services, cron) are not ended, nor, without logind, those a session
+  left running.
 - A host certificate revocation reaches only clients that use `RevokedHostKeys`
   ([Clients and host certificate revocation](#clients-and-host-certificate-revocation)).
 - A server that has stopped fetching keeps its old list.

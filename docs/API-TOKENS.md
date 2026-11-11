@@ -80,7 +80,8 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/groups/<group id>
 curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users/<user id>/sessions"
 
 # follow changes in your organization as they happen (server-sent events; -N turns off curl's buffering);
-# a super admin can add ?org=<name> to watch another organization
+# a super admin can add ?org=<name> to watch another organization. These are the admin console's live updates (a
+# browser opens one per organization, shared by its tabs); a user may hold 4 at once on each node
 curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/events"
 ```
 

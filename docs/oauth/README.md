@@ -129,7 +129,7 @@ address and its budget.
 | Authorization code | 60 seconds (`tokens.code_ttl`, at most 600) |
 | Access token | 10 minutes (`tokens.access_ttl`) |
 | ID token | 10 minutes (`tokens.id_token_ttl`) |
-| Refresh token | 30 days (`tokens.refresh_ttl`), and only as long as the user's session without `offline_access` |
+| Refresh token | 30 days (`tokens.refresh_ttl`), and only as long as the user's session without `offline_access`; a user keeps at most 1,000 grants by default (`limits.grants_per_user`, or the organization's own), the least recently used ended first ([how many](sign-in.md#refreshing)) |
 
 Access and ID tokens are JWTs signed with the server's keys (ES256 by default; EdDSA, RS256 or PS256 per client),
 which rotate automatically: verify them against the organization's `/o/<org id>/oauth/jwks` (the keys are the same for every organization; `iss` says which organization a token is from, and an API must check it) and refresh the keys when a token names a `kid` you do

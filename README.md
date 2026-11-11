@@ -38,7 +38,8 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   can reset a manager's or administrator's sign-in (a new invitation, removing the password, an authenticator app,
   a passkey or a provider link) or lower their role, so one administrator cannot take over another's account, and
   only a super admin can sign out the primary organization, which holds the super admins.
-- **Admin console.** Light and dark themes, live updates across nodes, WCAG 2.2 AA, no CDNs. Skins chosen per organization (built-in
+- **Admin console.** Light and dark themes, live updates across nodes (one connection per browser, shared by its
+  tabs), WCAG 2.2 AA, no CDNs. Skins chosen per organization (built-in
   ones, and custom ones super admins add in the console), and a logo, colour and footer of their own for each
   organization ([web/skins](web/skins/README.md)).
 - **Storage.** BadgerDB, SQLite, PostgreSQL, MySQL or MariaDB.

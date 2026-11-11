@@ -196,6 +196,14 @@ answers 503 `temporarily_unavailable` instead: the token may be good, keep it an
   out there ends it. With it, refresh tokens outlive the session, for `tokens.refresh_ttl` (30 days by default).
   Either way, ending the session from another session or by an administrator, signing the user out everywhere, locking
   them out or an emergency sign-out ends it ([signing out and ending a session](../sign-in/README.md#sessions)).
+- **How many.** Each code exchange makes a new grant, so an application that signs in again (even silently, with
+  `prompt=none`) instead of refreshing piles them up. A user keeps at most 1,000 by default
+  (`limits.grants_per_user`; a super admin can set an organization's own, from 10 to 100,000, for example where many
+  machines sign in as one user with `offline_access`): past that, Quisora ends the excess, down to 90% of the cap,
+  those without `offline_access` first, then those with it, the least recently used first
+  (`oauth.grant.evict` in the audit log). An ended grant's refresh token is refused (`invalid_grant`) and the SSH
+  certificates issued under it are revoked; the user stays signed in. Refresh the tokens you have rather than signing
+  in again.
 
 ## Introspection
 

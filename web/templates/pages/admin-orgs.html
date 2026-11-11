@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-public="{{.Site.PublicURL}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" {{with .Data.Defaults}}data-pwmin="{{.PasswordMinLength}}" data-lockout="{{.LockoutAttempts}}" data-lockmin="{{.LockoutMinutes}}" data-tokendays="{{.APITokenMaxDays}}" data-pttl="{{.PrivilegedTTL}}" data-pidle="{{.PrivilegedIdle}}"{{end}} data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
+<div x-data="adminOrgs" data-api="{{.Data.API}}" data-base="{{.Data.Base}}" data-public="{{.Site.PublicURL}}" data-ttl="{{.Data.DefaultSessionTTL}}" data-idle="{{.Data.DefaultSessionIdle}}" {{with .Data.Defaults}}data-pwmin="{{.PasswordMinLength}}" data-lockout="{{.LockoutAttempts}}" data-lockmin="{{.LockoutMinutes}}" data-tokendays="{{.APITokenMaxDays}}" data-pttl="{{.PrivilegedTTL}}" data-pidle="{{.PrivilegedIdle}}" data-grants="{{.GrantsPerUser}}"{{end}} data-sort="name" data-noun="organizations" data-live="org" class="stack-lg">
   <div class="page-head glass">
     <div>
       <p class="eyebrow">Administration</p>
@@ -89,6 +89,16 @@
             <p class="help" id="h-lockout_minutes" x-text="help.lockout_minutes"></p>
             <p class="field-error" id="e-lockout_minutes" x-text="errors.lockout_minutes"></p>
           </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="fieldset">
+        <legend>Application sign-ins</legend>
+        <div class="field">
+          <label class="label" for="f-grants_per_user">Most kept per person</label>
+          <input class="input" id="f-grants_per_user" name="grants_per_user" type="number" min="10" max="100000" step="1" inputmode="numeric" x-model="form.grants_per_user" :aria-invalid="invalid.grants_per_user" aria-describedby="e-grants_per_user h-grants_per_user">
+          <p class="help" id="h-grants_per_user" x-text="help.grants_per_user"></p>
+          <p class="field-error" id="e-grants_per_user" x-text="errors.grants_per_user"></p>
         </div>
       </fieldset>
 

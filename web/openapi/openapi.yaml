@@ -5326,6 +5326,10 @@ components:
         privileged_idle:
           type: integer
           description: idle timeout of managers and above, seconds; 0 = server default (session.privileged_idle)
+        grants_per_user:
+          type: integer
+          description: refresh grants one user may hold, 10 to 100000; past it the least recently used are ended; 0 = server
+            default (limits.grants_per_user)
     Provider:
       type: object
       properties:
