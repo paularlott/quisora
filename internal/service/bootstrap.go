@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -22,6 +23,11 @@ func (s *Service) Bootstrap(ctx context.Context, adminEmail string) (*model.User
 		org = &model.Org{Name: "primary", DisplayName: "Primary", Settings: settings, Primary: true}
 		if err := s.Orgs.Create(ctx, org); err != nil && !errors.Is(err, store.ErrConflict) {
 			return nil, "", mapStore(err)
+		}
+		// A new store has no accounts from before the provider that set up their credentials was recorded: the pass
+		// that marks those (MarkLegacySetUpBy) has nothing to do, and promotions need not judge accounts by its rule.
+		if err := s.putLock(ctx, legacySetUpByID, "done", time.Now().AddDate(100, 0, 0)); err != nil {
+			return nil, "", err
 		}
 		if org, err = s.PrimaryOrg(ctx); err != nil { // ours, or one created at the same moment elsewhere
 			return nil, "", err

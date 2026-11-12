@@ -301,12 +301,14 @@ func TestPromotionWithoutResetTidiesTheSessionsItEnds(t *testing.T) {
 }
 
 // Accounts from before the provider whose sign-in set up their credentials was recorded (SetUpBy reads "") are marked
-// once by MarkLegacySetUpBy: one with no second factor of its own, a live link it did not connect itself (by email,
-// or the provider's first sign-in) and a password or a live API token records that provider, and so is reset when
-// promoted. One with a second factor, with only a link it connected, or with nothing to sign in with is left. Once it
-// has gone through every link it does nothing again.
+// once by MarkLegacySetUpBy: one with a live link to a provider, however it was linked, and anything to sign in with (a
+// password, a live API token, an authenticator app) records that provider, and so is reset when promoted. One with no
+// link, or nothing to sign in with, is left. Once it has gone through every account it does nothing again.
 func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
 	e := newEnv(t)
+	if err := e.svc.ForgetLegacyMarked(e.ctx); err != nil {
+		t.Fatal(err)
+	}
 	prov, err := e.svc.CreateProvider(e.ctx, service.System, e.primary.ID, goodProvider("sso"))
 	if err != nil {
 		t.Fatal(err)
@@ -339,10 +341,18 @@ func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
 		account("provisioned", "provision", false, false, true): prov.ID,
 		account("byadmin", "admin", true, false, false):         prov.ID,
 		account("unknown", "", true, false, false):              prov.ID,
-		account("ownapp", "email", true, true, false):           "",
-		account("connected", "connect", true, false, false):     "",
+		account("ownapp", "email", false, true, false):          prov.ID,
+		account("connected", "connect", true, false, false):     prov.ID,
 		account("nothing", "email", false, false, false):        "",
 	}
+	unlinked := e.user(e.primary.ID, "unlinked", model.RoleUser)
+	if set := e.fresh(unlinked); true {
+		set.PasswordHash = "hash"
+		if err := e.svc.Users.Update(e.ctx, set); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want[unlinked] = ""
 	var m service.LegacySetUpBy
 	total, runs := 0, 0
 	for done := false; !done; runs++ {
@@ -352,7 +362,7 @@ func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
 		}
 		total += n
 	}
-	if total != 4 || runs < 4 {
+	if total != 6 || runs < 4 {
 		t.Fatalf("marked %d in %d runs", total, runs)
 	}
 	for u, by := range want {
@@ -377,6 +387,35 @@ func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
 		if got := e.fresh(u); got.PasswordHash != "" || got.SetUpBy != "" {
 			t.Errorf("%s: not reset when promoted", u.Username)
 		}
+	}
+}
+
+// Until the pass that marks old accounts has finished, a promotion judges an unmarked account by the pass's rule
+// itself: an account with a link and an authenticator app (which the provider's holder may have enrolled) is reset when
+// promoted, though the pass has not reached it.
+func TestPromotionBeforeTheLegacyPassJudgesTheAccount(t *testing.T) {
+	e := newEnv(t)
+	if err := e.svc.ForgetLegacyMarked(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	prov, err := e.svc.CreateProvider(e.ctx, service.System, e.primary.ID, goodProvider("sso"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := e.user(e.primary.ID, "early", model.RoleUser)
+	if err := e.svc.Identities.Create(e.ctx, model.NewIdentity(e.fresh(u), prov, "sub-early", u.Email, "email")); err != nil {
+		t.Fatal(err)
+	}
+	set := e.fresh(u)
+	set.PasswordHash, set.TOTPSecret = "hash", "sealed secret"
+	if err := e.svc.Users.Update(e.ctx, set); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.fresh(u); got.PasswordHash != "" || got.HasTOTP() {
+		t.Fatal("an unmarked account with a link and an authenticator app was promoted without a reset")
 	}
 }
 

@@ -43,3 +43,9 @@ func (s *Service) EnsureSSHKeysNow(ctx context.Context) error {
 	defer func() { sweepMinAge = saved }()
 	return s.EnsureSSHKeys(ctx)
 }
+
+// ForgetLegacyMarked makes the store look like one from before SetUpBy was recorded, whose old accounts have not all
+// been marked yet (MarkLegacySetUpBy).
+func (s *Service) ForgetLegacyMarked(ctx context.Context) error {
+	return s.Locks.Delete(ctx, legacySetUpByID)
+}

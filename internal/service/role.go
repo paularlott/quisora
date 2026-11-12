@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -55,6 +56,17 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 	if len(links) > 0 {
 		u.BumpSecurity()
 	}
+	if u.SetUpBy == "" { // not marked yet: until the pass that marks old accounts has finished, judged here as it would be
+		done, err := s.legacyMarked(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !done {
+			if u.SetUpBy, err = s.legacySetUpBy(ctx, u); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
 	setUpBy, cred := u.SetUpBy, uint64(0)
 	// Marked, the account is reset whatever links it keeps: one connected under that provider's own sign-in was not the
 	// user's choice either (the provider's holder could connect another subject of it), and the reset's new credential
@@ -83,41 +95,35 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 }
 
 // legacySetUpByID is the record (a lock whose lease never runs out) saying that MarkLegacySetUpBy has gone through
-// every sign-in link once: it is not done again. Its "-2" makes a store where the first pass ran (which marked only
-// links made by email or a first sign-in) go through them all again under the rule as it is now.
-const legacySetUpByID = "user-setupby-marked-2"
+// every account once: it is not done again. Its "-3" makes a store where an earlier pass ran (which went through
+// links, not accounts, and took a second factor for the account's own) go through them all again under the rule as it
+// is now.
+const legacySetUpByID = "user-setupby-marked-3"
 
-// LegacySetUpBy is where MarkLegacySetUpBy has got to: the last sign-in link it went through.
+// LegacySetUpBy is where MarkLegacySetUpBy has got to: the last account it went through.
 type LegacySetUpBy struct{ after string }
 
 // MarkLegacySetUpBy brings accounts from before the provider whose sign-in set up their credentials was recorded
-// (model.User.SetUpBy, which their records read as "") under the same rules as the rest: an account with no second
-// factor of its own (no authenticator app, no passkey), a live link to a provider that it did not connect itself
-// (any link but "connect", as promotion judges them in unchosenLinks: made by email address, by the provider's first
-// sign-in, by an administrator, or of unknown origin; its holder could sign in to the account) and a password
-// or a live API token records that provider, so that a promotion, or disconnecting the provider, resets its sign-in
-// (applyRole, removeWay). It goes through at most limit links from where m got to, and returns how many accounts it
-// marked and whether it has gone through them all; then it records that it has (legacySetUpByID) and does nothing
-// again. Marking an account again changes nothing (one that records a provider keeps it). Only the housekeeping
-// leader runs it.
+// (model.User.SetUpBy, which their records read as "") under the same rules as the rest (legacySetUpBy), so that a
+// promotion, or disconnecting the provider, resets their sign-in (applyRole, removeWay). It goes through at most
+// limit accounts from where m got to, and returns how many it marked and whether it has gone through them all; then it
+// records that it has (legacySetUpByID) and does nothing again. Marking an account again changes nothing (one that
+// records a provider keeps it). Only the housekeeping leader runs it; until it has finished, a promotion judges the
+// account by the same rule itself (applyRole). An account promoted before the provider was recorded at all (a build
+// before any release) lost its links then and is left as it is: nothing says any more which provider it had.
 func (s *Service) MarkLegacySetUpBy(ctx context.Context, m *LegacySetUpBy, limit int) (marked int, done bool, err error) {
-	switch _, err := s.Locks.Get(ctx, legacySetUpByID); {
-	case err == nil:
-		return 0, true, nil
-	case !errors.Is(err, store.ErrNotFound):
-		return 0, false, mapStore(err)
+	if done, err := s.legacyMarked(ctx); done || err != nil {
+		return 0, done, err
 	}
 	seen := 0
-	all, err := walk(ctx, s.Identities, &m.after, func(l *model.Identity) (bool, error) {
+	all, err := walk(ctx, s.Users, &m.after, func(u *model.User) (bool, error) {
 		seen++
-		if l.Via != "connect" { // as unchosenLinks: every link the account did not connect itself
-			ok, err := s.markSetUpBy(ctx, l)
-			if err != nil {
-				return false, err
-			}
-			if ok {
-				marked++
-			}
+		ok, err := s.markSetUpBy(ctx, u.ID)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			marked++
 		}
 		return seen >= limit, nil
 	})
@@ -127,38 +133,85 @@ func (s *Service) MarkLegacySetUpBy(ctx context.Context, m *LegacySetUpBy, limit
 	return marked, true, s.putLock(ctx, legacySetUpByID, "done", time.Now().AddDate(100, 0, 0))
 }
 
-// markSetUpBy records l's provider on its account when MarkLegacySetUpBy's rule holds for it, as the account is
-// written (a compare-and-swap of the copy it was judged on, judged again when it changed meanwhile).
-func (s *Service) markSetUpBy(ctx context.Context, l *model.Identity) (bool, error) {
+// legacyMarked reports whether MarkLegacySetUpBy has gone through every account.
+func (s *Service) legacyMarked(ctx context.Context) (bool, error) {
+	switch _, err := s.Locks.Get(ctx, legacySetUpByID); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, store.ErrNotFound):
+		return false, nil
+	default:
+		return false, mapStore(err)
+	}
+}
+
+// legacySetUpBy is the provider an account from before SetUpBy was recorded is taken to have been set up through:
+// that of a live link to a provider (one it did not connect itself first, else one it did: connected under that
+// provider's own sign-in, the provider's holder could have connected it) when the account has anything to sign in
+// with (a password, a live API token, an authenticator app or a passkey: any of them may have been set up by the
+// provider's holder while it had no second factor, the second factor included, at the step that enrols it). ""
+// when u records a provider already, has no live link, or nothing to sign in with.
+func (s *Service) legacySetUpBy(ctx context.Context, u *model.User) (string, error) {
+	if u.SetUpBy != "" {
+		return "", nil
+	}
+	ids, err := s.Identities.All(ctx, u.ID)
+	if err != nil {
+		return "", mapStore(err)
+	}
+	ids = slices.DeleteFunc(ids, func(l *model.Identity) bool { return !u.Counts(l) })
+	if len(ids) == 0 {
+		return "", nil
+	}
+	slices.SortFunc(ids, func(a, b *model.Identity) int { // one not connected first, then by id: the same each time
+		if (a.Via == "connect") != (b.Via == "connect") {
+			if a.Via == "connect" {
+				return 1
+			}
+			return -1
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	armed := u.PasswordHash != "" || u.HasTOTP()
+	if !armed {
+		held, err := s.HeldPasskeys(ctx, u)
+		if err != nil {
+			return "", err
+		}
+		armed = held > 0
+	}
+	if !armed {
+		toks, err := s.APITokens.All(ctx, u.ID)
+		if err != nil {
+			return "", mapStore(err)
+		}
+		now := time.Now()
+		armed = slices.ContainsFunc(toks, func(t *model.APIToken) bool {
+			return u.Counts(t) && (t.Expires.IsZero() || now.Before(t.Expires))
+		})
+	}
+	if !armed {
+		return "", nil
+	}
+	return ids[0].ProviderID, nil
+}
+
+// markSetUpBy records on account userID the provider legacySetUpBy finds for it, as the account is written (a
+// compare-and-swap of the copy it was judged on, judged again when it changed meanwhile).
+func (s *Service) markSetUpBy(ctx context.Context, userID string) (bool, error) {
 	for range 4 {
-		u, err := s.Users.Get(ctx, l.UserID)
+		u, err := s.Users.Get(ctx, userID)
 		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		if err != nil {
 			return false, mapStore(err)
 		}
-		if u.SetUpBy != "" || u.HasTOTP() || !u.Counts(l) {
-			return false, nil
-		}
-		if held, err := s.HeldPasskeys(ctx, u); err != nil || held > 0 {
+		by, err := s.legacySetUpBy(ctx, u)
+		if err != nil || by == "" {
 			return false, err
 		}
-		armed := u.PasswordHash != ""
-		if !armed {
-			toks, err := s.APITokens.All(ctx, u.ID)
-			if err != nil {
-				return false, mapStore(err)
-			}
-			now := time.Now()
-			armed = slices.ContainsFunc(toks, func(t *model.APIToken) bool {
-				return u.Counts(t) && (t.Expires.IsZero() || now.Before(t.Expires))
-			})
-		}
-		if !armed {
-			return false, nil
-		}
-		u.SetUpBy = l.ProviderID
+		u.SetUpBy = by
 		if err = s.Users.Update(ctx, u); !errors.Is(err, store.ErrStale) {
 			return err == nil, mapStore(err)
 		}
