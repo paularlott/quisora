@@ -153,9 +153,8 @@ func TestResealStatusReadsNoStoredSecrets(t *testing.T) {
 		}
 	}
 	after, _ := st.counts()
-	// per status: the nodes' reports (one), the lock record after them that ends their listing (one: a new store holds
-	// the legacy marking's) and the leader's report (one), not the 50 users and the rest
-	if after-before > 20*3 {
+	// per status: the nodes' reports (one) and the leader's report (one), not the 50 users and the rest
+	if after-before > 20*2 {
 		t.Fatalf("20 status reads read %d records", after-before)
 	}
 	if _, users := st.counts(); users != 0 {

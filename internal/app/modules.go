@@ -96,8 +96,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 	var lastOthers string
 	var lastRing string
 	var sweep service.Sweep
-	var legacy service.LegacySetUpBy
-	var legacyMarked bool
 	hk := housekeepingLog{log: a.Log}
 	every := housekeepingEvery // read once: the closure below runs on its own goroutine
 	a.background(func() {
@@ -166,17 +164,6 @@ func modules(ctx context.Context, a *App) []web.Module {
 			// do not expire takes about a day at five million users.
 			if n, err := a.Svc.SweepOrphans(ctx, &sweep, 20_000); hk.ok("orphan sweep", err) && n > 0 {
 				a.Log.Info("removed records whose owner is gone", "count", n)
-			}
-			// Accounts from before the provider whose sign-in set up their credentials was recorded are marked as
-			// theirs, a batch a minute, once (service.MarkLegacySetUpBy).
-			if !legacyMarked {
-				n, done, err := a.Svc.MarkLegacySetUpBy(ctx, &legacy, 20_000)
-				if hk.ok("marking credentials set up through a provider", err) {
-					legacyMarked = done
-				}
-				if n > 0 {
-					a.Log.Info("accounts marked as set up through a provider's sign-in", "count", n)
-				}
 			}
 			// self-registered applications never used to sign anyone in go a day after registering (hourly sweep)
 			if time.Since(lastSelfReg) >= time.Hour {

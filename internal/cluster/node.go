@@ -71,13 +71,10 @@ const (
 // until the peer is upgraded or gone, as for a cluster.size mismatch.
 //
 // 1 was the first release's leaderless gossip mode (quorum compare-and-swap, change feeds); 2 is the partition
-// protocol, which that mode's nodes cannot take part in, so a node of either refuses the other. 3 records on an
-// account the provider whose sign-in set up its credentials (model.User.SetUpBy): a node of 2 decodes a user without
-// it and, rewriting the user, would drop it, so a promotion would no longer reset the account; a node of 3 refuses one
-// of 2 (every node changes at once, as no release has spoken 2).
+// protocol, which that mode's nodes cannot take part in, so a node of either refuses the other.
 const (
-	compat    = 3
-	minCompat = 3
+	compat    = 2
+	minCompat = 2
 )
 
 // compatible reports whether a peer speaking peerCompat, which understands down to peerMin, works with this build.

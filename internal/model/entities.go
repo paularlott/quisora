@@ -347,8 +347,7 @@ type User struct {
 	// Recorded in the write that adds the credential, and kept through every later change (what was added later was
 	// added with them) until the account's sign-in is reset: a promotion does so (service.applyRole), as does
 	// disconnecting that provider (service.removeWay), an accepted invitation and a reset of its sign-in. "" when its
-	// credentials are its own. Accounts from before it was recorded are marked once by the housekeeping leader
-	// (service.MarkLegacySetUpBy).
+	// credentials are its own.
 	SetUpBy string `msgpack:"sub,omitempty" json:"-"`
 }
 

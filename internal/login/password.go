@@ -188,8 +188,7 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 		}
 		// A manager or administrator signing in through a provider is not offered the choice either: whoever holds the
 		// provider's account would make it. This needs nothing recorded of how the account's credentials were set up
-		// (model.User.SetUpBy), so it holds for accounts from before that was recorded and for a provider connected
-		// from any session. The account sets up its own from an invitation or a sign-in link from an administrator.
+		// (model.User.SetUpBy), so it holds for a provider connected from any session. The account sets up its own from an invitation or a sign-in link from an administrator.
 		if t.Provider != "" && u.Role.Privileged() {
 			return stepResp{}, errNoOwnFactor
 		}

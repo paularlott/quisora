@@ -294,7 +294,9 @@ Whoever knows an organization's email addresses could spend every account's atte
 signing in from a new browser. The per-address request limit (`limits.login_per_ip_min`) does not stop that from many
 addresses. So an organization whose sign-in takes more than `limits.org_failures_per_minute` failed passwords
 (default 100, `0` turns it off) in a minute is **under a password spray** until a lockout time has passed without
-such a minute. While it is, a password attempt from a browser that has not signed in to the account before is charged
+such a minute. Only passwords checked and found wrong count (`login.failure` with reason `bad password`, `unknown user`
+or `inactive`), not attempts refused as locked (reasons `locked` and `address locked`): counted, one address could
+keep its organization under spray from its refusals alone. While it is, a password attempt from a browser that has not signed in to the account before is charged
 to its client address as well as to the account: each address may fail as often as one account may (the lockout attempts in
 the lockout time), across the whole organization, and past that it is refused, even the right password (`login.failure`
 with reason `address locked`), without the account being charged. An address can then lock at most one account per

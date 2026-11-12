@@ -90,11 +90,7 @@ The first time someone signs in through a provider, Quisora decides which accoun
    authenticator app, recovery codes, passkeys, connected providers and API tokens), audited as `user.signin.reset`
    with the `provider`. An administrator disconnecting that provider from the account resets its sign-in the same
    way (`user.signin.reset` with the reason `provider disconnected`); the user cannot disconnect it themselves, as
-   that would leave them no way in, and asks an administrator for an invitation first. Accounts from before Quisora
-   recorded this are marked once, after an upgrade, by the server's housekeeping: an account with no second factor of
-   its own, a link it did not connect itself (by email, by the provider's first sign-in, by an administrator, or of
-   unknown origin: the links a promotion removes), and a password or an API token is taken to have been set up through
-   that provider. A personal API token is made only while the account is as the session making it
+   that would leave them no way in, and asks an administrator for an invitation first. A personal API token is made only while the account is as the session making it
    saw it: one whose role, credentials or second factors changed meanwhile (a promotion committed during the
    request) is refused, and the user tries again.
 
