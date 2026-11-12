@@ -188,6 +188,13 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 		} else if held > 0 {
 			return stepResp{}, errFactorLost
 		}
+		// A manager or administrator signing in through a provider is not offered the choice either: whoever holds the
+		// provider's account would make it. This needs nothing recorded of how the account's credentials were set up
+		// (model.User.SetUpBy), so it holds for accounts from before that was recorded and for a provider connected
+		// from any session. The account sets up its own from an invitation or a sign-in link from an administrator.
+		if t.Provider != "" && u.Role.Privileged() {
+			return stepResp{}, errNoOwnFactor
+		}
 		// No factor of their own, and the organization takes a code by email: emailed now, instead of setting one up.
 		if m.emailOK(u, eff.EmailCodes) {
 			t.Step, ttl = "email_code", emailCodeTTL
@@ -553,3 +560,10 @@ func (m *Module) reset(w http.ResponseWriter, r *http.Request) {
 var errFactorLost = errors.New("login: the account's second factor can no longer be used")
 
 const msgFactorLost = "Your passkey can no longer be used to sign in. Ask an administrator for a new invitation."
+
+// errNoOwnFactor: a manager or administrator signed in through a provider, and has no second factor of its own to
+// give (secondFactor).
+var errNoOwnFactor = errors.New("login: a privileged account signed in through a provider has no second factor of its own")
+
+const msgNoOwnFactor = "Your account manages others and has no second factor of its own yet. Ask an administrator for " +
+	"an invitation or a sign-in link to set one up."

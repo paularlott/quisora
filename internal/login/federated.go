@@ -145,6 +145,12 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, loginURL(res.Org, res.Next, res.Tenant, "factor_lost"), http.StatusFound)
 		return
 	}
+	if errors.Is(err, errNoOwnFactor) {
+		m.audit(r, "login.failure", res.Org, res.User, "", map[string]string{"reason": "no second factor of its own",
+			"provider": res.Provider.Name})
+		http.Redirect(w, r, loginURL(res.Org, res.Next, res.Tenant, "no_own_factor"), http.StatusFound)
+		return
+	}
 	if err != nil {
 		m.s.Log.Error("ticket", "error", err)
 		http.Redirect(w, r, loginURL(res.Org, res.Next, res.Tenant, "failed"), http.StatusFound)
@@ -190,16 +196,17 @@ func upstreamErrorCode(err error) string {
 
 // upstreamMessages are the only error texts a sign-in page will show for ?error=<code>.
 var upstreamMessages = map[string]string{
-	"failed":      "Signing in with that provider did not work. Please try again.",
-	"denied":      "Sign-in with that provider was cancelled.",
-	"not_linked":  "No account here is linked to that identity. Ask an administrator for access.",
-	"unverified":  "That provider has not verified your email address, so an account could not be created.",
-	"domain":      "Your email domain is not allowed to sign in to this organization.",
-	"group":       "Your account is not in a group allowed to sign in to this organization.",
-	"exists":      "An account with your email address already exists. Sign in the way you usually do; an administrator can link this provider.",
-	"disabled":    "This sign-in method or account is disabled.",
-	"factor_lost": msgFactorLost,
-	"connect":     "Your account manages others, so it is not linked to a provider automatically. Sign in the usual way, then connect this provider on your account page.",
+	"failed":        "Signing in with that provider did not work. Please try again.",
+	"denied":        "Sign-in with that provider was cancelled.",
+	"not_linked":    "No account here is linked to that identity. Ask an administrator for access.",
+	"unverified":    "That provider has not verified your email address, so an account could not be created.",
+	"domain":        "Your email domain is not allowed to sign in to this organization.",
+	"group":         "Your account is not in a group allowed to sign in to this organization.",
+	"exists":        "An account with your email address already exists. Sign in the way you usually do; an administrator can link this provider.",
+	"disabled":      "This sign-in method or account is disabled.",
+	"factor_lost":   msgFactorLost,
+	"no_own_factor": msgNoOwnFactor,
+	"connect":       "Your account manages others, so it is not linked to a provider automatically. Sign in the usual way, then connect this provider on your account page.",
 }
 
 // loginURL is org's sign-in page, with what it needs to carry on (the tenant and next of the sign-in) and the error a

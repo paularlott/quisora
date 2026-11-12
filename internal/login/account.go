@@ -1454,7 +1454,13 @@ func (m *Module) createToken(w http.ResponseWriter, r *http.Request, a acct) {
 		m.internalError(w, r, "count passkeys", err)
 		return
 	}
+	// Made only while the account is as this session holds it (its role decided the second factor above): one changed
+	// since (a promotion, say) is a stale request, and the session is read again for the next try.
+	in.Seen = a.u
 	t, plain, err := m.s.Svc.CreateAPIToken(r.Context(), a.actor, in)
+	if errors.Is(err, service.ErrStale) {
+		m.changed(a)
+	}
 	if err != nil {
 		web.WriteError(w, err)
 		return

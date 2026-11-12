@@ -49,9 +49,10 @@ func TestConnectProviderToAccount(t *testing.T) {
 	if len(u.audits(t, "account.provider.connect")) != 1 {
 		t.Error("connect not audited")
 	}
-	// the identity now signs Ada in, and as an administrator she continues with a second factor (she has none yet,
-	// so the sign-in page asks her to set one up) even though the organization does not require one
-	if res := u.browser(t).via(t, u, p, "acme", "/x", claims("ada-sub", "whatever@x.example")); !strings.Contains(res.Header.Get("Location"), "step=1") {
+	// the identity now signs Ada in, and as an administrator she gives a second factor even though the organization
+	// does not require one; she has none of her own yet, and a provider's sign-in never sets one up for a privileged
+	// account (whoever holds the provider's account would choose it), so she is sent to an administrator for one
+	if res := u.browser(t).via(t, u, p, "acme", "/x", claims("ada-sub", "whatever@x.example")); !strings.Contains(res.Header.Get("Location"), "error=no_own_factor") {
 		t.Fatalf("sign-in with the connected identity: %q", res.Header.Get("Location"))
 	}
 

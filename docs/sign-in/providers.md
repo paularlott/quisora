@@ -79,13 +79,32 @@ The first time someone signs in through a provider, Quisora decides which accoun
    so whoever held the provider's account could enrol their own. A sign-in through such a link that is still between
    its steps (entering a code, enrolling a second factor) ends with the promotion: it cannot be finished. Each
    removal is audited as `identity.unlink`. The
-   user connects the provider again on their account page, signed in, if they want it. Enrolling before the
-   promotion would come to the same, so what a sign-in through a provider set up while the account had no
-   second factor of its own (a password, an authenticator app, a passkey, a personal API token or another connected
-   sign-in provider, and whatever was added with them) goes too, even when that provider's link was connected on the
-   account page, as its holder could have connected it: the promotion resets the account's sign-in in the
-   same write, as a reset by an administrator does (password, authenticator app, recovery codes, passkeys, connected
-   providers and API tokens), audited as `user.signin.reset` with the `provider`. The manager or administrator then sets their own from an invitation or a sign-in link.
+   user connects the provider again on their account page, signed in, if they want it. The promotion ends the
+   account's sessions in any case, and applications are told (back-channel logout).
+
+   Enrolling before the promotion would come to the same, so what a sign-in through a provider set up while the
+   account had no second factor of its own (a password, an authenticator app, a passkey, a personal API token or
+   another connected sign-in provider, and whatever was added with them) is recorded as that provider's, and goes too,
+   even when that provider's link was connected on the account page, as its holder could have connected it: the
+   promotion resets the account's sign-in in the same write, as a reset by an administrator does (password,
+   authenticator app, recovery codes, passkeys, connected providers and API tokens), audited as `user.signin.reset`
+   with the `provider`. An administrator disconnecting that provider from the account resets its sign-in the same
+   way (`user.signin.reset` with the reason `provider disconnected`); the user cannot disconnect it themselves, as
+   that would leave them no way in, and asks an administrator for an invitation first. Accounts from before Quisora
+   recorded this are marked once, after an upgrade, by the server's housekeeping: an account with no second factor of
+   its own, a link by email or by the provider's first sign-in, and a password or an API token is taken to have been
+   set up through that provider. A personal API token is made only while the account is as the session making it
+   saw it: one whose role, credentials or second factors changed meanwhile (a promotion committed during the
+   request) is refused, and the user tries again.
+
+   Whatever the account records, a manager or administrator who signs in through a provider and has no second
+   factor of their own is never offered one to set up there: whoever holds the provider's account would choose it.
+   The sign-in is refused (*ask an administrator for an invitation or a sign-in link*), audited as `login.failure`
+   with the reason `no second factor of its own`, and the manager or administrator sets their own from an invitation
+   or a sign-in link. After a reset the invitation goes to the account's email address; when that address came from
+   the provider (an account it created, or one linked to it by email), whoever controls the provider may control the
+   mailbox too, so confirm the address with the person, and change it if need be, before sending the invitation, or
+   hand them the invitation link yourself.
 3. **Create accounts automatically** (when on): a new user with the provider's verified address and name, the `user`
    role (`user.provision`). Refused if a user already has that address.
 4. Otherwise the sign-in is refused: *the account is not linked*.

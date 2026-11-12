@@ -431,3 +431,54 @@ func TestSessionOfADisabledPasskeyIsNotUsable(t *testing.T) {
 		t.Fatal("a session of another way in ended with the passkey")
 	}
 }
+
+// Disconnecting the provider through whose sign-in the account's credentials were set up (model.User.SetUpBy) takes
+// them with it: an administrator's removal resets the account's sign-in in the same write (the password the provider's
+// holder may have chosen, and the credential epoch), audited as user.signin.reset with the provider. The account
+// itself is refused, as it would be left with no way in. Another provider's removal resets nothing.
+func TestDisconnectingTheProviderThatSetUpTheSignInResetsIt(t *testing.T) {
+	e := newEnv(t)
+	org := e.org("acme")
+	admin := e.user(org.ID, "ada", model.RoleAdmin)
+	u := e.user(org.ID, "pat", model.RoleUser)
+	prov, err := e.svc.CreateProvider(e.ctx, service.System, org.ID, goodProvider("sso"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := e.svc.CreateProvider(e.ctx, service.System, org.ID, goodProvider("other"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []*model.Provider{prov, other} {
+		if err := e.svc.Identities.Create(e.ctx, model.NewIdentity(e.fresh(u), p, "sub-"+p.ID, u.Email, "email")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := e.fresh(u)
+	set.SetUpBy, set.PasswordHash = prov.ID, "hash"
+	if err := e.svc.Users.Update(e.ctx, set); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := e.svc.DisconnectProvider(service.SelfService(e.ctx), actor(u), u.ID, prov.ID); !errors.Is(err, service.ErrConflict) {
+		t.Fatalf("the account disconnecting the provider that set up its sign-in: %v", err)
+	}
+	if n, err := e.svc.DisconnectProvider(e.ctx, actor(admin), u.ID, other.ID); err != nil || n != 1 {
+		t.Fatalf("disconnect another provider: %d %v", n, err)
+	}
+	if got := e.fresh(u); got.PasswordHash == "" || got.SetUpBy != prov.ID || got.CredEpoch != set.CredEpoch {
+		t.Fatalf("another provider's removal reset the account: set up by %q", got.SetUpBy)
+	}
+	if n, err := e.svc.DisconnectProvider(e.ctx, actor(admin), u.ID, prov.ID); err != nil || n != 1 {
+		t.Fatalf("disconnect: %d %v", n, err)
+	}
+	got := e.fresh(u)
+	if got.PasswordHash != "" || got.SetUpBy != "" || got.CredEpoch == set.CredEpoch {
+		t.Fatalf("after the disconnect: password %v, set up by %q, same epoch %v", got.PasswordHash != "", got.SetUpBy,
+			got.CredEpoch == set.CredEpoch)
+	}
+	ev := e.audits("user.signin.reset")
+	if len(ev) != 1 || ev[0].Detail["provider"] != prov.ID || ev[0].Detail["reason"] != "provider disconnected" {
+		t.Fatalf("user.signin.reset events: %+v", ev)
+	}
+}

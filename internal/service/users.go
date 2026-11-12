@@ -802,14 +802,11 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 	}
 	var also []store.Op
 	roleDone := func(context.Context, *Actor, error) {}
-	promoted, sessWas := false, u.SessionEpoch // promoted: the account becomes privileged, which ends its sessions (applyRole)
-	if in.Role != nil {
+	if in.Role != nil { // a promotion ends the account's sessions, and tidies them once written (applyRole)
 		var err error
-		wasPrivileged := u.Role.Privileged()
 		if also, roleDone, err = s.applyRole(ctx, u, *in.Role); err != nil {
 			return nil, err
 		}
-		promoted = !wasPrivileged && u.Role.Privileged()
 	}
 	statusChange := in.Active != nil && *in.Active != u.Active
 	reason := ""
@@ -871,11 +868,6 @@ func (s *Service) UpdateUser(ctx context.Context, a *Actor, id string, in UserIn
 				detail["sessions"] = "not all ended: " + sessErr.Error()
 			}
 			s.endGuestSessions(ctx, u)
-		} else if err == nil && promoted {
-			// the promotion moved the session epoch (applyRole): removing what it replaced is tidying
-			if sessErr := s.endSessionsOf(ctx, u.ID, sessWas); sessErr != nil {
-				detail["sessions"] = "not all ended: " + sessErr.Error()
-			}
 		}
 		return err
 	})

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -54,6 +55,10 @@ type APITokenInput struct {
 	// no second factor of its own: it is recorded on the account (model.User.SetUpBy) in the write that makes the
 	// token. Never read from a request body.
 	SetUpBy string `json:"-"`
+	// Seen is the account as the caller decided on the token (the session's copy, whose role chose whether a second
+	// factor was needed and whose factors chose SetUpBy); nil: the account as CreateAPIToken reads it. Never read from
+	// a request body.
+	Seen *model.User `json:"-"`
 }
 
 // APITokenUpdate changes a token's name, applications or scopes; nil leaves a field as it is. The secret, the
@@ -169,6 +174,12 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if err != nil {
 		return nil, "", mapStore(err)
 	}
+	// The token is made only for the account the caller decided on, and the actor's role judged above: a promotion, a
+	// reset or a new factor since then is a stale request (the caller tries again on the account as it is now).
+	if seen := cmp.Or(in.Seen, owner); seen.Role != owner.Role || seen.CredEpoch != owner.CredEpoch ||
+		seen.SecurityGen != owner.SecurityGen || a.Role != owner.Role {
+		return nil, "", ErrStale
+	}
 	if slices.Contains(in.Scopes, ScopeAPI) {
 		if ok, err := s.APITokensAllowed(ctx, owner); err != nil {
 			return nil, "", err
@@ -199,25 +210,28 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if t.Stamp, err = s.apiTokenStamp(ctx, a.OrgID); err != nil {
 		return nil, "", mapStore(err)
 	}
-	create := func() error { return s.APITokens.Create(ctx, t) }
+	// The token is written in one transaction with the account as read above, at that version: the role and the
+	// credential epoch it was judged and made by are those of the account when it is stored, and a change committed
+	// in between (a promotion, a reset) refuses it (ErrStale) rather than leave a token the change did not see. When
+	// the token is the provider's (SetUpBy), that write of the account records it, so a promotion that leaves the
+	// account without the provider ends the token with the rest of what the provider's sign-in set up (applyRole);
+	// otherwise the account is asserted, not written.
+	tok, err := store.Encode(t)
+	if err != nil {
+		return nil, "", err
+	}
+	ops := []store.Op{store.AssertOp(model.KindUser, owner.OrgID, owner.ID, owner.Version), {Rec: tok, Match: true}}
 	if in.SetUpBy != "" && owner.SetUpBy == "" {
-		// The account records the provider in the transaction that makes the token, a compare-and-swap of the user
-		// tried again over a concurrent change: a promotion that leaves the account without that provider then ends
-		// the token with the rest of what the provider's sign-in set up (applyRole). The token keeps the epoch read
-		// above, so a reset of the account's sign-in meanwhile ends it all the same.
-		create = func() error {
-			_, err := s.modifyUserWith(ctx, owner.ID, func(u *model.User) ([]store.Op, error) {
-				if u.SetUpBy == "" {
-					u.SetUpBy = in.SetUpBy
-				}
-				rec, err := store.Encode(t)
-				return []store.Op{{Rec: rec, Match: true}}, err
-			})
-			return err
+		expect := owner.Version
+		owner.SetUpBy = in.SetUpBy
+		rec, err := store.Encode(owner)
+		if err != nil {
+			return nil, "", err
 		}
+		ops[0] = store.Op{Rec: rec, Match: true, Expect: expect}
 	}
 	if err := s.audited(ctx, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")},
-		create); err != nil {
+		func() error { return s.Users.S.Tx(ctx, ops) }); err != nil {
 		return nil, "", mapStore(err)
 	}
 	return t, plain, nil

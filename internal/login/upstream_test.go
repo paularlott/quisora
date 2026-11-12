@@ -147,6 +147,63 @@ func TestPromotionEndsProviderSignInInProgress(t *testing.T) {
 	}
 }
 
+// A manager or administrator signing in through a provider, with no second factor of its own, is not offered one to
+// set up: whoever holds the provider's account would choose it. The account need record nothing of how its
+// credentials were set up for this: here the provider was connected from a password session (nothing is recorded,
+// model.User.SetUpBy), so the promotion keeps its link and resets nothing. A sign-in begun through the provider before
+// the promotion, at the enrolment step, is refused there too.
+func TestPrivilegedProviderSignInWithoutOwnFactorIsRefused(t *testing.T) {
+	ctx := context.Background()
+	u := newUpEnv(t, nil)
+	u.setSettings(t, u.org, func(s *model.OrgSettings) { s.RequireMFA = true })
+	p := u.oidcProvider(t, func(in *service.ProviderInput) { in.AutoProvision = ptr(false) })
+	pat := u.user(t, u.org, "pat", model.RoleUser)
+	b := u.signedIn(t, pat)
+	authURL := u.connectURL(t, b, p)
+	if loc := u.connectCallback(t, b, p, authURL, claims("pat-sub", "pat@elsewhere.example")); loc != u.at("/account?provider=connected#providers") {
+		t.Fatalf("connect callback: %q", loc)
+	}
+	// Begun as a plain user of an organization that requires a second factor: the enrolment step.
+	pending := u.browser(t)
+	res := pending.via(t, u, p, "acme", "/x", claims("pat-sub", "pat@elsewhere.example"))
+	_, body := pending.get(res.Header.Get("Location"))
+	ticket := attr(body, "data-ticket")
+	if !strings.Contains(body, `data-step="enrol"`) || ticket == "" {
+		t.Fatalf("sign-in page does not continue with enrolment: %.600s", body)
+	}
+
+	before, err := u.Svc.Users.Get(ctx, pat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := u.Svc.Users.Get(ctx, pat.ID); err != nil || fresh.SetUpBy != "" || fresh.CredEpoch != before.CredEpoch {
+		t.Fatalf("the promotion reset the account (not this test's case): %v", err)
+	}
+
+	res2, out := pending.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	wantStatus(t, res2, out, 403)
+	b2 := u.browser(t)
+	res = b2.via(t, u, p, "acme", "/x", claims("pat-sub", "pat@elsewhere.example"))
+	if loc := res.Header.Get("Location"); !strings.Contains(loc, "error=no_own_factor") || b2.hasSession() || pending.hasSession() {
+		t.Fatalf("a manager signing in through a provider without a second factor: %q session=%v", loc, b2.hasSession())
+	}
+	refused := 0
+	for _, a := range u.audits(t, "login.failure") {
+		if a.Detail["reason"] == "no second factor of its own" {
+			refused++
+		}
+	}
+	if refused != 2 {
+		t.Fatalf("refusals audited: %d, want 2", refused)
+	}
+	if fresh, err := u.Svc.Users.Get(ctx, pat.ID); err != nil || fresh.HasTOTP() {
+		t.Fatalf("authenticator app enrolled: %v", err)
+	}
+}
+
 // The credentials a sign-in through a provider set up, while the account had no second factor of its own, go with the
 // provider's link when the account is promoted: whoever held the provider's account could have set up both the
 // authenticator app (at the sign-in's enrolment step) and the password (on the account page), and must not sign in to

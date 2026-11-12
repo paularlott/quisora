@@ -462,6 +462,13 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 		}
 		w := c.Ways(u)
 		left := w.without(x)
+		// The provider through whose sign-in the account's credentials were set up (model.User.SetUpBy) takes them
+		// with it: whoever held its account may hold them, so the account's sign-in is reset in the same write, as a
+		// promotion does (applyRole), and nothing is left.
+		reset := x.provider != "" && x.provider == u.SetUpBy
+		if reset {
+			left = &Ways{}
+		}
 		if a != nil && a != System && a.UserID == u.ID {
 			what, other := "passkey", "Set up an Authenticator App first."
 			switch {
@@ -471,6 +478,9 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 				what, other = "totp", "Add a passkey first."
 			}
 			switch {
+			case reset:
+				return &conflictErr{Invalid(what, "Your sign-in was set up through this provider, so disconnecting it would "+
+					"reset it. Ask an administrator for an invitation first.")}
 			case !left.any():
 				return &conflictErr{Invalid(what, "This is your only way to sign in. Add another way in, or ask an administrator for an invitation first.")}
 			case w.secondFactor() && !left.secondFactor() && s.MFARequired(ctx, u):
@@ -489,6 +499,10 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 			u.RecoveryCodes, u.RecoveryCreated = nil, nil
 		}
 		u.BumpSecurity()
+		var cred, sess uint64
+		if reset {
+			cred, sess = clearSignIn(u)
+		}
 		action, detail := event(u, gone)
 		if detail == nil {
 			detail = map[string]string{}
@@ -507,6 +521,13 @@ func (s *Service) removeWay(ctx context.Context, a *Actor, userID string, x way,
 			// changed meanwhile (another removal, a grant made on a session it ends, a session that expired since it
 			// was listed): decided again on the newer copies
 			continue
+		}
+		if reset {
+			s.auditOutcome(ctx, a, err, userChange(u, "user.signin.reset",
+				map[string]string{"provider": x.provider, "reason": "provider disconnected"}))
+			if err == nil { // tidying, of the epochs the write replaced
+				_ = s.clearCredentials(ctx, u.ID, cred, sess)
+			}
 		}
 		return mapStore(err)
 	}

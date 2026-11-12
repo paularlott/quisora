@@ -69,6 +69,14 @@ func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) 
 		writeErr(w, http.StatusConflict, "A second factor is already set up on this account. Sign in again and use it.", "")
 		return nil, nil, nil, false
 	}
+	// A sign-in through a provider whose account became a manager or administrator since the step was issued (a
+	// promotion that kept the link) is refused here as at the step (secondFactor): the provider's holder never
+	// chooses a privileged account's second factor.
+	if t.Provider != "" && u.Role.Privileged() {
+		m.audit(r, "login.failure", org, u, "", map[string]string{"reason": "no second factor of its own", "provider": t.Provider})
+		writeErr(w, http.StatusForbidden, msgNoOwnFactor, "")
+		return nil, nil, nil, false
+	}
 	return t, u, org, true
 }
 

@@ -1,16 +1,22 @@
 package service_test
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // Every path that raises a user to a manager, administrator or super admin ends with the same consequences, because
@@ -187,6 +193,197 @@ func TestPromotionEndsTokenAProviderSetUp(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A token is made only for the account its maker decided on: a promotion committed while it is being made (after the
+// account is read, before the token is written) refuses it, whether it is the provider's (SetUpBy, which is not then
+// recorded on the promoted account) or not, and so does one committed before, seen by the caller on an older copy
+// (APITokenInput.Seen). Otherwise a token made by a plain user's session, with the credential epoch the promotion
+// did not reset, would work for the manager forever.
+func TestTokenMadeAcrossAPromotionIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setUp  bool
+		during bool // the promotion commits while the token is being made; otherwise before, on a copy seen earlier
+	}{
+		{"the provider's, promoted meanwhile", true, true},
+		{"the account's own, promoted meanwhile", false, true},
+		{"the provider's, promoted before", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.setAPITokens(e.primary.ID, model.APITokensEveryone)
+			u := e.user(e.primary.ID, "pat", model.RoleUser)
+			prov, err := e.svc.CreateProvider(e.ctx, service.System, e.primary.ID, goodProvider("sso"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.svc.Identities.Create(e.ctx, model.NewIdentity(e.fresh(u), prov, "sub-1", "", "connect")); err != nil {
+				t.Fatal(err)
+			}
+			seen := e.fresh(u)
+			in := service.APITokenInput{Name: "ci", Scopes: []string{service.ScopeAPI}, Seen: seen}
+			if tc.setUp {
+				in.SetUpBy = prov.ID
+			}
+			promote := func() {
+				if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+					t.Error(err)
+				}
+			}
+			if tc.during {
+				var once sync.Once
+				fs := &faultStore{Store: e.svc.Store, beforeCAS: func(r *store.Record, _ hlc.Timestamp) error {
+					if r.Kind == model.KindAPIToken {
+						once.Do(promote)
+					}
+					return nil
+				}}
+				e.svc.Users.S, e.svc.APITokens.S = fs, fs
+			} else {
+				promote()
+			}
+			_, plain, err := e.svc.CreateAPIToken(e.ctx, actor(seen), in)
+			if !errors.Is(err, service.ErrStale) {
+				t.Fatalf("a token made across a promotion: %v (validates: %v)", err, validates(e, plain))
+			}
+			got := e.fresh(u)
+			if got.Role != model.RoleManager || got.SetUpBy != "" {
+				t.Fatalf("after: role %s, set up by %q", got.Role, got.SetUpBy)
+			}
+			if l, _, err := e.svc.ListAPITokens(e.ctx, actor(got), store.ListQuery{}); err != nil || len(l) != 0 {
+				t.Fatalf("tokens stored: %d %v", len(l), err)
+			}
+		})
+	}
+}
+
+// A promotion that resets nothing still ends the account's sessions (a new session epoch): their records are tidied
+// away and their applications told once, as for any end of sessions, by every path of promotion.
+func TestPromotionWithoutResetTidiesTheSessionsItEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		promote func(e *env, u *model.User) error
+	}{
+		{"UpdateUser", func(e *env, u *model.User) error {
+			_, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)})
+			return err
+		}},
+		{"break-glass --super-admin", func(e *env, u *model.User) error {
+			_, _, err := e.svc.CreateBreakGlassInvite(e.ctx, u.ID, true)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			u := e.user(e.primary.ID, "pat", model.RoleUser)
+			s := &model.Session{UserID: u.ID, OrgID: u.OrgID, Epoch: e.fresh(u).SessionEpoch, Expires: time.Now().Add(time.Hour),
+				LastSeen: time.Now()}
+			if err := e.svc.Sessions.Create(e.ctx, s); err != nil {
+				t.Fatal(err)
+			}
+			var told []string
+			e.svc.OnSessionsEnding = func(_ context.Context, _ string, ids []string) { told = append(told, ids...) }
+			if err := tc.promote(e, u); err != nil {
+				t.Fatal(err)
+			}
+			if len(e.audits("user.signin.reset")) != 0 {
+				t.Fatal("the promotion reset the account (not this test's case)")
+			}
+			if _, err := e.svc.Sessions.Get(e.ctx, s.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("the ended session's record is left: %v", err)
+			}
+			if len(told) != 1 || told[0] != s.ID {
+				t.Fatalf("applications told of %v, want %s once", told, s.ID)
+			}
+		})
+	}
+}
+
+// Accounts from before the provider whose sign-in set up their credentials was recorded (SetUpBy reads "") are marked
+// once by MarkLegacySetUpBy: one with no second factor of its own, a live link it did not connect itself (by email,
+// or the provider's first sign-in) and a password or a live API token records that provider, and so is reset when
+// promoted. One with a second factor, with only a link it connected, or with nothing to sign in with is left. Once it
+// has gone through every link it does nothing again.
+func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
+	e := newEnv(t)
+	prov, err := e.svc.CreateProvider(e.ctx, service.System, e.primary.ID, goodProvider("sso"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := func(name, via string, password, totp, token bool) *model.User {
+		u := e.user(e.primary.ID, name, model.RoleUser)
+		if err := e.svc.Identities.Create(e.ctx, model.NewIdentity(e.fresh(u), prov, "sub-"+name, u.Email, via)); err != nil {
+			t.Fatal(err)
+		}
+		set := e.fresh(u)
+		if password {
+			set.PasswordHash = "hash"
+		}
+		if totp {
+			set.TOTPSecret = "sealed secret"
+		}
+		if err := e.svc.Users.Update(e.ctx, set); err != nil {
+			t.Fatal(err)
+		}
+		if token {
+			tok := &model.APIToken{UserID: u.ID, OrgID: u.OrgID, Name: "ci", Scopes: []string{service.ScopeAPI}, Epoch: set.CredEpoch}
+			if err := e.svc.APITokens.Create(e.ctx, tok); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return u
+	}
+	want := map[*model.User]string{
+		account("byemail", "email", true, false, false):         prov.ID,
+		account("provisioned", "provision", false, false, true): prov.ID,
+		account("ownapp", "email", true, true, false):           "",
+		account("connected", "connect", true, false, false):     "",
+		account("nothing", "email", false, false, false):        "",
+	}
+	var m service.LegacySetUpBy
+	total, runs := 0, 0
+	for done := false; !done; runs++ {
+		var n int
+		if n, done, err = e.svc.MarkLegacySetUpBy(e.ctx, &m, 2); err != nil {
+			t.Fatal(err)
+		}
+		total += n
+	}
+	if total != 2 || runs < 3 {
+		t.Fatalf("marked %d in %d runs", total, runs)
+	}
+	for u, by := range want {
+		if got := e.fresh(u).SetUpBy; got != by {
+			t.Errorf("%s: set up by %q, want %q", u.Username, got, by)
+		}
+	}
+	late := account("late", "email", true, false, false)
+	if n, done, err := e.svc.MarkLegacySetUpBy(e.ctx, &service.LegacySetUpBy{}, 100); n != 0 || !done || err != nil {
+		t.Fatalf("again: %d %v %v", n, done, err)
+	}
+	if e.fresh(late).SetUpBy != "" {
+		t.Fatal("marked after it was done")
+	}
+	for u, by := range want {
+		if by == "" {
+			continue
+		}
+		if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.fresh(u); got.PasswordHash != "" || got.SetUpBy != "" {
+			t.Errorf("%s: not reset when promoted", u.Username)
+		}
+	}
+}
+
+func validates(e *env, plain string) bool {
+	if plain == "" {
+		return false
+	}
+	_, _, err := e.svc.ValidateAPIToken(e.ctx, plain)
+	return err == nil
 }
 
 // A promotion whose outcome is unknown (it may have landed, and a rerun finds nothing left to change) finishes the same
