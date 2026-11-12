@@ -120,6 +120,7 @@ org_failures_per_minute = 100             # failed passwords per organization pe
 password_workers = 0                      # concurrent password hashes (0 = number of CPUs); waiting sign-ins are served by organization in turn
 password_min_length = 15                  # shortest password accepted (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)
 ephemeral_mb = 1024                       # memory per node for short-lived sign-in state (flows, codes, pushed requests); past it they get 503
+flows_per_ip = 50                         # sign-ins in progress one IP address (an IPv6 /64) may hold at once; past it 429 (0 = no limit)
 grants_per_user = 1000                    # refresh grants one user may hold (10 to 100000); past it the least recently used are ended; an organization may set its own
 
 [log]

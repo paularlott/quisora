@@ -165,6 +165,7 @@ TLS, the proxy's configuration decides.
 | `limits.login_per_ip_min`     | 300     | Sign-in attempts per organization and address per minute (three times it per address across organizations; a browser that signed in to the account before counts against the account's own) | Next attempt         |
 | `limits.lockout_attempts`     | 10      | Failed passwords before an account is locked (0: never)                                                | Next attempt         |
 | `limits.lockout_minutes`      | 15      | How long the lock lasts                                                                                | Next attempt         |
+| `limits.flows_per_ip`         | 50      | Sign-ins (authorization and device flows) one address may hold unfinished at once (0: no cap)           | Next sign-in         |
 | `limits.org_failures_per_minute` | 100  | Failed passwords per organization per minute before it counts as [under a spray](SECURITY.md#lockout-and-password-spraying) and limits failures per address too (0: never) | Next attempt         |
 | `limits.password_min_length`  | 15      | Shortest password accepted (8 to 64)                                                                   | Next password set    |
 | `limits.grants_per_user`      | 1000    | Refresh grants one user may hold                                                                       | Next grant           |
@@ -970,9 +971,18 @@ means SMTP is not taking mail.
 - `GET /api/cluster` (super admins) and the console's settings page: the node's cluster status.
 - The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
 - Short-lived sign-in state (flows, codes, challenges) is held in each node's memory up to
-  `limits.ephemeral_mb` (default 1024 MiB); past it, requests that would add to it get 503 until expiries make room.
-  Rate-limit counters are never refused. With a shared database this state lives in the database instead. A pushed
-  authorization request (PAR) holds nothing: its request_uri carries the request, sealed (docs/oauth/par.md).
+  `limits.ephemeral_mb` (default 1024 MiB); past it, requests that would add to it get 503 with `Retry-After` (a
+  page, or `temporarily_unavailable` from the OAuth endpoints) until expiries make room, and the node logs a warning
+  (`this node's short-lived state is full`) at most once a minute. Rate-limit counters are never refused. With a
+  shared database this state lives in the database instead. A pushed authorization request (PAR) holds nothing: its
+  request_uri carries the request, sealed (docs/oauth/par.md).
+- A sign-in started at an authorization endpoint (or a device code's verification page) holds a flow for up to 20
+  minutes, until it finishes. One client address holds at most `limits.flows_per_ip` (default 50; an IPv6 /64 counts
+  as one address, 0 turns it off) at once; past it new ones get 429 until one finishes or the address's count starts
+  again (20 minutes after its first flow), so a few addresses cannot fill `limits.ephemeral_mb` with sign-ins they
+  never finish. Starting them is limited too, to 300 a minute per address. Like the other limits it is approximate (an
+  address may hold up to about twice it as its count starts again). Behind a proxy set `server.trust_proxy`, or every
+  user shares the proxy's address and its flows.
 
 ### Metrics
 
@@ -992,6 +1002,8 @@ endpoint. Every node serves its own.
 | `quisora_mail_queued` | Emails this node has waiting to be sent |
 | `quisora_mail_failed_total{reason}` | Emails that never reached the mail server: `given_up` (every retry failed; the log names the recipient), `dropped` (kept past the queue's discard horizon, or unreadable) and `expired` (the sign-in code or link in it had expired while it waited) |
 | `quisora_authorize_refused_total{error}` | Authorization requests from a known application sent back with an error before anyone signed in, by error: `invalid_scope` (it asked for a scope its settings do not allow), `unauthorized_client` (a grant type it may not use), `invalid_request` and the others. Each is also logged as a warning (`oidc: authorization request refused`) naming the application, the error and why; not an audit event, as nobody has signed in and anyone who knows a client ID can cause one. A rise after an application's settings were changed is usually that change (its `client.update` audit event shows what changed) |
+| `quisora_ephemeral_bytes`, `quisora_ephemeral_budget_bytes`, `quisora_ephemeral_entries` | This node's short-lived state (sign-in flows, codes, challenges, rate-limit counters): the memory it takes, by the estimate checked against `limits.ephemeral_mb`; that limit in bytes; how many entries it holds. With a shared database the state is in the database, and these stay near 0 |
+| `quisora_ephemeral_refused_total{reason}` | Requests refused for short-lived state, by reason: `full` (this node's short-lived state at `limits.ephemeral_mb`: 503) and `flows_per_ip` (an address holding `limits.flows_per_ip` sign-ins in progress: 429) |
 | `quisora_backchannel_logout_queued` | Back-channel logouts this node has waiting to be retried (growing: an application is not taking them) |
 | `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, so only its own are dropped), or dropped unsent past the queue's discard horizon |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
@@ -1026,6 +1038,11 @@ Alerts worth having:
   server is down or refusing it, or the queue is not keeping up. `quisora_mail_queued` growing says the same earlier.
   Likewise `increase(quisora_backchannel_logout_failed_total[1h]) > 0` for applications that are not told of a sign-out.
 - `rate(quisora_http_shed_total[5m]) > 0`: the node is overloaded ([under attack](#under-attack)).
+- `quisora_ephemeral_bytes / quisora_ephemeral_budget_bytes > 0.8` for 5 minutes, or any
+  `increase(quisora_ephemeral_refused_total{reason="full"}[5m]) > 0`: the node's short-lived state is (nearly) full and
+  new sign-ins get 503: a flood of unfinished sign-ins, or `limits.ephemeral_mb` too small for the load. A steady
+  `rate(quisora_ephemeral_refused_total{reason="flows_per_ip"}[5m])` is addresses starting sign-ins they do not finish
+  (or many users behind one address: see `server.trust_proxy`).
 - For tenants that use SSH certificates: a log line `oidc: making an SSH revocation list` at error level (the tenant's
   revocation list could not be made; its address answers 503 and servers keep their old list), and, on every server that
   fetches it, the fetch unit failing or the revocation list file older than 5 minutes ([SSH monitoring](ssh/README.md#monitoring)).

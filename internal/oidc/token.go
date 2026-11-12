@@ -166,6 +166,11 @@ func serverError(err error) *oauthError {
 		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
 			desc: "this server cannot make changes now; try again shortly", retry: true}
 	}
+	if errors.Is(err, ephemeral.ErrFull) {
+		// This node's short-lived state is full (counted and logged by the store): not a failure, the client retries.
+		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
+			desc: "this server is busy; try again shortly", retry: true}
+	}
 	if errors.Is(err, service.ErrUnavailable) {
 		// A read that an authorization decision needs failed (unavailable): the answer is neither "allowed" nor
 		// "revoked" but "not now", so the client keeps its tokens and retries, rather than discarding them as an

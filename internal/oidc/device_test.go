@@ -349,7 +349,8 @@ func TestDeviceFailsClosedOnStoreFailures(t *testing.T) {
 	})
 	b, _ := h.session(h.user)
 	resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
-	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(pg, "Something went wrong") {
+	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" ||
+		!strings.Contains(pg, "Please try again") {
 		t.Fatalf("page: %d %s", resp.StatusCode, pg)
 	}
 }

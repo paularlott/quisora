@@ -12,13 +12,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/paularlott/logger"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/secure"
 )
 
 var ErrNotFound = errors.New("ephemeral: not found or expired")
 
 // ErrFull is returned by Set and New when the node's short-lived state has reached its budget (Local.Budget): the
-// request that wanted to keep something is refused (503) rather than the node running out of memory.
+// request that wanted to keep something is refused (503 with Retry-After, never a server error) rather than the node
+// running out of memory. The store counts each refusal (metrics.EphemeralRefused) and logs them once a minute, so the
+// callers that answer it neither count nor log it again.
 var ErrFull = errors.New("ephemeral: this node's short-lived state is full")
 
 // DefaultBudget is a Local's budget when none is set: 1 GiB of values.
@@ -63,11 +67,14 @@ const shards = 64
 // Local is an in-memory Store for one node. Prefix is the node's short id embedded in ids. Values (flows, codes,
 // pushed requests, challenges) count against Budget bytes (0: DefaultBudget), keys included; past it Set refuses
 // (ErrFull) until expiries make room. Counters (Incr, the rate limits) are small and never refused: a limit must not
-// fail open, nor refuse everyone because the store is full; reading one (delta 0) creates nothing.
+// fail open, nor refuse everyone because the store is full; reading one (delta 0) creates nothing. Log, when set,
+// gets a warning at most once a minute while Set refuses.
 type Local struct {
 	Prefix string
 	Budget int64
+	Log    logger.Logger
 	used   atomic.Int64
+	logged atomic.Int64 // unix nanos of the last warning that the store is full
 	seed   maphash.Seed
 	shard  [shards]struct {
 		mu sync.Mutex
@@ -149,15 +156,41 @@ func (l *Local) Set(_ context.Context, ns, id string, value []byte, ttl time.Dur
 		grow -= old.size(k)
 	}
 	if grow > 0 && l.used.Load()+grow > l.budget() {
-		return ErrFull
+		return l.full()
 	}
 	s.m[k] = it
 	l.used.Add(grow)
 	return nil
 }
 
+// full counts a refusal of Set and warns of it, at most once a minute however many requests are refused.
+func (l *Local) full() error {
+	metrics.EphemeralRefused.Inc("full")
+	now, last := time.Now().UnixNano(), l.logged.Load()
+	if l.Log != nil && now-last >= int64(time.Minute) && l.logged.CompareAndSwap(last, now) {
+		l.Log.Warn("this node's short-lived state is full (limits.ephemeral_mb): new sign-ins and other requests that "+
+			"would add to it get 503 until expiries make room", "used_bytes", l.used.Load(), "budget_bytes", l.budget())
+	}
+	return ErrFull
+}
+
 // Used is the memory the values and counters take, by the estimate Budget is checked against.
 func (l *Local) Used() int64 { return l.used.Load() }
+
+// Limit is the budget Used is checked against (Budget, or DefaultBudget).
+func (l *Local) Limit() int64 { return l.budget() }
+
+// Len is the number of entries held (values and counters), expired ones the reaper has not removed yet included.
+func (l *Local) Len() int {
+	n := 0
+	for i := range l.shard {
+		s := &l.shard[i]
+		s.mu.Lock()
+		n += len(s.m)
+		s.mu.Unlock()
+	}
+	return n
+}
 
 func (l *Local) get(ns, id string, take bool) ([]byte, error) {
 	k := ns + "/" + id

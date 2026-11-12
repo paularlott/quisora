@@ -53,6 +53,9 @@ type flow struct {
 	// Device is the device_code of the device sign-in (device.go) the flow approves: it ends in the browser, with
 	// the device told, instead of at a redirect URI.
 	Device string `json:"dv,omitempty"`
+	// Holder is the client address (web.RateKeyIP) the flow is counted against (startFlow); dropFlow gives its slot
+	// back. Empty when limits.flows_per_ip was off as the flow started.
+	Holder string `json:"ip,omitempty"`
 }
 
 // consent is what the request asks the user to allow (consentScopes).
@@ -126,6 +129,52 @@ func (f *flow) has(prompt string) bool { return slices.Contains(f.Prompt, prompt
 func (p *Provider) saveFlow(ctx context.Context, id string, f *flow) {
 	b, _ := json.Marshal(f)
 	_ = p.s.Eph.Set(ctx, nsFlow, id, b, flowTTL)
+}
+
+// startFlow stores a new flow f and returns its id. Each client address (web.RateKeyIP: an IPv6 /64 counts as one)
+// holds at most limits.flows_per_ip flows at once, so that a few addresses cannot fill this node's short-lived state
+// with flows they never finish; past it the request gets 429. A flow gives its slot back when it ends (dropFlow).
+// Like the other limits the count is approximate: it is a counter that starts again flowTTL after its first flow
+// (one that expires unfinished keeps its slot until then), so an address may hold up to about twice the limit across
+// the turn of its window. A store that cannot keep the flow (full: ephemeral.ErrFull) is 503, never a server error.
+// It reports false when it has answered.
+func (p *Provider) startFlow(w http.ResponseWriter, r *http.Request, f *flow) (string, bool) {
+	ctx := r.Context()
+	if limit := p.cfg.LiveLimits().FlowsPerIP; limit > 0 {
+		key := web.RateKeyIP(r)
+		n, err := p.s.Eph.Incr(ctx, nsHeld, key, 1, flowTTL)
+		if err != nil {
+			p.tryAgain(w, r)
+			return "", false
+		}
+		if n > int64(limit) {
+			_, _ = p.s.Eph.Incr(ctx, nsHeld, key, -1, flowTTL)
+			metrics.EphemeralRefused.Inc("flows_per_ip")
+			w.Header().Set("Retry-After", "60")
+			p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-ins in progress",
+				"Too many sign-ins were started from your network and not finished. Finish one, or wait a few minutes, then try again.")
+			return "", false
+		}
+		f.Holder = key
+	}
+	b, _ := json.Marshal(f)
+	id, err := p.s.Eph.New(ctx, nsFlow, b, flowTTL)
+	if err != nil { // a full store has counted and logged the refusal (ephemeral.ErrFull)
+		if f.Holder != "" {
+			_, _ = p.s.Eph.Incr(ctx, nsHeld, f.Holder, -1, flowTTL)
+		}
+		p.tryAgain(w, r)
+		return "", false
+	}
+	return id, true
+}
+
+// dropFlow ends flow id: it is deleted, and its slot given back to the address it was counted against (startFlow).
+// Of two requests ending the same flow only the one that takes it gives the slot back.
+func (p *Provider) dropFlow(ctx context.Context, id string, f *flow) {
+	if _, err := p.s.Eph.Take(ctx, nsFlow, id); err == nil && f.Holder != "" {
+		_, _ = p.s.Eph.Incr(ctx, nsHeld, f.Holder, -1, flowTTL)
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -213,8 +262,10 @@ func (p *Provider) unknownApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // tryAgain is the page for a request that a store read it needs could not answer (as opposed to one that found the
-// application, flow or tenant gone): not a bad request, so the user is asked to try again, not to start over.
+// application, flow or tenant gone), or a write of short-lived state it needs could not be made (this node's is full):
+// not a bad request, so the user is asked to try again, not to start over.
 func (p *Provider) tryAgain(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "5")
 	p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
 		"This request cannot be completed at the moment. Try again in a moment.")
 }
@@ -305,9 +356,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "authorize|"+web.RateKeyIP(r), 1, time.Minute)
 	if err != nil {
 		// The counter cannot be used, so the request is refused, but as "try again", not as the limit it has not hit.
-		w.Header().Set("Retry-After", "5")
-		p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
-			"This request cannot be completed at the moment. Try again in a moment.")
+		p.tryAgain(w, r)
 		return
 	}
 	if n > authorizePerIPMin {
@@ -420,10 +469,8 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	c = checked
 	secret, bind := newFlowSecret()
 	f.Bind = bind
-	b, _ := json.Marshal(f)
-	id, err := p.s.Eph.New(r.Context(), nsFlow, b, flowTTL)
-	if err != nil {
-		p.redirectError(w, r, f, "server_error", "temporarily unavailable")
+	id, ok := p.startFlow(w, r, f)
+	if !ok {
 		return
 	}
 	setFlowCookie(w, id, secret)
@@ -557,7 +604,7 @@ func (p *Provider) handleCancel(w http.ResponseWriter, r *http.Request) {
 		p.flowFailed(w, r, err)
 		return
 	}
-	_ = p.s.Eph.Delete(r.Context(), nsFlow, id)
+	p.dropFlow(r.Context(), id, f)
 	clearFlowCookie(w, id)
 	if f.Pushed != "" {
 		p.usePushed(r.Context(), f.Pushed)
@@ -598,7 +645,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		if f.Logins++; f.Logins > maxLoginRedirects {
 			p.message(w, r, http.StatusForbidden, "Sign-in not possible", "We could not sign you in for this application",
 				"The sign-in requirements for this application could not be met. Contact your administrator.")
-			_ = p.s.Eph.Delete(ctx, nsFlow, id)
+			p.dropFlow(ctx, id, f)
 			return
 		}
 		p.saveFlow(ctx, id, f)
@@ -657,7 +704,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		return
 	}
 	if !app.Allowed {
-		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		p.dropFlow(ctx, id, f)
 		clearFlowCookie(w, id)
 		if f.Device != "" {
 			p.decideDevice(ctx, f, false, nil, nil, "", 0)
@@ -673,7 +720,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 
 	// A device sign-in for a manager or above, where the application does not allow it: refused, and the device told.
 	if f.Device != "" && user.Role.Privileged() && !c.DevicePrivileged {
-		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		p.dropFlow(ctx, id, f)
 		clearFlowCookie(w, id)
 		p.decideDevice(ctx, f, false, nil, nil, "", 0)
 		p.message(w, r, http.StatusForbidden, "Not allowed", "Managers and administrators cannot sign in on devices with "+c.Name,
@@ -683,7 +730,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 
 	if f.Decision != "" && f.DecidedBy == user.ID {
 		if f.Decision == "deny" {
-			_ = p.s.Eph.Delete(ctx, nsFlow, id)
+			p.dropFlow(ctx, id, f)
 			clearFlowCookie(w, id)
 			if f.Pushed != "" {
 				p.usePushed(ctx, f.Pushed)
@@ -723,7 +770,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		return
 	}
 	if f.Device != "" {
-		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		p.dropFlow(ctx, id, f)
 		clearFlowCookie(w, id)
 		if err := p.decideDevice(ctx, f, true, sess, user, idp, c.RememberGen); err != nil {
 			if !errors.Is(err, ephemeral.ErrNotFound) {
@@ -742,7 +789,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		return
 	}
 	if f.Pushed != "" && !p.usePushed(ctx, f.Pushed) { // another flow of the same request_uri was decided first
-		_ = p.s.Eph.Delete(ctx, nsFlow, id)
+		p.dropFlow(ctx, id, f)
 		clearFlowCookie(w, id)
 		p.redirectError(w, r, f, "invalid_request_uri", "the request_uri was already used")
 		return
@@ -753,11 +800,11 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		AppFence: sess.AppFence(c.ID)}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
-	if err != nil {
-		p.redirectError(w, r, f, "server_error", "temporarily unavailable")
+	if err != nil { // the store is full (or cannot be written): the flow is kept, and the page asks to try again
+		p.tryAgain(w, r)
 		return
 	}
-	_ = p.s.Eph.Delete(ctx, nsFlow, id)
+	p.dropFlow(ctx, id, f)
 	clearFlowCookie(w, id)
 	if c.SelfRegistered {
 		p.svc.NoteSelfRegisteredUse(ctx, c, tenant) // a metadata-document application is stored now

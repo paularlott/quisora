@@ -740,6 +740,12 @@ func noteSession(ctx context.Context, sess *model.Session) {
 }
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
+	if errors.Is(err, ephemeral.ErrFull) {
+		// this node's short-lived state is full: the store counts and logs that (once a minute), so this does not
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, http.StatusServiceUnavailable, "This server is busy. Please try again in a moment.", "")
+		return
+	}
 	if errors.Is(err, store.ErrUnconfirmed) || errors.Is(err, store.ErrUnavailable) ||
 		errors.Is(err, service.ErrOutcomeUnknown) || errors.Is(err, service.ErrUnavailable) {
 		// the cluster could not confirm the change in time: trying again is safe, and the answer says so. A request

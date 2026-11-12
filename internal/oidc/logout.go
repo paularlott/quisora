@@ -167,7 +167,7 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(lr)
 		id, err := p.s.Eph.New(ctx, nsLogout, b, 10*time.Minute)
 		if err != nil {
-			p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again", "")
+			p.tryAgain(w, r)
 			return
 		}
 		pg := p.s.Page(w, r, "Sign out", "", LogoutData{ID: id, Username: user.FullName(), Client: lr.Client})

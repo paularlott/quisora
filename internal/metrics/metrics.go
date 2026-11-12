@@ -158,6 +158,10 @@ var (
 		"Emails that never reached the mail server, by reason: given_up (every retry failed), dropped (kept past the "+
 			"queue's discard horizon, or unreadable) and expired (the code or link in it had expired while it was queued).",
 		"reason")
+	EphemeralRefused = Default.NewCounter("quisora_ephemeral_refused_total",
+		"Requests refused for short-lived state, by reason: full (this node's short-lived state at limits.ephemeral_mb: "+
+			"503) and flows_per_ip (a client address holding limits.flows_per_ip sign-in flows: 429).",
+		"reason")
 )
 
 // Write writes every metric in the Prometheus text exposition format (0.0.4).

@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -106,5 +107,51 @@ func TestMetricsDocumented(t *testing.T) {
 		if !slices.Contains(served, name) {
 			t.Errorf("%s is in the metrics table of docs/RUNNING.md but not served", name)
 		}
+	}
+}
+
+// The gauges of the node's short-lived state report its budget (limits.ephemeral_mb), the memory it takes and its
+// entries, and the refusals counter is served before anything was refused.
+func TestEphemeralGauges(t *testing.T) {
+	a, hc, base := startAppWith(t, "sqlite", func(c *config.Config) {
+		c.Metrics.Token = "scrape-secret"
+		c.Limits.EphemeralMB = 3
+	})
+	primary, err := a.Svc.PrimaryOrg(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// an authorization request, even one naming no application, is counted against its address: an entry is kept
+	if r, err := hc.Get(base + "/o/" + primary.ID + "/oauth/authorize?client_id=none"); err == nil {
+		r.Body.Close()
+	}
+	req, _ := http.NewRequest("GET", base+"/metrics", nil)
+	req.Header.Set("Authorization", "Bearer scrape-secret")
+	r, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	value := func(name string) float64 {
+		t.Helper()
+		m := regexp.MustCompile(`(?m)^` + name + ` (\S+)$`).FindStringSubmatch(string(b))
+		if m == nil {
+			t.Fatalf("%s is not served", name)
+		}
+		v, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if v := value("quisora_ephemeral_budget_bytes"); v != 3<<20 {
+		t.Errorf("budget %v, want %d", v, 3<<20)
+	}
+	if used, n := value("quisora_ephemeral_bytes"), value("quisora_ephemeral_entries"); used <= 0 || n <= 0 {
+		t.Errorf("used %v bytes in %v entries", used, n)
+	}
+	if !strings.Contains(string(b), "# TYPE quisora_ephemeral_refused_total counter") {
+		t.Error("the refusals counter is not served")
 	}
 }

@@ -308,6 +308,7 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 	n.st = &Store{n: n, inner: st}
 	n.eph = &Ephemeral{n: n, local: ephemeral.NewLocal(n.prefix)}
 	n.eph.local.Budget = int64(cfg.Limits.EphemeralMB) << 20
+	n.eph.local.Log = n.log
 	n.mem.Store(n.selfOnly())
 
 	if cfg.Cluster.Bind == "" {
@@ -842,6 +843,10 @@ func (n *Node) Ephemeral() *Ephemeral { return n.eph }
 // SharedDatabase reports whether this node shares its database with other nodes without gossip (it is not told
 // about their writes: caches must stay short).
 func (n *Node) SharedDatabase() bool { return n.shared != nil }
+
+// LocalEphemeral is this node's in-memory short-lived state, for its metrics (with a shared database and no gossip the
+// state lives in the database, and this holds nothing).
+func (n *Node) LocalEphemeral() *ephemeral.Local { return n.eph.local }
 
 // EphemeralStore is the store for short-lived state the application uses: the database when nodes share one without
 // gossip (any node can finish what another started), otherwise this node's memory with gossip routing.

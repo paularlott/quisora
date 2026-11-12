@@ -377,10 +377,8 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, bind := newFlowSecret()
 	f.Bind = bind
-	b, _ := json.Marshal(f)
-	id, err := p.s.Eph.New(ctx, nsFlow, b, flowTTL)
-	if err != nil {
-		render(http.StatusServiceUnavailable, "Something went wrong. Try again in a moment.")
+	id, ok := p.startFlow(w, r, f)
+	if !ok {
 		return
 	}
 	setFlowCookie(w, id, secret)

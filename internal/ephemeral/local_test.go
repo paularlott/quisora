@@ -7,6 +7,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/paularlott/logger"
+	"github.com/paularlott/quisora/internal/metrics"
 )
 
 func TestLocalNamespacesTakeExpiryAndCounters(t *testing.T) {
@@ -107,4 +110,52 @@ func BenchmarkNewTake(b *testing.B) {
 			l.Take(ctx, "code", id)
 		}
 	})
+}
+
+// warnings counts a logger's warnings.
+type warnings struct {
+	logger.Logger
+	n atomic.Int32
+}
+
+func (w *warnings) Warn(string, ...any) { w.n.Add(1) }
+
+// Every refusal of a full store is counted (quisora_ephemeral_refused_total{reason="full"}), but logged once a
+// minute, however many requests are refused; Len and Limit report what the gauges read.
+func TestLocalFullCountedLoggedOnceAndMeasured(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	log := &warnings{Logger: logger.NewNullLogger()}
+	l.Budget, l.Log = 4<<10, log
+	if l.Limit() != 4<<10 || (&Local{}).Limit() != DefaultBudget {
+		t.Fatalf("limit %d", l.Limit())
+	}
+	before := metrics.EphemeralRefused.Value("full")
+	held := 0
+	for range 100 {
+		if _, err := l.New(ctx, "flow", make([]byte, 1000), time.Minute); err == nil {
+			held++
+		} else if !errors.Is(err, ErrFull) {
+			t.Fatal(err)
+		}
+	}
+	if held == 0 || held >= 100 {
+		t.Fatalf("%d values held", held)
+	}
+	if got := metrics.EphemeralRefused.Value("full") - before; got != uint64(100-held) {
+		t.Fatalf("%d refusals counted, want %d", got, 100-held)
+	}
+	if log.n.Load() != 1 {
+		t.Fatalf("%d warnings for %d refusals, want 1", log.n.Load(), 100-held)
+	}
+	_, _ = l.Incr(ctx, "rate", "ip", 1, time.Minute)
+	if l.Len() != held+1 {
+		t.Fatalf("len %d, want %d", l.Len(), held+1)
+	}
+	// another minute on, the next refusal is logged again
+	l.logged.Add(-int64(time.Minute))
+	if _, err := l.New(ctx, "flow", make([]byte, 4000), time.Minute); !errors.Is(err, ErrFull) || log.n.Load() != 2 {
+		t.Fatalf("%v, %d warnings", err, log.n.Load())
+	}
 }

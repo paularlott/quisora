@@ -248,7 +248,8 @@ func TestLogoutReportsFailureWhenSessionCannotBeEnded(t *testing.T) {
 }
 
 // A sign-in flow or a code that cannot be stored, an organization that cannot be read and an access entry that cannot be
-// read all end the request without issuing a code.
+// read all end the request without issuing a code. One that cannot be stored is the "try again" page (503), never a
+// server_error sent back to the application.
 func TestAuthorizeFailsClosedOnStoreFailures(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("ephemeral down")
@@ -262,8 +263,10 @@ func TestAuthorizeFailsClosedOnStoreFailures(t *testing.T) {
 			}
 			return nil
 		})
-		if u := h.authorize(h.anon(), authzQuery(cl, ch, nil)); u.Query().Get("error") != "server_error" {
-			t.Fatalf("flow: %s", u)
+		resp := h.get(h.anon(), h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+		if body(resp); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" ||
+			resp.Header.Get("Location") != "" {
+			t.Fatalf("flow: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 		}
 	})
 	t.Run("code store", func(t *testing.T) {
@@ -277,8 +280,10 @@ func TestAuthorizeFailsClosedOnStoreFailures(t *testing.T) {
 			}
 			return nil
 		})
-		if u := h.authorize(c, authzQuery(cl, ch, nil)); u.Query().Get("error") != "server_error" {
-			t.Fatalf("code: %s", u)
+		resp := h.get(c, h.orgBase+"/oauth/authorize?"+authzQuery(cl, ch, nil).Encode())
+		if body(resp); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" ||
+			resp.Header.Get("Location") != "" {
+			t.Fatalf("code: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 		}
 	})
 	// the application cannot be resolved without its organization: try again later, no redirect and no code

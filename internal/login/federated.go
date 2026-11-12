@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/upstream"
 	"github.com/paularlott/quisora/internal/web"
@@ -56,7 +57,9 @@ func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 	}
 	authURL, state, err := m.Upstream.BeginTenant(ctx, org, p, next, tenant)
 	if err != nil {
-		m.s.Log.Warn("upstream begin", "provider", p.Name, "error", err)
+		if !errors.Is(err, ephemeral.ErrFull) { // a full store logs that itself, once a minute
+			m.s.Log.Warn("upstream begin", "provider", p.Name, "error", err)
+		}
 		back("failed")
 		return
 	}

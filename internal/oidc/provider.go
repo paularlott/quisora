@@ -36,6 +36,7 @@ const (
 	nsUsed     = "oauth.used"     // client and code id (replayKey) -> organization, user and grant id (NUL-separated), to revoke on replay
 	nsReplayed = "oauth.replayed" // client and code id (replayKey) presented again: a redemption still under way revokes what it makes
 	nsRateOIDC = "oauth.rate"     // failed client authentications per IP
+	nsHeld     = "oauth.held"     // flows each client address holds (holdFlow)
 	nsLogout   = "oauth.logout"
 	flowTTL    = 20 * time.Minute
 	usedTTL    = time.Hour

@@ -74,6 +74,7 @@ func TestValidateMessages(t *testing.T) {
 		"mariadb":        {func(c *Config) { c.Storage.Backend = "mariadb" }, "storage.mariadb.dsn"},
 		"drain":          {func(c *Config) { c.Server.ShutdownDrain = -1 }, "shutdown_drain"},
 		"eph mb":         {func(c *Config) { c.Limits.EphemeralMB = 0 }, "limits.ephemeral_mb"},
+		"flows per ip":   {func(c *Config) { c.Limits.FlowsPerIP = -1 }, "limits.flows_per_ip"},
 		"pw min low":     {func(c *Config) { c.Limits.PasswordMinLength = 7 }, "limits.password_min_length"},
 		"pw min high":    {func(c *Config) { c.Limits.PasswordMinLength = 65 }, "limits.password_min_length"},
 		"trust all v4":   {func(c *Config) { c.Server.TrustProxy = []string{"0.0.0.0/0"} }, "trusts every address"},

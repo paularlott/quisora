@@ -191,6 +191,9 @@ func (e *Ephemeral) call(ctx context.Context, mb *member, req *ephReq) (*ephResp
 	case codeNotFound:
 		return nil, ephemeral.ErrNotFound
 	case codeError:
+		if resp.Err == ephemeral.ErrFull.Error() { // the owner is full: refused as this node's own store refuses
+			return nil, ephemeral.ErrFull
+		}
 		return nil, errors.New(resp.Err)
 	}
 	return &resp, nil

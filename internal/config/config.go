@@ -210,6 +210,10 @@ type Limits struct {
 	// past it the least likely to be missed are ended. An organization may set its own (model.OrgSettings).
 	GrantsPerUser int `toml:"grants_per_user" flag:"grants-per-user" usage:"Refresh grants one user may hold, 10 to 100000; past it the oldest unused are ended (an organization may set its own)"`
 	EphemeralMB   int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
+	// FlowsPerIP is how many authorization flows (sign-ins started at an authorization endpoint and not finished yet)
+	// one client address may hold at once, an IPv6 /64 counting as one address: so that a few addresses cannot fill
+	// ephemeral_mb with flows they never finish. Approximate, like the other limits (oidc.holdFlow says how).
+	FlowsPerIP int `toml:"flows_per_ip" flag:"flows-per-ip" usage:"Sign-ins in progress one IP address (an IPv6 /64) may hold at once; past it new ones get 429 (0 = no limit)"`
 }
 
 type Log struct {
@@ -245,7 +249,7 @@ func Default() *Config {
 		Session:  Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:     Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:    Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
-		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
+		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, PasswordMinLength: 15, GrantsPerUser: 1000},
 		Log:      Log{Level: "info", Format: "console", Access: true},
 		reloaded: new(atomic.Pointer[Limits]),
 	}
@@ -646,6 +650,7 @@ func limitErrors(l Limits) []error {
 	}
 	positive("limits.max_in_flight", l.MaxInFlight)
 	nonNegative("limits.login_per_ip_min", l.LoginPerIPMin)
+	nonNegative("limits.flows_per_ip", l.FlowsPerIP)
 	nonNegative("limits.lockout_attempts", l.LockoutAttempts)
 	nonNegative("limits.org_failures_per_minute", l.OrgFailuresPerMin)
 	nonNegative("limits.password_workers", l.PasswordWorkers)
