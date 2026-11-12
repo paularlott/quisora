@@ -30,6 +30,9 @@ type faultStore struct {
 	afterGet   func(kind model.Kind, id string) // runs after every Get, as the store answers
 	gets       atomic.Int64
 	lists      atomic.Int64
+	// healed lets every operation through again, for a test that ends the fault while other goroutines still use the
+	// store (swapping the store back would race with them).
+	healed atomic.Bool
 }
 
 // failReads fails every Get of one kind (an access entry, a grant, a session, an organization ...).
@@ -58,7 +61,7 @@ func failCAS(s store.Store, kind model.Kind, err func() error) *faultStore {
 }
 
 func (s *faultStore) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
-	if kind == s.getKind {
+	if kind == s.getKind && !s.healed.Load() {
 		return nil, errFault
 	}
 	r, err := s.Store.Get(ctx, kind, id)

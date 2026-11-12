@@ -664,8 +664,8 @@ func TestBackchannelUnreadClientIsRetried(t *testing.T) {
 	if r, _ := h.login(cl, secret, nil); r.status != 200 {
 		t.Fatal(r.m)
 	}
-	clients := h.env.Svc.Clients.S
-	h.env.Svc.Clients.S = failReads(clients, model.KindClient)
+	failing := failReads(h.env.Svc.Clients.S, model.KindClient)
+	h.env.Svc.Clients.S = failing // before any logout is queued: the retry worker reads it only after
 	h.p.InvalidateClient(cl.ID)
 	h.p.BackchannelLogoutUser(t.Context(), h.user.ID)
 	h.p.Wait()
@@ -673,7 +673,7 @@ func TestBackchannelUnreadClientIsRetried(t *testing.T) {
 		t.Fatalf("%d logouts in the retry queue and %d sent while the application could not be read, want 1 and none",
 			n, hits.Load())
 	}
-	h.env.Svc.Clients.S = clients
+	failing.healed.Store(true)
 	waitUntil(t, func() bool { return hits.Load() == 1 && retries.Queued() == 0 })
 }
 
