@@ -349,7 +349,7 @@ func (rq *request) userInput(res map[string]any, existing *model.User) (service.
 		if in.Username != nil && validEmail(*in.Username) {
 			email = strings.TrimSpace(*in.Username)
 		} else {
-			return in, badValue("an email address is required")
+			return in, badValue("an email address is required: it is the user's sign-in name, so the primary email cannot be removed or left out")
 		}
 	}
 	in.Email = &email
@@ -503,6 +503,10 @@ func (rq *request) users(id string) {
 		default:
 			rq.allow("GET", "POST")
 		}
+		return
+	}
+	if id == ".search" {
+		rq.search(rq.listUsers)
 		return
 	}
 	switch rq.r.Method {

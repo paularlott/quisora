@@ -104,6 +104,32 @@ curl -H "Authorization: Bearer $TOKEN" "$QUISORA/scim/v2/acme/Users?filter=userN
 A provisioning service that supports OAuth uses a [service account](SERVICE-ACCOUNTS.md) with the `scim` scope instead:
 it gets short-lived tokens with the client credentials grant, and no person's token is involved.
 
+An access token bound to the client's key (DPoP, RFC 9449) is sent as `Authorization: DPoP <token>` with a DPoP proof;
+the ServiceProviderConfig lists both schemes. Personal API tokens are always `Bearer`.
+
+### Searching with POST
+
+`POST /Users/.search` and `POST /Groups/.search` (RFC 7644 section 3.4.3) take the parameters of a listing in a
+`urn:ietf:params:scim:api:messages:2.0:SearchRequest` body (`filter`, `startIndex`, `count`, `sortBy`, `sortOrder`,
+`attributes` and `excludedAttributes`, the last two as arrays), so a long filter need not travel in the URL. They run
+the listing itself: filters, the page cap and who may call are the same. A body over 1 MiB is refused with 413, and
+a malformed one with 400 `invalidSyntax`. There is no search at the root of the organization, across both kinds.
+
+### Changes, ETags and what is refused
+
+`PUT`, `PATCH` and `DELETE` of a user or group honor `If-Match` with the resource's ETag (its `meta.version`): a stale
+one is 412. A body over 1 MiB, or a group change adding and removing more than 1,000 members, is 413; too many failed
+authentications from an address is 429 with `Retry-After`, and a server that cannot check the token or commit the
+change right now is 503 with `Retry-After`.
+
+A `PUT` of a group that leaves `members` out keeps the members the group has: only an explicit `"members": []` empties
+it, so a client that does not manage membership cannot empty a group by omission. (`PATCH` changes exactly what its
+operations say.)
+
+A user always has a primary email address: it is the sign-in name. A `PATCH` that removes or replaces away every
+`emails` value, like a `PUT` or `POST` without one (and without an email-shaped `userName` to stand in for it), is
+refused with 400 `invalidValue` ("an email address is required"). Other addresses can be removed one by one.
+
 ### Listing and filters
 
 A page of `GET /Users` or `GET /Groups` is read from the store and costs the page, however many there are, with the

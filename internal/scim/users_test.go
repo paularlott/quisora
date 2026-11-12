@@ -182,7 +182,7 @@ func TestUserCreateErrors(t *testing.T) {
 		t.Errorf("active string: %d %s", r.Status, r.Raw)
 	}
 	// The email is required: its message says so, and nothing was created.
-	if r := e.do("POST", "/scim/v2/acme/Users", e.admA, map[string]any{"userName": "u10"}); r.str("detail") != "an email address is required" {
+	if r := e.do("POST", "/scim/v2/acme/Users", e.admA, map[string]any{"userName": "u10"}); !strings.HasPrefix(r.str("detail"), "an email address is required") {
 		t.Errorf("detail: %s", r.Raw)
 	}
 	if r := e.do("GET", "/scim/v2/acme/Users?filter="+qs(`userName eq "u10"`), e.admA, nil); r.total() != 0 {

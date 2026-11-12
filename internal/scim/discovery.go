@@ -77,11 +77,19 @@ func (rq *request) serviceProviderConfig() map[string]any {
 		"changePassword":   map[string]any{"supported": false},
 		"sort":             map[string]any{"supported": true},
 		"etag":             map[string]any{"supported": true},
-		"authenticationSchemes": []any{map[string]any{
-			"type": "oauthbearertoken", "name": "OAuth Bearer Token",
-			"description": "Personal API token with the scim scope, or an OAuth client_credentials access token of a client with SCIM enabled",
-			"specUri":     "https://www.rfc-editor.org/info/rfc6750", "primary": true,
-		}},
+		"authenticationSchemes": []any{
+			map[string]any{
+				"type": "oauthbearertoken", "name": "OAuth Bearer Token",
+				"description": "Personal API token with the scim scope, or an OAuth client_credentials access token of a client with SCIM enabled",
+				"specUri":     "https://www.rfc-editor.org/info/rfc6750", "primary": true,
+			},
+			// An access token bound to the client's key is sent as "Authorization: DPoP <token>" with a DPoP proof.
+			map[string]any{
+				"type": "oauthbearertoken", "name": "DPoP-bound OAuth Token",
+				"description": "An OAuth access token bound to the client's key (Authorization: DPoP, with a DPoP proof header)",
+				"specUri":     "https://www.rfc-editor.org/info/rfc9449",
+			},
+		},
 		"meta": map[string]any{"resourceType": "ServiceProviderConfig", "location": rq.base + "/ServiceProviderConfig"},
 	}
 }

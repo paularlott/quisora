@@ -25,6 +25,14 @@ func TestDiscovery(t *testing.T) {
 		if r.Body["changePassword"].(map[string]any)["supported"] != false {
 			t.Errorf("SCIM must not advertise password changes: %s", r.Raw)
 		}
+		// The endpoint takes DPoP-bound tokens as well as bearer ones, and says so.
+		var schemes []string
+		for _, s := range r.list("authenticationSchemes") {
+			schemes = append(schemes, s.(map[string]any)["name"].(string))
+		}
+		if len(schemes) != 2 || schemes[0] != "OAuth Bearer Token" || schemes[1] != "DPoP-bound OAuth Token" {
+			t.Errorf("authenticationSchemes: %v", schemes)
+		}
 		rt := e.do("GET", base+"/ResourceTypes", "", nil)
 		want := 3
 		if base != "/scim/v2" {

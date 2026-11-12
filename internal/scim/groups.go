@@ -179,6 +179,10 @@ func (rq *request) groups(id string) {
 		}
 		return
 	}
+	if id == ".search" {
+		rq.search(rq.listGroups)
+		return
+	}
 	switch rq.r.Method {
 	case http.MethodGet:
 		rq.getGroup(id)
@@ -285,7 +289,9 @@ func (rq *request) createGroup() {
 }
 
 // updateGroup is the read-modify-write for PUT and PATCH. keepMembers says that a missing members list means "no
-// change" (PUT) rather than "empty" (PATCH, where the patched resource always carries the full list).
+// change" (PUT) rather than "empty" (PATCH, where the patched resource always carries the full list). A PUT that
+// leaves members out therefore keeps the members the group has, deliberately: a client that does not manage
+// membership cannot empty a group by omission, and an explicit "members": [] is how a PUT empties one.
 func (rq *request) updateGroup(id string, keepMembers bool, mutate func(cur map[string]any) (map[string]any, *Error)) {
 	svc := rq.m.srv.Svc
 	var result *model.Group

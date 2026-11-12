@@ -3452,6 +3452,8 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     post:
       tags: [SCIM]
       summary: Create an organization (super admins)
@@ -3474,6 +3476,9 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
   /scim/v2/Organizations/{id}:
     parameters:
       - name: id
@@ -3499,6 +3504,8 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     put:
       tags: [SCIM]
       summary: Replace an organization (super admins)
@@ -3510,6 +3517,8 @@ paths:
           application/scim+json:
             schema: {$ref: "#/components/schemas/ScimOrganization"}
         required: true
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "200":
           description: Success
@@ -3521,6 +3530,10 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     patch:
       tags: [SCIM]
       summary: Change an organization (super admins)
@@ -3532,6 +3545,8 @@ paths:
           application/scim+json:
             schema: {$ref: "#/components/schemas/ScimPatchOp"}
         required: true
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "200":
           description: Success
@@ -3543,6 +3558,10 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     delete:
       tags: [SCIM]
       summary: "Refused: deleting an organization needs the console (re-authentication)"
@@ -3554,6 +3573,8 @@ paths:
       responses:
         "401": {$ref: "#/components/responses/ScimUnauthorized"}
         "403": {$ref: "#/components/responses/ScimForbidden"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
   /scim/v2/ResourceTypes:
     get:
       tags: [SCIM]
@@ -3619,6 +3640,8 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     post:
       tags: [SCIM]
       summary: Create a group (administrator's token)
@@ -3642,6 +3665,40 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
+  /scim/v2/{org}/Groups/.search:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    post:
+      tags: [SCIM]
+      summary: Search groups with a request body (RFC 7644 section 3.4.3)
+      description: The same listing as GET /scim/v2/{org}/Groups, with the parameters in a SearchRequest body instead of
+        the query string, so a long filter need not travel in the URL. Filters, the paging cap and authorization are the
+        listing's.
+      operationId: post_scim_org_Groups_search
+      security:
+        - bearer: [scim]
+        - serviceAccount: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimSearchRequest"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimListResponse"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
   /scim/v2/{org}/Groups/{id}:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -3669,6 +3726,8 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     put:
       tags: [SCIM]
       summary: Replace a group
@@ -3681,6 +3740,8 @@ paths:
           application/scim+json:
             schema: {$ref: "#/components/schemas/ScimGroup"}
         required: true
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "200":
           description: Success
@@ -3692,6 +3753,10 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     patch:
       tags: [SCIM]
       summary: Change a group, members included (PatchOp)
@@ -3704,6 +3769,8 @@ paths:
           application/scim+json:
             schema: {$ref: "#/components/schemas/ScimPatchOp"}
         required: true
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "200":
           description: Success
@@ -3715,6 +3782,10 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     delete:
       tags: [SCIM]
       summary: Delete a group
@@ -3722,6 +3793,8 @@ paths:
       security:
         - bearer: [scim]
         - serviceAccount: [scim]
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "204":
           description: Deleted
@@ -3730,6 +3803,9 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
   /scim/v2/{org}/ResourceTypes:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -3801,6 +3877,8 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     post:
       tags: [SCIM]
       summary: Create a user
@@ -3824,6 +3902,40 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
+  /scim/v2/{org}/Users/.search:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+    post:
+      tags: [SCIM]
+      summary: Search users with a request body (RFC 7644 section 3.4.3)
+      description: The same listing as GET /scim/v2/{org}/Users, with the parameters in a SearchRequest body instead of
+        the query string, so a long filter need not travel in the URL. Filters, the paging cap and authorization are the
+        listing's.
+      operationId: post_scim_org_Users_search
+      security:
+        - bearer: [scim]
+        - serviceAccount: [scim]
+      requestBody:
+        content:
+          application/scim+json:
+            schema: {$ref: "#/components/schemas/ScimSearchRequest"}
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/scim+json:
+              schema: {$ref: "#/components/schemas/ScimListResponse"}
+        "400": {$ref: "#/components/responses/ScimBadRequest"}
+        "401": {$ref: "#/components/responses/ScimUnauthorized"}
+        "403": {$ref: "#/components/responses/ScimForbidden"}
+        "404": {$ref: "#/components/responses/ScimNotFound"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
   /scim/v2/{org}/Users/{id}:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -3851,6 +3963,8 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     put:
       tags: [SCIM]
       summary: Replace a user
@@ -3863,6 +3977,8 @@ paths:
           application/scim+json:
             schema: {$ref: "#/components/schemas/ScimUser"}
         required: true
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "200":
           description: Success
@@ -3874,6 +3990,10 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     patch:
       tags: [SCIM]
       summary: Change a user (PatchOp)
@@ -3886,6 +4006,8 @@ paths:
           application/scim+json:
             schema: {$ref: "#/components/schemas/ScimPatchOp"}
         required: true
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "200":
           description: Success
@@ -3897,6 +4019,10 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "413": {$ref: "#/components/responses/ScimTooLarge"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
     delete:
       tags: [SCIM]
       summary: Delete a user
@@ -3904,6 +4030,8 @@ paths:
       security:
         - bearer: [scim]
         - serviceAccount: [scim]
+      parameters:
+        - {$ref: "#/components/parameters/ScimIfMatch"}
       responses:
         "204":
           description: Deleted
@@ -3912,6 +4040,9 @@ paths:
         "403": {$ref: "#/components/responses/ScimForbidden"}
         "404": {$ref: "#/components/responses/ScimNotFound"}
         "409": {$ref: "#/components/responses/ScimConflict"}
+        "412": {$ref: "#/components/responses/ScimPreconditionFailed"}
+        "429": {$ref: "#/components/responses/ScimTooManyRequests"}
+        "503": {$ref: "#/components/responses/ScimUnavailable"}
 components:
   parameters:
     ApiVersion:
@@ -4028,6 +4159,13 @@ components:
       description: attributes to leave out
       schema:
         type: string
+    ScimIfMatch:
+      name: If-Match
+      in: header
+      description: The resource's ETag (its meta.version). The change is made only if the resource still has it, else 412.
+        `*` matches any current version.
+      schema:
+        type: string
   headers:
     ApiVersion:
       description: the API version that answered
@@ -4100,6 +4238,35 @@ components:
         application/scim+json:
           schema: {$ref: "#/components/schemas/ScimError"}
       description: Conflict (uniqueness, or a stale ETag)
+    ScimPreconditionFailed:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: The If-Match precondition failed, or the resource changed while the request was applied; read it again
+    ScimTooLarge:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: The request body is over 1 MiB, or a group change adds and removes more than 1,000 members
+    ScimTooManyRequests:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: Too many failed authentications from the address (60 a minute); Retry-After says when to try again
+      headers:
+        Retry-After:
+          description: seconds to wait
+          schema: {type: integer}
+    ScimUnavailable:
+      content:
+        application/scim+json:
+          schema: {$ref: "#/components/schemas/ScimError"}
+      description: This server cannot check the token or make the change now (catching up with its cluster, or cut off
+        from its majority); Retry-After says when to try again
+      headers:
+        Retry-After:
+          description: seconds to wait
+          schema: {type: integer}
   securitySchemes:
     bearer:
       bearerFormat: qsr_<id>_<secret>
@@ -5923,6 +6090,34 @@ components:
           type: integer
         totalResults:
           type: integer
+    ScimSearchRequest:
+      type: object
+      required: [schemas]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+            enum: ["urn:ietf:params:scim:api:messages:2.0:SearchRequest"]
+        filter:
+          type: string
+        sortBy:
+          type: string
+        sortOrder:
+          type: string
+          enum: [ascending, descending]
+        startIndex:
+          type: integer
+        count:
+          type: integer
+        attributes:
+          type: array
+          items:
+            type: string
+        excludedAttributes:
+          type: array
+          items:
+            type: string
     ScimOrganization:
       type: object
       description: "A Quisora organization as a SCIM resource (super admins). Every attribute: the server's Schemas endpoint,

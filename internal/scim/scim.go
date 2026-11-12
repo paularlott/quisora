@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -198,6 +200,8 @@ type request struct {
 	// them out of every member list and membership filter, as it leaves them out of the users.
 	unseen map[string]bool
 	loaded bool
+	// q holds the list parameters of a POST .search body (search); nil for a GET, which reads them from the URL.
+	q url.Values
 	// made is the picture made for this request's photos, kept for a retry of the change (photoChange): from source.
 	made struct {
 		source string
@@ -461,8 +465,16 @@ type listParams struct {
 	excluded []string
 }
 
+// query is the request's list parameters: the URL's, or the ones a POST .search body supplied.
+func (rq *request) query() url.Values {
+	if rq.q != nil {
+		return rq.q
+	}
+	return rq.r.URL.Query()
+}
+
 func (rq *request) listParams() (*listParams, *Error) {
-	q := rq.r.URL.Query()
+	q := rq.query()
 	p := &listParams{start: 1, count: defaultCount}
 	if f := q.Get("filter"); f != "" {
 		n, err := parseFilter(f)
@@ -501,6 +513,76 @@ func (rq *request) listParams() (*listParams, *Error) {
 	}
 	p.attrs, p.excluded = attrLists(q.Get("attributes"), q.Get("excludedAttributes"))
 	return p, nil
+}
+
+const searchSchema = "urn:ietf:params:scim:api:messages:2.0:SearchRequest"
+
+// search answers POST <collection>/.search (RFC 7644 section 3.4.3): the SearchRequest body's parameters take the place
+// of the query string, and list is the collection's GET listing, so filters, paging caps and authorization are the
+// same.
+func (rq *request) search(list func()) {
+	if !rq.allow(http.MethodPost) {
+		return
+	}
+	body, e := rq.readBody()
+	if e != nil {
+		writeError(rq.w, e)
+		return
+	}
+	if !hasSchema(body["schemas"], searchSchema) {
+		writeError(rq.w, badSyntax("schemas must include %s", searchSchema))
+		return
+	}
+	q := url.Values{}
+	for _, k := range []string{"filter", "sortBy", "sortOrder"} {
+		if v, ok := body[k]; ok {
+			s, isStr := v.(string)
+			if !isStr {
+				writeError(rq.w, badSyntax("%s must be a string", k))
+				return
+			}
+			q.Set(k, s)
+		}
+	}
+	for _, k := range []string{"startIndex", "count"} {
+		if v, ok := body[k]; ok {
+			n, isNum := v.(float64)
+			if !isNum || n != math.Trunc(n) {
+				writeError(rq.w, badSyntax("%s must be an integer", k))
+				return
+			}
+			q.Set(k, strconv.FormatInt(int64(n), 10))
+		}
+	}
+	for _, k := range []string{"attributes", "excludedAttributes"} {
+		if v, ok := body[k]; ok {
+			arr, isArr := v.([]any)
+			if !isArr {
+				writeError(rq.w, badSyntax("%s must be an array of attribute names", k))
+				return
+			}
+			names := make([]string, len(arr))
+			for i, a := range arr {
+				if names[i], ok = a.(string); !ok {
+					writeError(rq.w, badSyntax("%s must be an array of attribute names", k))
+					return
+				}
+			}
+			q.Set(k, strings.Join(names, ","))
+		}
+	}
+	rq.q = q
+	list()
+}
+
+// hasSchema reports whether the schemas value lists urn.
+func hasSchema(v any, urn string) bool {
+	for _, s := range asSlice(v) {
+		if str, ok := s.(string); ok && strings.EqualFold(str, urn) {
+			return true
+		}
+	}
+	return false
 }
 
 func attrLists(attrs, excluded string) ([]string, []string) {
