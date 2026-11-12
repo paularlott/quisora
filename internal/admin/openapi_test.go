@@ -378,7 +378,7 @@ func TestOpenAPISecurityResponsesAndSchemas(t *testing.T) {
 	for _, p := range backup.Parameters {
 		in[p.Name] = p.In
 	}
-	if in["plain"] != "query" || in["X-Backup-Password"] != "header" {
+	if _, plain := in["plain"]; plain || in["X-Backup-Password"] != "header" { // always encrypted: no ?plain
 		t.Errorf("backup parameters: %v", in)
 	}
 	if _, ok := createUser.Responses["503"]; !ok {
