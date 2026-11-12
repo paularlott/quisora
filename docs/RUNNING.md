@@ -836,6 +836,11 @@ release: [RELEASE.md](RELEASE.md).
   interrupted upgrade resumes). Nodes that share a database do it once, under a lock; with gossip, every
   node migrates its own store.
 - **Backups** made by the previous release restore into the new one.
+- **Brute-force windows restart.** With gossip, sign-in rate-limit and lockout counters live in the memory of the
+  node that owns them ([REPLICATION.md](REPLICATION.md#short-lived-state)); every node that stops during a rolling upgrade
+  hands its counters' windows to a new owner, which starts them from nothing. An attacker who watched the upgrade
+  could try again sooner than `limits.lockout_minutes` allows. Watch `login.limited` and `login.lockout` across an
+  upgrade, and keep upgrades short.
 
 ### Changing a stored format (for developers)
 
