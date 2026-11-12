@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -27,7 +26,7 @@ import (
 // or a code mailed to the address: both count for users below manager only), and what a session holds is not judged
 // again by the user's role at each request, so a promotion must not carry such a session over to a privileged
 // account. Whoever held the provider's account could also have set up credentials of the account's own before the
-// promotion, while it had no second factor (model.User.SetUpBy): when the account is left without that provider, the
+// promotion, while it had no second factor (model.User.SetUpBy): whatever links it keeps, the
 // same write takes every way in from it (clearSignIn: its password, authenticator app, recovery codes, passkeys,
 // connected providers and API tokens), and the manager or administrator sets their own from an invitation or a sign-in
 // link, as after any reset of the account's sign-in. Demotion has none: what a session or token may do is decided by
@@ -43,7 +42,7 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 	}
 	sessWas := u.SessionEpoch
 	u.SessionEpoch = NewCredEpoch()
-	links, kept, err := s.unchosenLinks(ctx, u)
+	links, err := s.unchosenLinks(ctx, u)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -54,7 +53,10 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 		u.BumpSecurity()
 	}
 	setUpBy, cred := u.SetUpBy, uint64(0)
-	reset := setUpBy != "" && !slices.ContainsFunc(kept, func(l *model.Identity) bool { return l.ProviderID == setUpBy })
+	// Marked, the account is reset whatever links it keeps: one connected under that provider's own sign-in was not the
+	// user's choice either (the provider's holder could connect another subject of it), and the reset's new credential
+	// epoch ends every connected link with the rest.
+	reset := setUpBy != ""
 	if reset {
 		cred, _ = clearSignIn(u)
 	}

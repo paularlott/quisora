@@ -90,7 +90,8 @@ func TestEveryPromotionDropsEmailLinks(t *testing.T) {
 // Credentials set up through a provider's sign-in (model.User.SetUpBy) go with a promotion that leaves the account
 // without that provider, by every path of promotion, in the write that promotes: the password, the authenticator app,
 // the recovery codes and the credential epoch (passkeys, connected providers, API tokens), audited as
-// user.signin.reset. When the user connected that provider themselves, its link stays and so do they.
+// user.signin.reset. A link the account connected itself does not spare it: the provider's holder could connect one
+// under the provider's own sign-in.
 func TestPromotionResetsCredentialsAProviderSetUp(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -108,11 +109,11 @@ func TestPromotionResetsCredentialsAProviderSetUp(t *testing.T) {
 				e.t.Fatal(err)
 			}
 		}, true},
-		{"UpdateUser, provider the user connected", "connect", func(e *env, u *model.User) {
+		{"UpdateUser, provider the account connected", "connect", func(e *env, u *model.User) {
 			if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
 				e.t.Fatal(err)
 			}
-		}, false},
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)

@@ -1415,21 +1415,19 @@ func (s *Service) HeldPasskeys(ctx context.Context, u *model.User) (int, error) 
 // unchosenLinks returns u's links to sign-in providers that u did not make from their own account page: made by email
 // address, by an account created at a provider's first sign-in, by an administrator, or of unknown origin. The side
 // that controls the provider controls such a link, so applyRole deletes them when u becomes privileged. Only a link
-// u connected while signed in ("connect") stays: those still counting are returned as kept.
-func (s *Service) unchosenLinks(ctx context.Context, u *model.User) (unchosen, kept []*model.Identity, err error) {
+// u connected while signed in ("connect") stays.
+func (s *Service) unchosenLinks(ctx context.Context, u *model.User) ([]*model.Identity, error) {
 	ids, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
-		return nil, nil, mapStore(err)
+		return nil, mapStore(err)
 	}
+	var unchosen []*model.Identity
 	for _, id := range ids {
-		switch {
-		case id.Via != "connect":
+		if id.Via != "connect" {
 			unchosen = append(unchosen, id)
-		case u.Counts(id):
-			kept = append(kept, id)
 		}
 	}
-	return unchosen, kept, nil
+	return unchosen, nil
 }
 
 // writeUser writes u, the copy read at its version (a compare-and-swap, as Users.Update), and the writes that go with

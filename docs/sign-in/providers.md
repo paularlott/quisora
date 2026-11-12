@@ -80,9 +80,10 @@ The first time someone signs in through a provider, Quisora decides which accoun
    its steps (entering a code, enrolling a second factor) ends with the promotion: it cannot be finished. Each
    removal is audited as `identity.unlink`. The
    user connects the provider again on their account page, signed in, if they want it. Enrolling before the
-   promotion would come to the same, so what a sign-in through such a provider set up while the account had no
+   promotion would come to the same, so what a sign-in through a provider set up while the account had no
    second factor of its own (a password, an authenticator app, a passkey, a personal API token or another connected
-   sign-in provider, and whatever was added with them) goes too: the promotion resets the account's sign-in in the
+   sign-in provider, and whatever was added with them) goes too, even when that provider's link was connected on the
+   account page, as its holder could have connected it: the promotion resets the account's sign-in in the
    same write, as a reset by an administrator does (password, authenticator app, recovery codes, passkeys, connected
    providers and API tokens), audited as `user.signin.reset` with the `provider`. The manager or administrator then sets their own from an invitation or a sign-in link.
 3. **Create accounts automatically** (when on): a new user with the provider's verified address and name, the `user`
