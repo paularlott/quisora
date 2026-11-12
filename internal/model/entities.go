@@ -341,6 +341,13 @@ type User struct {
 	// what the other counted on. The record is deleted after (the orphan sweep removes any left); an entry is dropped
 	// once its record is gone for good (RemovalRetention). A new credential epoch clears the list (SetCredEpoch).
 	Removed []Removal `msgpack:"rm,omitempty" json:"-"`
+	// SetUpBy is the sign-in provider (its id) through which the account's own credentials were set up: a password,
+	// authenticator app or passkey added by a sign-in through that provider while the account had no second factor of
+	// its own, so that whoever held the provider's account then may hold them. Recorded in the write that adds the
+	// credential, and kept through every later change (what was added later was added with them) until the account's
+	// sign-in is reset: a promotion that leaves the account without that provider does so (service.applyRole), as do
+	// an accepted invitation and a reset of its sign-in. "" when its credentials are its own.
+	SetUpBy string `msgpack:"sub,omitempty" json:"-"`
 }
 
 // Removal is one credential removed from an account (User.Removed).

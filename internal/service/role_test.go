@@ -87,6 +87,64 @@ func TestEveryPromotionDropsEmailLinks(t *testing.T) {
 	}
 }
 
+// Credentials set up through a provider's sign-in (model.User.SetUpBy) go with a promotion that leaves the account
+// without that provider, by every path of promotion, in the write that promotes: the password, the authenticator app,
+// the recovery codes and the credential epoch (passkeys, connected providers, API tokens), audited as
+// user.signin.reset. When the user connected that provider themselves, its link stays and so do they.
+func TestPromotionResetsCredentialsAProviderSetUp(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		via     string // how the provider that set the credentials up is linked
+		promote func(e *env, u *model.User)
+		reset   bool
+	}{
+		{"UpdateUser, provider created the account", "provision", func(e *env, u *model.User) {
+			if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+				e.t.Fatal(err)
+			}
+		}, true},
+		{"break-glass --super-admin, linked by email", "email", func(e *env, u *model.User) {
+			if _, _, err := e.svc.CreateBreakGlassInvite(e.ctx, u.ID, true); err != nil {
+				e.t.Fatal(err)
+			}
+		}, true},
+		{"UpdateUser, provider the user connected", "connect", func(e *env, u *model.User) {
+			if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+				e.t.Fatal(err)
+			}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			u := e.user(e.primary.ID, "pat", model.RoleUser)
+			prov, err := e.svc.CreateProvider(e.ctx, service.System, e.primary.ID, goodProvider("sso"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.svc.Identities.Create(e.ctx, model.NewIdentity(e.fresh(u), prov, "sub-1", u.Email, tc.via)); err != nil {
+				t.Fatal(err)
+			}
+			set := e.fresh(u)
+			set.SetUpBy, set.PasswordHash, set.TOTPSecret, set.RecoveryCodes = prov.ID, "hash", "sealed secret", []string{"code"}
+			if err := e.svc.Users.Update(e.ctx, set); err != nil {
+				t.Fatal(err)
+			}
+			tc.promote(e, u)
+			got := e.fresh(u)
+			cleared := got.PasswordHash == "" && got.TOTPSecret == "" && got.RecoveryCodes == nil && got.SetUpBy == "" &&
+				got.CredEpoch != set.CredEpoch
+			kept := got.PasswordHash != "" && got.TOTPSecret != "" && got.SetUpBy == prov.ID && got.CredEpoch == set.CredEpoch
+			if tc.reset && !cleared || !tc.reset && !kept {
+				t.Fatalf("after the promotion: password %v, app %v, set up by %q, same epoch %v", got.PasswordHash != "",
+					got.TOTPSecret != "", got.SetUpBy, got.CredEpoch == set.CredEpoch)
+			}
+			if ev := e.audits("user.signin.reset"); tc.reset != (len(ev) == 1) || tc.reset && ev[0].Detail["provider"] != prov.ID {
+				t.Fatalf("user.signin.reset events: %+v", ev)
+			}
+		})
+	}
+}
+
 // A promotion whose outcome is unknown (it may have landed, and a rerun finds nothing left to change) finishes the same
 // way: the links nobody chose go.
 func TestPromotionOfUnknownOutcomeDropsEmailLinks(t *testing.T) {

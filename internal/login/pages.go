@@ -2,6 +2,7 @@ package login
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -97,7 +98,14 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 		// only the step a provider sign-in left, for this org
 		// (a ticket that cannot be read is no step to resume: the page is the sign-in form, and the person can start again)
 		if t, err := m.getTicket(ctx, c.Value, "totp", "passkey", "email_code", "enrol"); err == nil && t.Provider != "" {
-			if u, err := m.s.Svc.Users.Get(ctx, t.UserID); err == nil && u.OrgID == org.ID {
+			// The ticket must still bind to the account as it is now (ticketUser), as every step's POST checks: one
+			// that does not (a password changed, a factor set up, a promotion since) shows no step, only the sign-in
+			// form to start again from, with the message a POST would give.
+			u, tOrg, err := m.ticketUser(ctx, t)
+			if errors.Is(err, errTicketGone) {
+				d.Error = msgExpired
+			}
+			if err == nil && tOrg.ID == org.ID {
 				d.Step, d.Ticket = t.Step, c.Value
 				d.Alternatives = strings.Join(m.alternatives(ctx, u, t.Step), " ")
 				if t.Step == "email_code" && m.emailOK(u, org.Settings.EmailCodes) {

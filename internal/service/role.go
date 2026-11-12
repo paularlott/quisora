@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"slices"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -25,8 +26,13 @@ import (
 // A session may have met its second factor only through rules for plain users (an upstream provider trusted for it,
 // or a code mailed to the address: both count for users below manager only), and what a session holds is not judged
 // again by the user's role at each request, so a promotion must not carry such a session over to a privileged
-// account. Demotion has none: what a session or token may do is decided by the user's role at each request, not by one
-// held in it. (A new account has no links, so creation sets its role in the record.)
+// account. Whoever held the provider's account could also have set up credentials of the account's own before the
+// promotion, while it had no second factor (model.User.SetUpBy): when the account is left without that provider, the
+// same write takes every way in from it (clearSignIn: its password, authenticator app, recovery codes, passkeys,
+// connected providers and API tokens), and the manager or administrator sets their own from an invitation or a sign-in
+// link, as after any reset of the account's sign-in. Demotion has none: what a session or token may do is decided by
+// the user's role at each request, not by one held in it. (A new account has no links, so creation sets its role in
+// the record.)
 func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role) (also []store.Op,
 	finish func(ctx context.Context, a *Actor, err error), err error) {
 	before := u.Role
@@ -35,8 +41,9 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 	if before.Privileged() || !role.Privileged() {
 		return nil, finish, nil
 	}
+	sessWas := u.SessionEpoch
 	u.SessionEpoch = NewCredEpoch()
-	links, err := s.unchosenLinks(ctx, u)
+	links, kept, err := s.unchosenLinks(ctx, u)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -46,10 +53,23 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 	if len(links) > 0 {
 		u.BumpSecurity()
 	}
+	setUpBy, cred := u.SetUpBy, uint64(0)
+	reset := setUpBy != "" && !slices.ContainsFunc(kept, func(l *model.Identity) bool { return l.ProviderID == setUpBy })
+	if reset {
+		cred, _ = clearSignIn(u)
+	}
 	return also, func(ctx context.Context, a *Actor, err error) {
 		for _, l := range links {
 			s.auditOutcome(ctx, a, err, userChange(u, "identity.unlink",
 				map[string]string{"provider": l.ProviderID, "reason": "promoted to " + string(role)}))
+		}
+		if !reset {
+			return
+		}
+		s.auditOutcome(ctx, a, err, userChange(u, "user.signin.reset",
+			map[string]string{"provider": setUpBy, "reason": "promoted to " + string(role)}))
+		if err == nil { // tidying, of the epochs the write replaced
+			_ = s.clearCredentials(ctx, u.ID, cred, sessWas)
 		}
 	}, nil
 }

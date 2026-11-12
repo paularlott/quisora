@@ -442,9 +442,11 @@ func (m *Module) verifyPassword(w http.ResponseWriter, r *http.Request, u *model
 	return true
 }
 
-// changePassword handles POST /o/{org}/api-internal/account/password: {current, new}. The current session survives; every other
-// session of the user (and its refresh grants) is ended. An account without a password (set up with a passkey, an
-// authenticator app or a sign-in provider) sets its first one here with {new} alone: setFirstPassword.
+// changePassword handles POST /o/{org}/api-internal/account/password: {current, new}. An account with a second factor
+// (an authenticator app or a passkey) also needs a recent re-authentication with it (needReauth). The current session
+// survives; every other session of the user (and its refresh grants) is ended. An account without a password (set up
+// with a passkey, an authenticator app or a sign-in provider) sets its first one here with {new} alone:
+// setFirstPassword.
 func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) {
 	var in changePasswordReq
 	if !decode(w, r, &in) {
@@ -458,6 +460,16 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 	}
 	if u.PasswordHash == "" {
 		m.setFirstPassword(w, r, a, u, in.New)
+		return
+	}
+	// The second factor too, as for every other change of a way in (needReauth): the password alone, perhaps taken
+	// with a session, must not replace itself on an account that signs in with more.
+	pk, err := m.s.Svc.UsablePasskeys(ctx, u, "")
+	if err != nil {
+		m.internalError(w, r, "count passkeys", err)
+		return
+	}
+	if (u.HasTOTP() || pk > 0) && !m.needReauth(w, r, a) {
 		return
 	}
 	if in.Current == "" {
@@ -524,8 +536,13 @@ func (m *Module) setFirstPassword(w http.ResponseWriter, r *http.Request, a acct
 		web.WriteError(w, err)
 		return
 	}
+	by, err := m.setUpBy(ctx, u, a.sess.Provider)
+	if err != nil {
+		m.internalError(w, r, "count passkeys", err)
+		return
+	}
 	keep := m.holdReauth(ctx, a)
-	fresh, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &password})
+	fresh, err := m.s.Svc.UpdateUser(service.SelfService(ctx), a.actor, u.ID, service.UserInput{Password: &password, SetUpBy: by})
 	if err != nil {
 		web.WriteError(w, err)
 		return
@@ -630,8 +647,9 @@ func (m *Module) authTime(ctx context.Context, a acct) time.Time {
 // that change, so the change does not spend it, and the person can go on (add a second passkey, make recovery codes)
 // without the dialog again. Only a confirmation that still stands against the account as it is before the change is
 // carried: one given before the owner added a second factor from another browser, say, no longer counts, and this
-// session's own change (a password change, which asks for the current password only) must not bring it back. It
-// keeps its expiry too (reauthTTL from when it was given), so changes made one after another never prolong it.
+// session's own change (a password change of an account without a second factor, which asks for the current password
+// only) must not bring it back. It keeps its expiry too (reauthTTL from when it was given), so changes made one after
+// another never prolong it.
 func (m *Module) holdReauth(ctx context.Context, a acct) func(gen uint64) {
 	_, at, second, ok := m.readReauth(ctx, a.sess.ID)
 	if !ok || !m.reauthed(ctx, a) {
@@ -1066,6 +1084,10 @@ func (m *Module) registerPasskeyFinish(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	// Stored with a compare-and-swap on the user just read, moving its security generation on (StoreRegistration).
+	if u.SetUpBy, err = m.setUpBy(r.Context(), u, a.sess.Provider); err != nil {
+		m.internalError(w, r, "count passkeys", err)
+		return
+	}
 	keep := m.holdReauth(r.Context(), a)
 	p, _, err := m.Passkeys.FinishRegistrationAs(r.Context(), purposeRegister, u, in.Challenge, in.Credential, in.Name)
 	if errors.Is(err, store.ErrStale) {
@@ -1178,6 +1200,10 @@ func (m *Module) totpConfirm(w http.ResponseWriter, r *http.Request, a acct) {
 	}
 	// The commit (service.SetTOTP): a compare-and-swap on the version just read, so a factor set meanwhile (from
 	// another browser, or at a sign-in) is never overwritten unseen.
+	if u.SetUpBy, err = m.setUpBy(ctx, u, a.sess.Provider); err != nil {
+		m.internalError(w, r, "count passkeys", err)
+		return
+	}
 	keep := m.holdReauth(ctx, a)
 	if err := m.s.Svc.SetTOTP(ctx, u, secret, step); err != nil {
 		web.WriteError(w, err)

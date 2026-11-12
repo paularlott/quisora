@@ -335,7 +335,8 @@ export default function (Alpine) {
       }
       const first = !this.hasPassword
       const send = () => post(accountApi('/password'), first ? { new: f.pw_new } : { current: f.pw_current, new: f.pw_new })
-      const res = await this.runIn('pw_', () => (first ? withReauth(Alpine, send, opener, this) : send()))
+      // A change asks for the second factor too, when the account has one: the server answers "reauth" first.
+      const res = await this.runIn('pw_', () => withReauth(Alpine, send, opener, this))
       if (!res) return
       this.closeDlg('password-dialog')
       this.resetForm({ pw_current: '', pw_new: '', pw_confirm: '' })

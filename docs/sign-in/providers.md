@@ -79,7 +79,12 @@ The first time someone signs in through a provider, Quisora decides which accoun
    so whoever held the provider's account could enrol their own. A sign-in through such a link that is still between
    its steps (entering a code, enrolling a second factor) ends with the promotion: it cannot be finished. Each
    removal is audited as `identity.unlink`. The
-   user connects the provider again on their account page, signed in, if they want it.
+   user connects the provider again on their account page, signed in, if they want it. Enrolling before the
+   promotion would come to the same, so what a sign-in through such a provider set up while the account had no
+   second factor of its own (a password, an authenticator app or a passkey, and whatever was added with them) goes
+   too: the promotion resets the account's sign-in in the same write, as a reset by an administrator does (password,
+   authenticator app, recovery codes, passkeys, connected providers and API tokens), audited as `user.signin.reset`
+   with the `provider`. The manager or administrator then sets their own from an invitation or a sign-in link.
 3. **Create accounts automatically** (when on): a new user with the provider's verified address and name, the `user`
    role (`user.provision`). Refused if a user already has that address.
 4. Otherwise the sign-in is refused: *the account is not linked*.
@@ -170,6 +175,7 @@ lab, set `server.allow_private_networks` to allow every private address. A provi
 | `user.provision` | An account was created automatically |
 | `user.picture.set` by `provider:<name>` | The provider's picture was copied into an account that had none |
 | `identity.unlink` | Links removed because the provider changed, or because the user was promoted to a privileged role (`reason`) |
+| `user.signin.reset` | A promoted user's credentials, set up through a sign-in with a provider they lost, were removed (`provider`, `reason`) |
 | `identity.refresh.refused` | A leaver: the provider refused the refresh token, sessions ended |
 | `account.provider.connect`, `account.provider.connect_refused`, `account.provider.disconnect` | A user connected or disconnected a provider |
 | `user.provider.disconnect` | An administrator disconnected one |

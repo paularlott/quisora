@@ -48,6 +48,9 @@ type UserInput struct {
 	ValidUntil *string    `json:"valid_until"`
 	Work       *WorkInput `json:"work"`
 	Password   *string    `json:"password"`
+	// SetUpBy goes with Password set from the account page for a sign-in through this provider while the account has
+	// no second factor of its own: it is recorded on the account (model.User.SetUpBy). Never read from a request body.
+	SetUpBy string `json:"-"`
 	// PasswordHash imports a password hash from another system when a user is created (never on an update): bcrypt
 	// (cost 4 to 14), SHA-512 crypt or argon2id. The system, super admins (an API token needs the import scope) or a
 	// service account with the import scope.
@@ -282,6 +285,9 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 		u.PasswordHash = h
 		now := time.Now().UTC()
 		u.PasswordChangedAt = &now
+		if u.SetUpBy == "" {
+			u.SetUpBy = in.SetUpBy
+		}
 	}
 	return nil
 }
@@ -984,37 +990,48 @@ func (s *Service) DeleteUser(ctx context.Context, a *Actor, id string) error {
 }
 
 // ResetCredentials leaves a user with no way in but what an accepted invitation is about to set. One compare-and-swap
-// of the user record is the change: it removes the password, the authenticator app and the recovery codes, gives the
-// account new credential and session epochs (model.User.CredEpoch, SessionEpoch: every passkey, connected provider,
-// API token, session and refresh grant stops counting at that write) and moves the security generation on (every
-// sign-in step, set-up or link in flight ends). Removing the records of the epochs it replaced follows
-// (clearCredentials), as tidying: relying parties are told of the ended sessions. Re-inviting a compromised account
-// therefore evicts whoever had it, at once.
+// of the user record is the change (clearSignIn): it removes the password, the authenticator app and the recovery
+// codes, gives the account new credential and session epochs (model.User.CredEpoch, SessionEpoch: every passkey,
+// connected provider, API token, session and refresh grant stops counting at that write) and moves the security
+// generation on (every sign-in step, set-up or link in flight ends). Removing the records of the epochs it replaced
+// follows (clearCredentials), as tidying: relying parties are told of the ended sessions. Re-inviting a compromised
+// account therefore evicts whoever had it, at once.
 func (s *Service) ResetCredentials(ctx context.Context, userID string) error {
 	for attempt := 0; ; attempt++ {
 		u, err := s.Users.Get(ctx, userID)
 		if err != nil {
 			return mapStore(err)
 		}
-		was := *u
-		if u.PasswordHash != "" {
-			now := time.Now().UTC()
-			u.PasswordChangedAt = &now
-		}
-		u.PasswordHash, u.TOTPSecret, u.MFAEnrolledAt = "", "", nil
-		u.RecoveryCodes, u.RecoveryCreated = nil, nil
-		u.SetCredEpoch(NewCredEpoch())
-		u.SessionEpoch = NewCredEpoch()
-		u.BumpSecurity()
+		cred, sess := clearSignIn(u)
 		err = s.Users.Update(ctx, u)
 		if err == nil {
-			return s.clearCredentials(ctx, userID, was.CredEpoch, was.SessionEpoch)
+			return s.clearCredentials(ctx, userID, cred, sess)
 		}
 		// re-read and retried when a concurrent change (a profile edit, a sign-in's stamp) got there first
 		if !errors.Is(err, store.ErrStale) || attempt == 9 {
 			return mapStore(err)
 		}
 	}
+}
+
+// clearSignIn takes every way in from u, the copy about to be written: the password, the authenticator app and the
+// recovery codes go, a new credential epoch ends every passkey, connected provider and API token, and a new session
+// epoch every session and refresh grant; the security generation moves on, so every sign-in step, set-up or link in
+// flight ends. Nothing a provider's sign-in set up is left, so none is recorded (model.User.SetUpBy). It returns the
+// epochs it replaced, whose records clearCredentials tidies away once the write has been made.
+func clearSignIn(u *model.User) (cred, sess uint64) {
+	cred, sess = u.CredEpoch, u.SessionEpoch
+	if u.PasswordHash != "" {
+		now := time.Now().UTC()
+		u.PasswordChangedAt = &now
+	}
+	u.PasswordHash, u.TOTPSecret, u.MFAEnrolledAt = "", "", nil
+	u.RecoveryCodes, u.RecoveryCreated = nil, nil
+	u.SetUpBy = ""
+	u.SetCredEpoch(NewCredEpoch())
+	u.SessionEpoch = NewCredEpoch()
+	u.BumpSecurity()
+	return cred, sess
 }
 
 // clearCredentials removes the records of the account's credentials made in credential epoch cred (passkeys,
@@ -1397,13 +1414,21 @@ func (s *Service) HeldPasskeys(ctx context.Context, u *model.User) (int, error) 
 // unchosenLinks returns u's links to sign-in providers that u did not make from their own account page: made by email
 // address, by an account created at a provider's first sign-in, by an administrator, or of unknown origin. The side
 // that controls the provider controls such a link, so applyRole deletes them when u becomes privileged. Only a link
-// u connected while signed in ("connect") stays.
-func (s *Service) unchosenLinks(ctx context.Context, u *model.User) ([]*model.Identity, error) {
+// u connected while signed in ("connect") stays: those still counting are returned as kept.
+func (s *Service) unchosenLinks(ctx context.Context, u *model.User) (unchosen, kept []*model.Identity, err error) {
 	ids, err := s.Identities.All(ctx, u.ID)
 	if err != nil {
-		return nil, mapStore(err)
+		return nil, nil, mapStore(err)
 	}
-	return slices.DeleteFunc(ids, func(id *model.Identity) bool { return id.Via == "connect" }), nil
+	for _, id := range ids {
+		switch {
+		case id.Via != "connect":
+			unchosen = append(unchosen, id)
+		case u.Counts(id):
+			kept = append(kept, id)
+		}
+	}
+	return unchosen, kept, nil
 }
 
 // writeUser writes u, the copy read at its version (a compare-and-swap, as Users.Update), and the writes that go with

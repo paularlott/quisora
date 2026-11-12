@@ -147,6 +147,112 @@ func TestPromotionEndsProviderSignInInProgress(t *testing.T) {
 	}
 }
 
+// The credentials a sign-in through a provider set up, while the account had no second factor of its own, go with the
+// provider's link when the account is promoted: whoever held the provider's account could have set up both the
+// authenticator app (at the sign-in's enrolment step) and the password (on the account page), and must not sign in to
+// the manager's account with them afterwards.
+func TestPromotionTakesCredentialsAProviderSetUp(t *testing.T) {
+	ctx := context.Background()
+	u := newUpEnv(t, nil)
+	u.setSettings(t, u.org, func(s *model.OrgSettings) { s.RequireMFA = true })
+	p := u.oidcProvider(t, nil)
+	b := u.browser(t)
+	res := b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example"))
+	_, body := b.get(res.Header.Get("Location"))
+	ticket := attr(body, "data-ticket")
+	res2, out := b.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket})
+	wantStatus(t, res2, out, 200)
+	secret := str(out, "secret")
+	res2, out = b.post("/api-internal/login/enrol/totp/confirm", map[string]any{"ticket": ticket, "code": totpAt(secret, time.Now())})
+	wantStatus(t, res2, out, 200)
+	sessionCSRF(t, b)
+	const password = "the provider's holder chose this one"
+	res2, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": password})
+	wantStatus(t, res2, out, 200)
+	pat, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "pat@corp.example")
+	if err != nil || pat.SetUpBy != p.ID || pat.PasswordHash == "" || !pat.HasTOTP() {
+		t.Fatalf("set up by %q, password %v, app %v: %v", pat.SetUpBy, pat.PasswordHash != "", pat.HasTOTP(), err)
+	}
+
+	if _, err := u.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	b2 := u.browser(t)
+	res2, out = b2.login("acme", "pat@corp.example", password)
+	if res2.StatusCode == 200 {
+		res2, out = b2.post("/api-internal/login/totp", map[string]any{"ticket": str(out, "ticket"), "code": totpAt(secret, time.Now().Add(30*time.Second))})
+		t.Fatalf("the password and app set up through the provider still sign in: %d %v session=%v", res2.StatusCode, out["_raw"], b2.hasSession())
+	}
+	fresh, err := u.Svc.Users.Get(ctx, pat.ID)
+	if err != nil || fresh.PasswordHash != "" || fresh.HasTOTP() || fresh.SetUpBy != "" || fresh.CredEpoch == pat.CredEpoch {
+		t.Fatalf("after the promotion: password %v, app %v, set up by %q, same epoch %v: %v", fresh.PasswordHash != "",
+			fresh.HasTOTP(), fresh.SetUpBy, fresh.CredEpoch == pat.CredEpoch, err)
+	}
+	if n := len(u.audits(t, "user.signin.reset")); n != 1 {
+		t.Fatalf("user.signin.reset audits %d", n)
+	}
+}
+
+// Credentials of the account's own, set up while it had a second factor, are not the provider's: a promotion leaves
+// them.
+func TestPromotionKeepsCredentialsOfTheAccountsOwn(t *testing.T) {
+	ctx := context.Background()
+	u := newUpEnv(t, nil)
+	p := u.oidcProvider(t, nil)
+	if res := u.browser(t).via(t, u, p, "acme", "", claims("sub-1", "pat@corp.example")); !strings.Contains(res.Header.Get("Location"), "/account") {
+		t.Fatalf("first sign-in: %q", res.Header.Get("Location"))
+	}
+	pat, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "pat@corp.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := u.giveTOTP(t, pat) // set up outside any provider's sign-in
+	b := u.browser(t)
+	res := b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example"))
+	_, body := b.get(res.Header.Get("Location"))
+	res2, out := b.post("/api-internal/login/totp", map[string]any{"ticket": attr(body, "data-ticket"), "code": totpAt(secret, time.Now())})
+	wantStatus(t, res2, out, 200)
+	sessionCSRF(t, b)
+	b.markReauth()
+	res2, out = b.api("POST", "/api-internal/account/password", map[string]any{"new": "a password of pat's own"})
+	wantStatus(t, res2, out, 200)
+	if _, err := u.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := u.Svc.Users.Get(ctx, pat.ID); err != nil || !fresh.HasTOTP() || fresh.PasswordHash == "" || fresh.SetUpBy != "" {
+		t.Fatalf("the account's own credentials were taken: %v", err)
+	}
+}
+
+// The sign-in page shows the step a provider sign-in left only while its ticket still binds to the account, as every
+// step's POST checks: after a promotion (or any change of what signs the account in) the page is the sign-in form to
+// start again from, with the message a POST would give, and not the enrolment the ticket was at.
+func TestSignInPageDropsAStaleStep(t *testing.T) {
+	ctx := context.Background()
+	u := newUpEnv(t, nil)
+	u.setSettings(t, u.org, func(s *model.OrgSettings) { s.RequireMFA = true })
+	p := u.oidcProvider(t, nil)
+	b := u.browser(t)
+	loc := b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example")).Header.Get("Location")
+	if _, body := b.get(loc); !strings.Contains(body, `data-step="enrol"`) || attr(body, "data-ticket") == "" {
+		t.Fatalf("sign-in page does not continue with enrolment: %.600s", body)
+	}
+	pat, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "pat@corp.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+		t.Fatal(err)
+	}
+	_, body := b.get(loc)
+	if strings.Contains(body, `data-step="enrol"`) || attr(body, "data-ticket") != "" {
+		t.Fatalf("the page still shows the step of a stale ticket: %.600s", body)
+	}
+	if !strings.Contains(body, "Your sign-in has expired. Start again.") {
+		t.Fatalf("no message to start again: %.600s", body)
+	}
+}
+
 func TestUpstreamHostileNext(t *testing.T) {
 	u := newUpEnv(t, nil)
 	p := u.oidcProvider(t, nil)

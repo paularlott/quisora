@@ -138,3 +138,30 @@ func TestAccountPasswordForPasswordlessUser(t *testing.T) {
 	res, out = d.api("POST", "/api-internal/account/password", map[string]any{"new": "not allowed here!"})
 	wantStatus(t, res, out, 409)
 }
+
+// Changing the password of an account with a second factor asks for that factor too, as every other change of a way
+// in does: a session and the current password alone (taken together, say) do not replace the password.
+func TestAccountPasswordChangeNeedsTheSecondFactor(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	secret := e.giveTOTP(t, pat)
+	b := e.signedInMFA(t, pat) // signed in an hour ago, with the app
+	const next = "a perfectly fine password"
+	res, out := b.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": next})
+	wantStatus(t, res, out, 403)
+	if str(out, "field") != "reauth" {
+		t.Fatalf("not confirmed: %v", out)
+	}
+	res, out = b.api("POST", "/api-internal/account/reauth", map[string]any{"password": userPassword, "code": totpAt(secret, time.Now())})
+	wantStatus(t, res, out, 200)
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": next})
+	wantStatus(t, res, out, 422) // the current password is still asked for
+	if str(out, "field") != "current" {
+		t.Fatalf("without the current password: %v", out)
+	}
+	res, out = b.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": next})
+	wantStatus(t, res, out, 200)
+	res, out = e.browser(t).login("acme", "pat", next)
+	wantStatus(t, res, out, 200)
+}

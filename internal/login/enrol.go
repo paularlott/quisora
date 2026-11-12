@@ -2,6 +2,7 @@ package login
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -69,6 +70,21 @@ func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) 
 		return nil, nil, nil, false
 	}
 	return t, u, org, true
+}
+
+// setUpBy is what to record on u (model.User.SetUpBy) in the write that adds a way into the account for a sign-in
+// through provider (its ticket's or session's Provider, "" for none): the provider, when the account has no second
+// factor of its own (no authenticator app, no passkey), since whoever holds the provider's account may be the one
+// adding it; otherwise what u records already, which stays.
+func (m *Module) setUpBy(ctx context.Context, u *model.User, provider string) (string, error) {
+	if u.SetUpBy != "" || provider == "" || u.HasTOTP() {
+		return u.SetUpBy, nil
+	}
+	n, err := m.s.Svc.HeldPasskeys(ctx, u) // any passkey of the account, usable or not (as enrolTicket)
+	if err != nil || n > 0 {
+		return "", err
+	}
+	return provider, nil
 }
 
 // msgChanged answers a step whose commit found the account changed under it (a stale compare-and-swap): another
@@ -143,6 +159,10 @@ func (m *Module) enrolTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	step, good := secure.VerifyTOTP(string(secret), in.Code, time.Now(), 0)
 	if !good {
 		writeErr(w, http.StatusUnauthorized, "That code is incorrect. Check the time on your device and try again.", "code")
+		return
+	}
+	if u.SetUpBy, err = m.setUpBy(ctx, u, t.Provider); err != nil {
+		m.internalError(w, r, "count passkeys", err)
 		return
 	}
 	if err := m.useTicket(ctx, in.Ticket); err != nil {
@@ -235,6 +255,10 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	reg, err := m.Passkeys.VerifyRegistrationAs(ctx, purposeEnrol, u, in.Challenge, in.Credential, name)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, "The passkey could not be registered. Try again.", "")
+		return
+	}
+	if u.SetUpBy, err = m.setUpBy(ctx, u, t.Provider); err != nil {
+		m.internalError(w, r, "count passkeys", err)
 		return
 	}
 	if err := m.useTicket(ctx, in.Ticket); err != nil {

@@ -2093,7 +2093,7 @@ export default function (Alpine) {
     'user.create', 'user.delete', 'user.email.add', 'user.email.primary', 'user.email.remove', 'user.email.verify',
     'user.expire', 'user.invite', 'user.invite.break_glass', 'user.locked_out', 'user.passkey.remove',
     'user.password.remove', 'user.provider.disconnect', 'user.provision', 'user.session.revoke', 'user.sessions.revoke',
-    'user.update']
+    'user.signin.reset', 'user.update']
   // The action field offers each kind of action ("login.*": every action whose name starts with "login.") and each
   // known action; any other action can be typed.
   const auditActionSource = { free: true, options: () => Promise.resolve([

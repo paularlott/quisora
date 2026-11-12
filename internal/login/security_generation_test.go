@@ -389,8 +389,8 @@ func TestReauthDiesWithCredentialChangeElsewhere(t *testing.T) {
 }
 
 // A confirmation that no longer stands is not brought back by the stale session's own change: someone holding only
-// the password, with a session confirmed before the owner set up an authenticator app, changes the password (which
-// asks for the current password only) and must still not be able to remove the new app.
+// the password, with a session confirmed before the owner set up an authenticator app, cannot change the password
+// (which now asks for the app as well) and must still not be able to remove the new app.
 func TestStaleReauthNotRevivedByPasswordChange(t *testing.T) {
 	e := newEnv(t, nil)
 	org := e.org(t, "acme", nil)
@@ -403,7 +403,7 @@ func TestStaleReauthNotRevivedByPasswordChange(t *testing.T) {
 	res, out = owner.post("/api-internal/account/totp/confirm", map[string]any{"code": totpAt(str(out, "secret"), time.Now())})
 	wantStatus(t, res, out, 200)
 	res, out = attacker.api("POST", "/api-internal/account/password", map[string]any{"current": userPassword, "new": "an entirely new passphrase 7731"})
-	wantStatus(t, res, out, 200)
+	wantStatus(t, res, out, http.StatusForbidden)
 	if _, out := attacker.api("GET", "/api-internal/account/reauth", nil); out["valid"] == true {
 		t.Fatal("a stale re-authentication came back with the password change")
 	}

@@ -224,6 +224,7 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 		u.SessionEpoch = NewCredEpoch() // the account's sessions and refresh grants end at this write
 		if purpose == LinkInvite {
 			u.TOTPSecret, u.MFAEnrolledAt, u.RecoveryCodes, u.RecoveryCreated = "", nil, nil, nil
+			u.SetUpBy = ""        // the credentials are now those the invitation set
 			u.SetCredEpoch(epoch) // and every credential, but the passkey stored for epoch
 		}
 		if l.Email != "" && strings.EqualFold(l.Email, u.Email) {
