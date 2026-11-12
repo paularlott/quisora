@@ -46,7 +46,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 - **Clustering.** Several nodes on one shared database, or nodes with their own databases replicating over gossip: the data
   is split into partitions, each owned by one node that commits every write on a majority of the cluster.
 - **Audit log.** In the database, or in VictoriaLogs for real deployments. Every event also goes to the structured log.
-- **Backups.** Online, encrypted with a password by default, verified before restore, into any backend.
+- **Backups.** Online, always encrypted with a password, verified before restore, into any backend.
 
 ## Requirements
 
@@ -148,7 +148,7 @@ the device's unless `ui.default_theme` says otherwise ([light, dark or system](w
 
 ## Audit log and VictoriaLogs
 
-By default audit events are kept in the database for 7 days (`audit.retention_days`), which is for development, home
+By default audit events are kept in the database for 90 days (`audit.retention_days`), which is for development, home
 labs and testing. **Production, and any deployment whose compliance standard or security policy requires a retained
 audit trail, must send audit events to VictoriaLogs** (`audit.victorialogs_url`), with retention set there: each node
 spools every event to disk before the action that recorded it completes, and it reaches VictoriaLogs through an
