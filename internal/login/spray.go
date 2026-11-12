@@ -22,8 +22,12 @@ import (
 // spray until a lockout time has passed without such a minute. While it is, a password attempt from a browser that
 // has not signed in to the account before is charged to its address too: each address gets as many failed attempts
 // across the whole organization as one account gets, and is refused past them before the account is charged at all.
-// An address can then lock at most one account per lockout time, instead of every account it has names for. The
-// attempts refused as locked count towards the limit too, so the spray lasts as long as the attack does.
+// An address can then lock at most one account per lockout time, instead of every account it has names for. Only
+// passwords checked and found wrong count towards the limit, not attempts refused as locked (the account's or the
+// address's): counted, one address could keep its organization under spray for ever from its refusals alone, and
+// with it every other address held to the spray's budget. Under spray each address has at most its budget of wrong
+// passwords per lockout time, so the spray goes on only while more than the limit's worth a minute come from many
+// addresses, which is the attack it is for.
 //
 // The account is still charged and locked as before. Charging the address instead of the account (or no longer
 // locking it) would let a botnet guess each password once per address; charging both bounds each account at its
@@ -95,8 +99,8 @@ func (m *Module) putSpray(ctx context.Context, org *model.Org, st sprayState) {
 	_ = m.s.Eph.Set(ctx, nsSpray, org.ID, b, sprayRecordTTL)
 }
 
-// sprayFailed counts a password attempt at org's sign-in that failed (a wrong password, or one refused as locked)
-// towards limits.org_failures_per_minute. The failure that passes the limit in its minute (one per minute: the
+// sprayFailed counts a password attempt at org's sign-in that was checked and found wrong (not one refused as
+// locked) towards limits.org_failures_per_minute. The failure that passes the limit in its minute (one per minute: the
 // counter is the organization's alone) puts org under spray for a lockout time from now, and records the start
 // (org.spray.start) when it was not under one already.
 func (m *Module) sprayFailed(r *http.Request, org *model.Org) {

@@ -18,6 +18,11 @@ func (m *Module) AgeSpray(orgID string, d time.Duration) {
 	_ = m.s.Eph.Set(ctx, nsSpray, orgID, b, sprayRecordTTL)
 }
 
+// NewSprayMinute starts a new minute of an organization's failed passwords (its counter for limits.org_failures_per_minute).
+func (m *Module) NewSprayMinute(orgID string) {
+	_ = m.s.Eph.Delete(context.Background(), nsSpray, "n|"+orgID)
+}
+
 // MarkReauth records a fresh re-authentication for a session, at its user's current security generation, as one with a
 // second factor (tests in package login_test cannot reach the ephemeral namespace).
 func (m *Module) MarkReauth(sessionID string) { m.markReauthWith(sessionID, true) }

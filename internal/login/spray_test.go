@@ -206,6 +206,35 @@ func TestSprayEnds(t *testing.T) {
 	}
 }
 
+// An address that has spent its attempts under spray does not keep the spray going by its refusals: only passwords
+// checked and found wrong count towards the limit, so a lockout time after the last minute of those the spray is over,
+// however many refused attempts the address went on sending.
+func TestSprayIsNotKeptUpByRefusals(t *testing.T) {
+	e := newEnv(t, sprayConfig(3))
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	b := e.browser(t)
+	b.fromAddress("203.0.113.1")
+	for i := range 14 { // 4 to start the spray, then the address's 10
+		res, out := b.login("acme", fmt.Sprintf("nobody%d", i), "x")
+		wantStatus(t, res, out, 401)
+	}
+	e.Mod.AgeSpray(org.ID, 14*time.Minute)
+	e.Mod.NewSprayMinute(org.ID)
+	for i := range 10 { // a new minute, past the limit in refusals alone
+		res, out := b.login("acme", fmt.Sprintf("again%d", i), "x")
+		wantStatus(t, res, out, 429)
+	}
+	e.Mod.AgeSpray(org.ID, 2*time.Minute)
+	other := e.browser(t)
+	other.fromAddress("203.0.113.2")
+	res, out := other.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+	if n := len(e.audits(t, "org.spray.end")); n != 1 {
+		t.Fatalf("the spray did not end: %d org.spray.end", n)
+	}
+}
+
 // Below the limit nothing changes: an organization whose accounts are each sent their ten wrong passwords from one
 // address has them locked as before, with no address refused and no spray recorded.
 func TestNoSprayBelowLimit(t *testing.T) {

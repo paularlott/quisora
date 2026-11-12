@@ -98,7 +98,6 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !open {
-			m.sprayFailed(r, org)
 			m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "address locked"})
 			m.lockedResponse(w, org)
 			return
@@ -113,7 +112,6 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !open {
-		m.sprayFailed(r, org)
 		m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "locked"})
 		m.lockedResponse(w, org)
 		return
