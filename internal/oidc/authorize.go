@@ -725,7 +725,12 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	if f.Device != "" {
 		_ = p.s.Eph.Delete(ctx, nsFlow, id)
 		clearFlowCookie(w, id)
-		if !p.decideDevice(ctx, f, true, sess, user, idp, c.RememberGen) {
+		if err := p.decideDevice(ctx, f, true, sess, user, idp, c.RememberGen); err != nil {
+			if !errors.Is(err, ephemeral.ErrNotFound) {
+				p.message(w, r, http.StatusServiceUnavailable, "Try again", "This could not be finished just now",
+					"Try again in a moment.")
+				return
+			}
 			p.message(w, r, http.StatusBadRequest, "Code expired", "This code can no longer be used",
 				"It has expired, or it was already used. Start again on your device to get a new code.")
 			return

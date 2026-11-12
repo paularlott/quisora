@@ -532,6 +532,18 @@ func TestBackchannelTargets(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Fatalf("told %d times with unreadable listings, want still 1", hits.Load())
 	}
+	// collect returns the listing error for the caller to log
+	h.env.Svc.Sessions.S = failLists(sessions, model.KindSession)
+	if _, _, err := h.p.collect(ctx, h.user.ID, nil); !errors.Is(err, errFault) {
+		t.Fatalf("collect with an unreadable session listing: %v", err)
+	}
+	// a listing that fails once is read again, and nothing is lost
+	var failed atomic.Bool
+	h.env.Svc.Sessions.S = &onceFailStore{Store: sessions, failed: &failed}
+	if targets, _, err := h.p.collect(ctx, h.user.ID, nil); err != nil || len(targets) != 2 {
+		t.Fatalf("collect after one failed listing: %d targets, %v", len(targets), err)
+	}
+	h.env.Svc.Sessions.S = sessions
 	// noting a client on a session: one that is gone, one at the bound, one already noted
 	h.p.noteSessionClient(ctx, "nosuchsession", cl.ID)
 	s, err := h.env.Svc.Sessions.Get(ctx, sids[1])
@@ -615,7 +627,7 @@ func TestBackchannelRetryKeepsTheLogoutsJTI(t *testing.T) {
 		}
 	}
 
-	targets, _ := h.p.collect(ctx, h.user.ID, nil)
+	targets, _, _ := h.p.collect(ctx, h.user.ID, nil)
 	if len(targets) != 2 {
 		t.Fatalf("%d logouts collected, want one for each session", len(targets))
 	}

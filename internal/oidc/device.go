@@ -360,8 +360,12 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 		render(http.StatusBadRequest, "Enter the 8-letter code your device shows, like WDJB-MJHT.")
 		return
 	}
-	d, deviceCode, c, ok := p.pendingDevice(ctx, web.Org(r).ID, code)
-	if !ok {
+	d, deviceCode, c, err := p.pendingDevice(ctx, web.Org(r).ID, code)
+	if err != nil && !errors.Is(err, ephemeral.ErrNotFound) { // a read that failed says nothing about the code
+		render(http.StatusServiceUnavailable, "Something went wrong. Try again in a moment.")
+		return
+	}
+	if err != nil {
 		_, _ = p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 1, deviceGuessWindow)
 		render(http.StatusBadRequest, "That code is not valid. It may have expired: check the code on your device, or start again there.")
 		return
@@ -384,43 +388,51 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 }
 
 // pendingDevice finds the undecided device sign-in of a normalised user code in organization orgID, and its client
-// (enabled, still allowed the grant, and the organization's: another's codes are not valid here).
-func (p *Provider) pendingDevice(ctx context.Context, orgID, code string) (*deviceGrant, string, *model.Client, bool) {
+// (enabled, still allowed the grant, and the organization's: another's codes are not valid here). It answers
+// ephemeral.ErrNotFound for a code that is not valid, and another error when a read failed.
+func (p *Provider) pendingDevice(ctx context.Context, orgID, code string) (*deviceGrant, string, *model.Client, error) {
 	dc, err := p.s.Eph.Get(ctx, nsDeviceUser, code)
 	if err != nil {
-		return nil, "", nil, false
+		return nil, "", nil, err
 	}
 	raw, err := p.s.Eph.Get(ctx, nsDevice, string(dc))
 	if err != nil {
-		return nil, "", nil, false
+		return nil, "", nil, err
 	}
 	var d deviceGrant
 	if json.Unmarshal(raw, &d) != nil || d.Decision != "" {
-		return nil, "", nil, false
+		return nil, "", nil, ephemeral.ErrNotFound
 	}
 	ce, err := p.recordClient(ctx, d.ClientID)
-	if err != nil || ce.c.OrgID != orgID || !ce.c.Enabled || !slices.Contains(ce.c.GrantTypes, service.GrantDeviceCode) {
-		return nil, "", nil, false
+	if gone(err) {
+		return nil, "", nil, ephemeral.ErrNotFound
 	}
-	return &d, string(dc), ce.c, true
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if ce.c.OrgID != orgID || !ce.c.Enabled || !slices.Contains(ce.c.GrantTypes, service.GrantDeviceCode) {
+		return nil, "", nil, ephemeral.ErrNotFound
+	}
+	return &d, string(dc), ce.c, nil
 }
 
 // decideDevice records the user's decision on the device sign-in a flow approves (an approval with the client's
-// consent generation as it was approved, gen); it reports false when the sign-in has expired or was decided already
-// (another browser with the same code). Its user code stops working either way.
-func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User, idp string, gen int64) bool {
+// consent generation as it was approved, gen). It answers ephemeral.ErrNotFound when the sign-in has expired or was
+// decided already (another browser with the same code), and another error when a store failed. Its user code stops
+// working once the decision is taken.
+func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *model.Session, u *model.User, idp string, gen int64) error {
 	raw, err := p.s.Eph.Get(ctx, nsDevice, f.Device)
 	if err != nil {
-		return false
+		return err
 	}
 	var d deviceGrant
 	if json.Unmarshal(raw, &d) != nil || d.Decision != "" || d.ttl() <= 0 {
-		return false
+		return ephemeral.ErrNotFound
 	}
 	// One decision per sign-in, whichever browser makes it first. The sign-in itself stays readable meanwhile: a
 	// poll in between is still pending (taking it away would answer expired_token, which ends the device's flow).
 	if _, err := p.s.Eph.Take(ctx, nsDeviceTurn, f.Device); err != nil {
-		return false
+		return err
 	}
 	_ = p.s.Eph.Delete(ctx, nsDeviceUser, d.UserCode)
 	d.Decision = "deny"
@@ -431,7 +443,7 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 		d.ConsentGen, d.AppFence = gen, sess.AppFence(d.ClientID)
 	}
 	b, _ := json.Marshal(d)
-	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl()) == nil
+	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl())
 }
 
 // deviceRespond ends a device flow in the browser, where an authorization flow would answer at the redirect URI:

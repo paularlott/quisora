@@ -353,3 +353,44 @@ func TestAuthorizeAnswersUnavailableOnReadFailures(t *testing.T) {
 	}
 	h.env.Svc.Tenants.S = tenants
 }
+
+// onceFailStore fails the first List of a session and lets the rest through.
+type onceFailStore struct {
+	store.Store
+	failed *atomic.Bool
+}
+
+func (s *onceFailStore) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if kind == model.KindSession && s.failed.CompareAndSwap(false, true) {
+		return nil, errFault
+	}
+	return s.Store.List(ctx, kind, q)
+}
+
+// noTenants answers every read of a tenant as not found, as a tenant deleted since does.
+type noTenants struct{ store.Store }
+
+func (s noTenants) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindTenant {
+		return nil, store.ErrNotFound
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+// A client whose tenant is gone is not a server fault: a code or a refresh token of it is an invalid grant (400),
+// where a tenant that cannot be read stays 503.
+func TestGoneTenantIsInvalidGrant(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	tokens, _ := h.login(cl, secret, orgScope)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, cl, ch, nil)
+	good := h.env.Svc.Tenants.S
+	h.env.Svc.Tenants.S = noTenants{good}
+	h.p.InvalidateTenant(cl.TenantID)
+	tokenErr(t, h.exchangeCode(cl, secret, code, v), 400, "invalid_grant")
+	tokenErr(t, h.refreshWith(cl, secret, tokens.str("refresh_token")), 400, "invalid_grant")
+	h.env.Svc.Tenants.S = good
+}

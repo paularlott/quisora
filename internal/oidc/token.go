@@ -396,6 +396,9 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	}
 	// Access is checked again: it may have been taken away (or expired) since the user was sent back with the code.
 	app, err := p.appAccess(ctx, c, nil, u)
+	if gone(err) { // the application's tenant no longer exists
+		return nil, "", oerr("invalid_grant", "the application no longer exists")
+	}
 	if err != nil {
 		return nil, "", serverError(unavailable(err))
 	}
@@ -755,6 +758,9 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	// Access that was taken away or has expired ends the application's refresh tokens; access that cannot be read
 	// now ends nothing, and issues nothing (503).
 	app, err := p.appAccess(ctx, c, nil, u)
+	if gone(err) { // the application's tenant no longer exists
+		return nil, oerr("invalid_grant", "the application no longer exists")
+	}
 	if err != nil {
 		return nil, serverError(unavailable(err))
 	}

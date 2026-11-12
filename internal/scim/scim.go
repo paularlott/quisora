@@ -550,8 +550,13 @@ func (rq *request) search(list func()) {
 	for _, k := range []string{"startIndex", "count"} {
 		if v, ok := body[k]; ok {
 			n, isNum := v.(float64)
-			if !isNum || n != math.Trunc(n) {
+			if !isNum {
 				writeError(rq.w, badSyntax("%s must be an integer", k))
+				return
+			}
+			// A float converts to an integer only where the result is defined: a whole number that a float holds exactly.
+			if n != math.Trunc(n) || math.Abs(n) > maxExactInt {
+				writeError(rq.w, badValue("%s must be a whole number of a reasonable size", k))
 				return
 			}
 			q.Set(k, strconv.FormatInt(int64(n), 10))
@@ -570,12 +575,37 @@ func (rq *request) search(list func()) {
 					writeError(rq.w, badSyntax("%s must be an array of attribute names", k))
 					return
 				}
+				// The names are joined with commas into the form a GET's query string has, and split there again: a
+				// name with a comma in it would be two. No attribute name has one (or any character outside this set).
+				if !validAttrName(names[i]) {
+					writeError(rq.w, badValue("%s: %q is not an attribute name", k, names[i]))
+					return
+				}
 			}
 			q.Set(k, strings.Join(names, ","))
 		}
 	}
 	rq.q = q
 	list()
+}
+
+// maxExactInt is the largest whole number a float64 holds exactly (2^53).
+const maxExactInt = 1 << 53
+
+// validAttrName reports whether s can be an attribute name or path: letters, digits and - _ . : (sub-attributes and
+// schema URNs), and not empty.
+func validAttrName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.', r == ':':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // hasSchema reports whether the schemas value lists urn.

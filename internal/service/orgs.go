@@ -265,7 +265,9 @@ func (s *Service) CreateOrgWithServiceAccount(ctx context.Context, a *Actor, in 
 			return nil, nil, "", prefixField("service_account.", err)
 		}
 	}
-	if err := s.audited(ctx, a, o.ID, "org.create", o.Name, nil, func() error { return s.Orgs.Create(ctx, o) }); err != nil {
+	err := s.audited(ctx, a, o.ID, "org.create", o.Name, nil, func() error { return s.Orgs.Create(ctx, o) })
+	s.InvalidateOrgs() // the new organization is found at once here (also after a write that may have landed)
+	if err != nil {
 		return nil, nil, "", orgConflict(err)
 	}
 	if _, err := s.DefaultTenant(ctx, o.ID); err != nil {

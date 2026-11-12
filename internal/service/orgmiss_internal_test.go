@@ -56,3 +56,19 @@ func TestMissingOrgIsCached(t *testing.T) {
 		t.Fatalf("after the outage: %v", err)
 	}
 }
+
+// An organization made through CreateOrgWithServiceAccount is found at once by a node that had just found it missing.
+func TestCreateOrgWithServiceAccountClearsMissingOrg(t *testing.T) {
+	ctx := context.Background()
+	s := newInternalService(t, memstore.New())
+	if _, err := s.OrgByRef(ctx, "fresh"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing organization: %v", err)
+	}
+	name := "fresh"
+	if _, _, _, err := s.CreateOrgWithServiceAccount(ctx, System, OrgInput{Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OrgByRef(ctx, "fresh"); err != nil {
+		t.Fatalf("the new organization is not found at once: %v", err)
+	}
+}

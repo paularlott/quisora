@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 	"github.com/paularlott/quisora/internal/webtest"
@@ -22,7 +23,7 @@ func (m *routes) Register(s *web.Server) {
 	s.Mux.Handle("GET /t/page", s.RequirePage(func(w http.ResponseWriter, r *http.Request) {
 		p := s.Page(w, r, "Title", "nav", nil)
 		web.WriteJSON(w, 200, map[string]any{"user": p.User.Username, "csrf": p.CSRF, "super": p.IsSuper, "admin": p.IsAdmin,
-			"mgr": p.IsMgr, "home": p.Org.Name, "path": p.Path, "title": p.Title})
+			"mgr": p.IsMgr, "home": p.Org.Name, "path": p.Path, "title": p.Title, "pictures": p.Pictures})
 	}))
 	s.Mux.Handle("GET /admin/orgs/{org}/page", s.RequirePage(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	s.Mux.Handle("GET /t/anon", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,4 +233,30 @@ func mustURL(t *testing.T, raw string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// The page data says whether pictures show from the service's one gate: on for an organization that has them, off when
+// the organization turns them off.
+func TestPageDataPicturesFollowTheServiceGate(t *testing.T) {
+	env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&routes{}} }})
+	c, _ := env.Session(env.Admin)
+	pictures := func() any {
+		_, body := get(t, c, env.URL+"/t/page")
+		var got map[string]any
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got["pictures"]
+	}
+	if pictures() != true {
+		t.Fatal("pictures off for an organization that has them")
+	}
+	st := env.Primary.Settings
+	st.Pictures = model.PicturesOff
+	if _, err := env.Svc.UpdateOrg(context.Background(), service.System, env.Primary.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatal(err)
+	}
+	if pictures() != false {
+		t.Fatal("pictures on for an organization that turned them off")
+	}
 }

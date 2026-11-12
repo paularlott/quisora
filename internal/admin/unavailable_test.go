@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -70,4 +71,31 @@ func TestAuditOrgFilterUnreadableOrgIsUnavailable(t *testing.T) {
 	w.env.Svc.Orgs.S = good
 	want(t, r, 503)
 	want(t, su.get("/api/audit?org=nope"), 404)
+}
+
+// failingAfter lets the first n reads of a user through and refuses the rest.
+type failingAfter struct {
+	store.Store
+	n     int64
+	reads *atomic.Int64
+}
+
+func (s failingAfter) Get(ctx context.Context, kind model.Kind, id string) (*store.Record, error) {
+	if kind == model.KindUser && s.reads.Add(1) > s.n {
+		return nil, store.ErrUnavailable
+	}
+	return s.Store.Get(ctx, kind, id)
+}
+
+// A page of a group's members that cannot be read is answered 503, not as a page without them.
+func TestGroupMembersPageReadFailureIsUnavailable(t *testing.T) {
+	w := newWorld(t)
+	ad := w.as("admin")
+	gid := ad.post(A+"/groups", map[string]any{"display_name": "Eng"}).str("id")
+	want(t, ad.put(A+"/groups/"+gid+"/members/"+w.users["user"].ID, nil), 200)
+	good := w.env.Svc.Users.S
+	w.env.Svc.Users.S = failingAfter{good, 1, new(atomic.Int64)} // the membership check reads the one member; the page's read fails
+	r := ad.get(A + "/groups/" + gid + "/members")
+	w.env.Svc.Users.S = good
+	want(t, r, 503)
 }

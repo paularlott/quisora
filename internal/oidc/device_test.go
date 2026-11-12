@@ -380,6 +380,37 @@ func TestDevicePageRefusesStaleCodes(t *testing.T) {
 	}
 }
 
+// A store that fails to read the sign-in is temporarily unavailable, not an invalid code; and a decision that cannot
+// read it says so rather than that the sign-in expired.
+func TestDevicePageReadFailureIsUnavailable(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl := h.deviceClient(nil)
+	b, _ := h.session(h.user)
+	_, uc := h.startDevice(cl, "openid")
+	good := h.env.Server.Eph
+	h.useEph(func(op, ns string) error {
+		if op == "get" && ns == nsDevice {
+			return errors.New("store down")
+		}
+		return nil
+	})
+	resp := h.get(b, h.orgBase+"/device?user_code="+url.QueryEscape(uc))
+	if pg := body(resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(pg, "Something went wrong") {
+		t.Fatalf("page: %d %s", resp.StatusCode, pg)
+	}
+	h.env.Server.Eph = good
+	p := &Provider{s: &web.Server{Eph: faultEph{Store: good, before: func(op, ns string) error {
+		if op == "get" && ns == nsDevice {
+			return errors.New("store down")
+		}
+		return nil
+	}}}}
+	if err := p.decideDevice(context.Background(), &flow{Device: "x"}, false, nil, nil, "", 0); err == nil || errors.Is(err, ephemeral.ErrNotFound) {
+		t.Fatalf("decision with an unreadable sign-in: %v", err)
+	}
+}
+
 // Two browsers hold the same code; the first decision wins and the second finds the sign-in decided.
 func TestDeviceSecondApprovalRefused(t *testing.T) {
 	t.Parallel()
@@ -449,15 +480,15 @@ func TestDevicePollDuringApprovalStaysPending(t *testing.T) {
 	raw, _ := json.Marshal(deviceGrant{ClientID: "client", UserCode: "BCDFGHJK", Expires: time.Now().Add(time.Minute).Unix()})
 	id, _ := local.New(ctx, nsDevice, raw, time.Minute)
 	_ = local.Set(ctx, nsDeviceTurn, id, []byte{1}, time.Minute)
-	done := make(chan bool, 1)
+	done := make(chan error, 1)
 	go func() {
 		done <- p.decideDevice(ctx, &flow{Device: id}, true, &model.Session{AuthTime: time.Now()}, &model.User{}, "", 0)
 	}()
 	g.waitHeld(t)
 	_, oe := p.deviceToken(ctx, &model.Client{Meta: model.Meta{ID: "client"}}, id, nil, "")
 	g.open()
-	if !<-done {
-		t.Fatal("approval failed")
+	if err := <-done; err != nil {
+		t.Fatal("approval failed:", err)
 	}
 	if oe == nil || oe.code != "authorization_pending" {
 		t.Fatalf("live device grant returned terminal expiry during approval: %v", oe)

@@ -52,8 +52,11 @@ type Page struct {
 	// KeyRotation: a master key rotation is in progress on this node (previous master keys are configured); super
 	// admins get the master key rotation page in the menu.
 	KeyRotation bool
-	Nav         string
-	Data        any
+	// Pictures: the page shows profile pictures (the service's gate, Service.PicturesOn, on Org; the server's setting
+	// alone when there is no organization).
+	Pictures bool
+	Nav      string
+	Data     any
 }
 
 // Renderer executes page templates: each pages/<name>.html is combined with layouts/*.html and partials/*.html.

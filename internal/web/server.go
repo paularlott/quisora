@@ -310,6 +310,10 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.CSRF = s.AnonCSRF(w, r)
 		p.Org = Org(r) // an organization's own pages (sign-in, device, sign-out) name it signed out too
 	}
+	p.Pictures = p.Site.Pictures
+	if p.Org != nil {
+		p.Pictures = s.Svc.PicturesOn(p.Org)
+	}
 	p.Site = s.siteFor(r.Context(), p.Org, r.URL.Query().Get("skin")) // its branding (an admin page then names the organization it administers: p.Org)
 	return p
 }

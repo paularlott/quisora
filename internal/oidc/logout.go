@@ -275,8 +275,9 @@ func (t bcTarget) retry() LogoutRetry {
 // sessionIDs is empty) and that registered a back-channel logout URI. It also forgets cached grant liveness so
 // token checks notice the end of the sessions at once. A client whose record could not be read (the store failed,
 // not a client that is gone) is returned in unread, for the retry queue to read again and tell then: whether it wants
-// the notice is not known yet, and the sessions end now.
-func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []string) (out []bcTarget, unread []LogoutRetry) {
+// the notice is not known yet, and the sessions end now. A listing that could not be read (after a second try) is the
+// returned error: what it would have named is missing from the result.
+func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []string) (out []bcTarget, unread []LogoutRetry, err error) {
 	seen := map[string]bool{}
 	add := func(clientID, orgID, sid string) {
 		k := clientID + "|" + sid
@@ -297,10 +298,7 @@ func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []stri
 		out = append(out, bcTarget{client: ce.c, sub: userID, sid: sid, jti: newJTI()})
 	}
 	// The applications each session issued tokens to (also those whose refresh grant was revoked since) ...
-	sessions, err := p.svc.Sessions.All(ctx, userID)
-	if err != nil {
-		p.log.Warn("oidc: listing sessions for back-channel logout", "user", userID, "error", err)
-	}
+	sessions, serr := listTwice(func() ([]*model.Session, error) { return p.svc.Sessions.All(ctx, userID) })
 	for _, s := range sessions {
 		if len(sessionIDs) > 0 && !slices.Contains(sessionIDs, s.ID) {
 			continue
@@ -310,10 +308,7 @@ func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []stri
 		}
 	}
 	// ... and every live grant on them.
-	grants, err := p.svc.Grants.All(ctx, userID)
-	if err != nil {
-		p.log.Warn("oidc: listing grants for back-channel logout", "user", userID, "error", err)
-	}
+	grants, gerr := listTwice(func() ([]*model.Grant, error) { return p.svc.Grants.All(ctx, userID) })
 	for _, g := range grants {
 		if len(sessionIDs) > 0 && !slices.Contains(sessionIDs, g.SessionID) {
 			continue
@@ -321,7 +316,25 @@ func (p *Provider) collect(ctx context.Context, userID string, sessionIDs []stri
 		p.grants.Del(g.ID)
 		add(g.ClientID, g.OrgID, g.SessionID)
 	}
-	return out, unread
+	return out, unread, errors.Join(serr, gerr)
+}
+
+// listTwice reads a listing, and once more when the first read failed: a passing fault of the store should not cost
+// a logout its targets.
+func listTwice[T any](list func() ([]T, error)) ([]T, error) {
+	l, err := list()
+	if err != nil {
+		l, err = list()
+	}
+	return l, err
+}
+
+// logCollected logs a listing that collect could not read: those sessions end without their applications being told,
+// which an operator should see.
+func (p *Provider) logCollected(userID string, err error) {
+	if err != nil {
+		p.log.Error("oidc: back-channel logout may be incomplete: sessions or grants could not be listed", "user", userID, "error", err)
+	}
 }
 
 // noteSessionClient records on the session that clientID was issued tokens for it (see collect).
@@ -354,7 +367,9 @@ func (p *Provider) BackchannelLogout(ctx context.Context, sessionIDs ...string) 
 		byUser[s.UserID] = append(byUser[s.UserID], id)
 	}
 	for uid, ids := range byUser {
-		p.dispatch(p.collect(ctx, uid, ids))
+		targets, unread, err := p.collect(ctx, uid, ids)
+		p.logCollected(uid, err)
+		p.dispatch(targets, unread)
 	}
 }
 
@@ -364,7 +379,8 @@ func (p *Provider) BackchannelLogout(ctx context.Context, sessionIDs ...string) 
 func (p *Provider) BackchannelLogoutClient(ctx context.Context, userID, clientID string) {
 	var out []bcTarget
 	var later []LogoutRetry
-	targets, unread := p.collect(ctx, userID, nil)
+	targets, unread, err := p.collect(ctx, userID, nil)
+	p.logCollected(userID, err)
 	for _, t := range targets {
 		if t.client.ID == clientID {
 			out = append(out, t)
@@ -388,7 +404,9 @@ func (p *Provider) BackchannelLogoutClient(ctx context.Context, userID, clientID
 // BackchannelLogoutUser is BackchannelLogout for every session (grant) of a user: sign out everywhere, user
 // disabled or deleted. Call it before the records are removed.
 func (p *Provider) BackchannelLogoutUser(ctx context.Context, userID string) {
-	p.dispatch(p.collect(ctx, userID, nil))
+	targets, unread, err := p.collect(ctx, userID, nil)
+	p.logCollected(userID, err)
+	p.dispatch(targets, unread)
 }
 
 // Back-channel logouts are sent from a bounded queue by at most bcWorkersMax senders, started as the queue fills and
