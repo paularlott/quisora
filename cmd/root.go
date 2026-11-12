@@ -40,7 +40,7 @@ func newRoot(cfg *config.Config) *cli.Command {
 			if err := flags.Refuse(c); err != nil {
 				return ctx, err
 			}
-			if warnings := append(append(secretFlagWarnings(cfg, c), looseFileWarnings(cfg, c)...), cfg.RemovedSettingWarnings()...); len(warnings) > 0 {
+			if warnings := append(append(append(secretFlagWarnings(cfg, c), looseFileWarnings(cfg, c)...), cfg.RemovedSettingWarnings()...), cfg.MailWarnings()...); len(warnings) > 0 {
 				log := logger(cfg) // the configured format and level, like every other warning of the process
 				for _, w := range warnings {
 					log.Warn(w)

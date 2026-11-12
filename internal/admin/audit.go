@@ -98,6 +98,9 @@ func (m *Module) listAllAudit(w http.ResponseWriter, r *http.Request) {
 	orgID := ""
 	if name := r.URL.Query().Get("org"); name != "" {
 		o, err := m.s.Svc.OrgByName(r.Context(), name)
+		if unanswered(w, err) {
+			return
+		}
 		if err != nil {
 			web.WriteError(w, service.ErrNotFound)
 			return

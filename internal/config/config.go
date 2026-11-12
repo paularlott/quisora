@@ -727,6 +727,20 @@ func (c *Config) RemovedSettingWarnings() []string {
 	return w
 }
 
+// MailWarnings lists a warning for a mail setup that sends in clear text: mail carries reset links and one-time codes,
+// so mail.tls "none" is warned about unless the SMTP server is on this machine (a loopback address or localhost).
+func (c *Config) MailWarnings() []string {
+	if !c.Mail.Enabled() || c.Mail.TLS != "none" {
+		return nil
+	}
+	host := strings.TrimSuffix(strings.ToLower(c.Mail.SMTPHost), ".")
+	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); host == "localhost" || (err == nil && ip.IsLoopback()) {
+		return nil
+	}
+	return []string{"mail.tls is none: reset links and one-time codes cross the network to " + c.Mail.SMTPHost +
+		" unencrypted (use starttls or tls)"}
+}
+
 // UnknownKeys lists the keys of the configuration file that are not settings, as dotted paths, sorted: walking the
 // file the cli package read, every table must be a section of settings and every value a setting. Removed settings
 // (removedSettings) are not unknown.

@@ -48,3 +48,26 @@ func TestUncheckableSessionIsUnavailableNotSignedOut(t *testing.T) {
 	want(t, r, 503)
 	want(t, ad.get(AU), 200) // and signed in still once the store answers
 }
+
+// refusingOrgs is a store that cannot answer a lookup of an organization by name.
+type refusingOrgs struct{ store.Store }
+
+func (s refusingOrgs) GetByUnique(ctx context.Context, kind model.Kind, v string) (*store.Record, error) {
+	if kind == model.KindOrg {
+		return nil, store.ErrUnavailable
+	}
+	return s.Store.GetByUnique(ctx, kind, v)
+}
+
+// The super admin's audit filter ?org= answers 503 (try again) when the store cannot look the organization up, as the
+// per-organization route does, and 404 only for one that is not there.
+func TestAuditOrgFilterUnreadableOrgIsUnavailable(t *testing.T) {
+	w := newWorld(t)
+	su := w.as("super")
+	good := w.env.Svc.Orgs.S
+	w.env.Svc.Orgs.S = refusingOrgs{good}
+	r := su.get("/api/audit?org=globex")
+	w.env.Svc.Orgs.S = good
+	want(t, r, 503)
+	want(t, su.get("/api/audit?org=nope"), 404)
+}

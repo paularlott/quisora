@@ -431,7 +431,8 @@ func (s *Store) Purge(_ context.Context, tombstonesBefore, expiredBefore time.Ti
 	n := 0
 	for k, e := range s.records {
 		r := e.rec
-		if (r.Deleted && r.Version.Time().Before(tombstonesBefore)) ||
+		// A partition's tombstones are left to PurgePartition, as in the other stores.
+		if (r.Deleted && e.pseq == 0 && r.Version.Time().Before(tombstonesBefore)) ||
 			(!r.Deleted && !r.Expires.IsZero() && r.Expires.Before(expiredBefore)) {
 			for u := range e.indexed {
 				if s.unique[key{k.kind, u}] == r.ID {

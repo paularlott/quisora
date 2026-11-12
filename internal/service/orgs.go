@@ -164,15 +164,23 @@ func (s *Service) OrgByRef(ctx context.Context, ref string) (*model.Org, error) 
 // cachedOrg returns the organization ref names from the cache, or read and kept. It is kept under ref only when ref is
 // the organization's id or its name exactly as stored, so the cache is bounded by the number of organizations however a
 // client spells a name (one is matched in any case and Unicode form: every spelling would be an entry of its own);
-// another spelling is read from the store each time.
+// another spelling is read from the store each time. A "not found" answer is kept too, for the same lifetime, in a
+// cache of its own that drops entries when full (a client may ask for any number of ids that do not exist).
 func (s *Service) cachedOrg(ctx context.Context, ref string, read func() (*model.Org, error)) (*model.Org, error) {
 	if o, ok := s.orgCache.Get(ref); ok {
 		return o, nil
 	}
-	tok := s.orgCache.Token(ref)
+	if _, ok := s.orgMiss.Get(ref); ok {
+		return nil, ErrNotFound
+	}
+	tok, missTok := s.orgCache.Token(ref), s.orgMiss.Token(ref)
 	o, err := read()
 	if err != nil {
-		return nil, mapStore(err)
+		err = mapStore(err)
+		if errors.Is(err, ErrNotFound) { // only "not found" is kept: any other error is read again
+			s.orgMiss.PutIf(ref, struct{}{}, missTok)
+		}
+		return nil, err
 	}
 	if ref == o.ID || ref == o.Name {
 		s.orgCache.PutIf(ref, o, tok)
@@ -182,7 +190,10 @@ func (s *Service) cachedOrg(ctx context.Context, ref string, read func() (*model
 
 // InvalidateOrgs forgets every organization read (Org, OrgByRef): call it when one changes, here or on another node. All
 // of them go, as a name may have moved from one to another.
-func (s *Service) InvalidateOrgs() { s.orgCache.Clear() }
+func (s *Service) InvalidateOrgs() {
+	s.orgCache.Clear()
+	s.orgMiss.Clear() // a new organization is found at once
+}
 
 // ListOrgs lists organizations visible to the actor.
 func (s *Service) ListOrgs(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.Org, int, error) {

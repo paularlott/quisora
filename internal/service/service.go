@@ -220,6 +220,7 @@ type Service struct {
 	reseal  resealState      // where this node's master key re-seal stands (ResealSecrets)
 
 	orgCache      *ttlcache.Cache[*model.Org]  // organizations by id and by name (Org, OrgByRef)
+	orgMiss       *ttlcache.Cache[struct{}]    // references that named no organization (cachedOrg)
 	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)
 	primaryID     atomic.Pointer[string]       // the primary organization's id, once read (PrimaryOrgID)
 	bg            sync.WaitGroup               // Background work
@@ -290,6 +291,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Pictures:          store.NewTable[model.UserPicture](s),
 
 		orgCache:  ttlcache.New[*model.Org](orgTTL, 20_000),
+		orgMiss:   ttlcache.New[struct{}](orgTTL, 1_000),
 		skinCache: ttlcache.New[*model.Skin](orgTTL, 1_000),
 	}
 }

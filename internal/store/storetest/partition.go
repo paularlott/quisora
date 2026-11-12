@@ -49,6 +49,7 @@ func RunPartition(t *testing.T, f Factory) {
 		{"ImportFullRestartedAtTheSamePosition", testPartImportFullSamePosition},
 		{"Purge", testPartPurge},
 		{"Tombstones", testPartTombstones},
+		{"PurgeKeepsTombstones", testPurgeKeepsPartitionTombstones},
 		{"PartitionsIndependent", testPartIndependent},
 		{"ConcurrentPartitions", testPartConcurrent},
 		{"Wipe", testPartWipe},
@@ -1282,6 +1283,23 @@ func tombstones(t testing.TB, ps store.PartitionStore, p int, after, upTo uint64
 		return cmp.Compare(a.version, b.version)
 	})
 	return out
+}
+
+// Store.Purge leaves the tombstones of a partition alone, however old: PurgePartition removes them, on the partition's
+// own schedule, and moves the purge point with them (store.Store).
+func testPurgeKeepsPartitionTombstones(t *testing.T, f Factory) {
+	s := f(t)
+	defer s.Close()
+	ps := pstore(t, s)
+	u := urec(t, "opurge", "keep-tomb")
+	d := trec(u)
+	must(t, ps.ApplyPartition(ctx, 82, []*store.Record{u}, pos(1, 1)))
+	must(t, ps.ApplyPartition(ctx, 82, []*store.Record{d}, pos(1, 2)))
+	_, err := s.Purge(ctx, time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+	must(t, err)
+	if got := tombstones(t, ps, 82, 0, 2); len(got) != 1 || got[0] != (tombstone{2, d.Version}) {
+		t.Fatalf("tombstones after Purge: %v, want the partition's tombstone kept", got)
+	}
 }
 
 // PartitionTombstones lists the tombstones of one partition by sequence (bounds included at the top, excluded at the
