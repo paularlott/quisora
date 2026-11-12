@@ -28,7 +28,8 @@
 //
 // Security properties implemented here: sign-in requests carry the anonymous double-submit CSRF token; failures
 // look identical for unknown users, inactive users and wrong passwords and cost an argon2 hash either way; failed
-// passwords and TOTP codes count toward a per-account lockout kept in ephemeral state (never database writes);
+// passwords and TOTP codes count toward a per-account lockout kept in ephemeral state (never database writes), and
+// failed passwords toward a per-address one as well while the organization is under a password spray (spray.go);
 // every attempt is rate limited per organization and client IP; a TOTP code works once (TOTPLastStep); the "next"
 // parameter is only ever honoured when it is a path in the organization's own address space (or the console).
 package login

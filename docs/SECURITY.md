@@ -263,10 +263,40 @@ the organization's lockout time, else `limits.lockout_minutes` (default 15), aft
 tripped it. An organization may set its own number of attempts and lockout time; the server's apply where it has not.
 
 **Signs of an attack in the metrics or the audit log** (bursts of `login.failure`, `login.limited`,
-`oauth.client_auth.limited`, `api.request.refused`; any `apitoken.refused` with reason `wrong secret`,
-`oauth.refresh.reuse`, `oauth.code.replay` or `passkey.clone`): the event names the
-target and the address. Reuse and replay have already revoked the grant concerned; a cloned passkey has already been
-disabled and its sessions ended. Block the address upstream if the attack continues, and follow the account steps
-above for the targets.
+`org.spray.start` ([password spraying](#lockout-and-password-spraying)), `oauth.client_auth.limited`,
+`api.request.refused`; any `apitoken.refused` with reason `wrong secret`, `oauth.refresh.reuse`, `oauth.code.replay`
+or `passkey.clone`): the event names the target and the address. Reuse and replay have already revoked the grant
+concerned; a cloned passkey has already been disabled and its sessions ended. Block the address upstream if the
+attack continues, and follow the account steps above for the targets.
 
 Keep the evidence: export the relevant audit events before their retention ends.
+
+## Lockout and password spraying
+
+A wrong password (or authenticator code) counts against the account: after the organization's lockout attempts
+(`limits.lockout_attempts`, default 10) within its lockout time (`limits.lockout_minutes`, default 15) the account is
+refused until the time is up, whoever tries and from wherever, so no password can be guessed more often than that. A
+successful sign-in gives back its attempt. An email address with no account is locked the same way, so the lockout does
+not tell which accounts exist. A browser that has signed in to the account before (its device cookie) counts its own failures
+instead, so someone who locks the account does not lock out its owner's browsers.
+
+Whoever knows an organization's email addresses could spend every account's attempts and keep everyone out of
+signing in from a new browser. The per-address request limit (`limits.login_per_ip_min`) does not stop that from many
+addresses. So an organization whose sign-in takes more than `limits.org_failures_per_minute` failed passwords
+(default 100, `0` turns it off) in a minute is **under a password spray** until a lockout time has passed without
+such a minute. While it is, a password attempt from a browser that has not signed in to the account before is charged
+to its client address as well as to the account: each address may fail as often as one account may (the lockout attempts in
+the lockout time), across the whole organization, and past that it is refused, even the right password (`login.failure`
+with reason `address locked`), without the account being charged. An address can then lock at most one account per
+lockout time instead of every account it has names for, and the people at other addresses, and everyone on a browser
+they signed in from before, sign in as usual.
+
+The account is still charged and locked as before: charging the address instead, or merely slowing a locked account,
+would let a botnet guess each password once per address. Charging both keeps each account at its lockout attempts
+whatever the number of addresses, while the address budget only ever refuses more. An attacker with at least one
+address per account can still lock every account (no server can tell their wrong passwords from its users' own);
+the audit log then shows `org.spray.start` (with the failures in the minute that started it) and, at the first
+sign-in after it is over, `org.spray.end` (when it started and ended), both with outcome `failure`. Block the
+addresses upstream (`login.failure` events name them), and tell people to sign in from a browser they have used
+before or with a passkey. Raise the limit for an organization whose people mistype more than 100 passwords a minute
+on a busy morning: below it nothing changes.

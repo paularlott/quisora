@@ -190,7 +190,12 @@ type Limits struct {
 	LoginPerIPMin   int `toml:"login_per_ip_min" flag:"login-per-ip-min" usage:"Sign-in attempts per organization and IP per minute (0 = no limit)"`
 	LockoutAttempts int `toml:"lockout_attempts" flag:"lockout-attempts" usage:"Failed passwords before an account is locked (0 = never locked)"`
 	LockoutMinutes  int `toml:"lockout_minutes" flag:"lockout-minutes" usage:"Account lockout duration, minutes"`
-	PasswordWorkers int `toml:"password_workers" flag:"password-workers" usage:"Concurrent password hashes (0 = number of CPUs); sign-ins waiting for one are served by organization in turn"`
+	// OrgFailuresPerMin is how many failed passwords an organization's sign-in takes in a minute before it counts as
+	// under a password spray: until a lockout time passes without such a minute, each address may then fail only as
+	// often as one account, across the whole organization, so that guessing every account's password from a few
+	// addresses cannot lock everyone out (login/spray.go).
+	OrgFailuresPerMin int `toml:"org_failures_per_minute" flag:"org-failures-per-minute" usage:"Failed passwords per organization per minute before a sign-in from a browser new to the account is also limited by address (0 = never)"`
+	PasswordWorkers   int `toml:"password_workers" flag:"password-workers" usage:"Concurrent password hashes (0 = number of CPUs); sign-ins waiting for one are served by organization in turn"`
 	// PasswordMinLength is the shortest password accepted, in characters. NIST SP 800-63B rev 4 asks for 15 where a
 	// password may be the only factor (as here, unless the organization requires a second one), and 8 at least.
 	PasswordMinLength int `toml:"password_min_length" flag:"password-min-length" usage:"Shortest password accepted, characters (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)"`
@@ -233,7 +238,7 @@ func Default() *Config {
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:   Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
-		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
+		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
 		Log:     Log{Level: "info", Format: "console", Access: true},
 	}
 }
@@ -507,6 +512,7 @@ func (c *Config) Validate() error {
 	positive("limits.max_in_flight", c.Limits.MaxInFlight)
 	nonNegative("limits.login_per_ip_min", c.Limits.LoginPerIPMin)
 	nonNegative("limits.lockout_attempts", c.Limits.LockoutAttempts)
+	nonNegative("limits.org_failures_per_minute", c.Limits.OrgFailuresPerMin)
 	nonNegative("limits.password_workers", c.Limits.PasswordWorkers)
 	if c.Limits.GrantsPerUser < MinGrantsPerUser || c.Limits.GrantsPerUser > MaxGrantsPerUser {
 		errs = append(errs, fmt.Errorf("limits.grants_per_user must be between %d and %d", MinGrantsPerUser, MaxGrantsPerUser))

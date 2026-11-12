@@ -2083,7 +2083,7 @@ export default function (Alpine) {
     'login.recovery_code', 'login.success', 'logout', 'mfa.import', 'oauth.client_auth.limited', 'oauth.client_credentials',
     'oauth.code.replay', 'oauth.consent', 'oauth.device.approve', 'oauth.device.start', 'oauth.grant', 'oauth.grant.evict',
     'oauth.refresh', 'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary',
-    'org.signout',
+    'org.signout', 'org.spray.end', 'org.spray.start',
     'org.update', 'passkey.clone', 'password.forgot', 'password.reset', 'provider.create', 'provider.delete',
     'provider.update', 'server.signout', 'service_account.create', 'service_account.delete',
     'service_account.secret.rotate', 'service_account.update', 'signout.sweep', 'ssh.ca.create', 'ssh.ca.remove',

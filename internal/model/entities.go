@@ -1582,8 +1582,12 @@ type Audit struct {
 }
 
 // AuditOutcome says whether an audit action records something refused or failed ("failure") or done ("success"),
-// from its name: actions for refusals end in .failure, .refused/_refused, .lockout, .limited, .replay, .reuse or .clone.
+// from its name: actions for refusals end in .failure, .refused/_refused, .lockout, .limited, .replay, .reuse or .clone,
+// and the start and end of a password spray at an organization's sign-in (org.spray.*) are failures too.
 func AuditOutcome(action string) string {
+	if strings.HasPrefix(action, "org.spray.") {
+		return "failure"
+	}
 	for _, s := range []string{".failure", ".refused", "_refused", ".lockout", ".limited", ".replay", ".reuse", ".clone"} {
 		if strings.HasSuffix(action, s) {
 			return "failure"

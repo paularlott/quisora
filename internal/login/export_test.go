@@ -3,7 +3,20 @@ package login
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
+
+// AgeSpray makes the last minute over the failure limit of an organization's password spray d earlier (spray.go).
+func (m *Module) AgeSpray(orgID string, d time.Duration) {
+	ctx := context.Background()
+	st, err := readSpray(m.s.Eph.Get(ctx, nsSpray, orgID))
+	if err != nil {
+		return
+	}
+	st.Start, st.Last = st.Start.Add(-d), st.Last.Add(-d)
+	b, _ := json.Marshal(st)
+	_ = m.s.Eph.Set(ctx, nsSpray, orgID, b, sprayRecordTTL)
+}
 
 // MarkReauth records a fresh re-authentication for a session, at its user's current security generation, as one with a
 // second factor (tests in package login_test cannot reach the ephemeral namespace).

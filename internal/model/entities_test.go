@@ -363,7 +363,8 @@ func TestAuditAndLinks(t *testing.T) {
 	for a, want := range map[string]string{
 		"login.success": "success", "login.failure": "failure", "x.refused": "failure", "x_refused": "failure",
 		"x.lockout": "failure", "x.limited": "failure", "x.replay": "failure", "x.reuse": "failure", "x.clone": "failure",
-		"x.failure.later": "success", "": "success",
+		"x.failure.later": "success", "": "success", "org.spray.start": "failure", "org.spray.end": "failure",
+		"org.update": "success",
 	} {
 		if got := AuditOutcome(a); got != want {
 			t.Errorf("AuditOutcome(%q) = %q", a, got)
