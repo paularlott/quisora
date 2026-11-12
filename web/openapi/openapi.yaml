@@ -2943,8 +2943,9 @@ paths:
     get:
       tags: [Audit]
       summary: List audit events
-      description: "List audit events, newest first by default. Also: source (store, cluster or victorialogs) and, in a gossip
-        cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)"
+      description: "List audit events, newest first by default. total counts the matching events up to 10,000 (or to the end
+        of a page past that), and total_more says there are more. Also: source (store, cluster or victorialogs) and, in a
+        gossip cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)"
       operationId: get_orgs_org_audit
       security:
         - session: []
@@ -2987,7 +2988,7 @@ paths:
       tags: [Audit]
       summary: List the audit events of every organization
       description: List the audit events of every organization (super admins), newest first by default; ?org=<name> for one.
-        Items carry org_name; source, nodes and nodes_answered as for an organization's audit log
+        Items carry org_name; total, total_more, source, nodes and nodes_answered as for an organization's audit log
       operationId: get_audit
       security:
         - session: []
@@ -4516,6 +4517,11 @@ components:
           items: {$ref: "#/components/schemas/Audit"}
         total:
           type: integer
+          description: the matching events, counted up to 10,000 (or to the end of the page past that); exact unless
+            total_more
+        total_more:
+          type: boolean
+          description: there are more matching events than total (counting every one would read the whole retained log)
     Branding:
       type: object
       description: The logo and colour an organization's sign-in pages and console show. Without a logo or colour they show the server's

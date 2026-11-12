@@ -202,6 +202,9 @@ type request struct {
 	loaded bool
 	// q holds the list parameters of a POST .search body (search); nil for a GET, which reads them from the URL.
 	q url.Values
+	// managers holds the users named as the managers of the users a listing renders, read together (loadManagers),
+	// nil for one that does not exist; a manager not in it is read on its own (enterpriseValue).
+	managers map[string]*model.User
 	// made is the picture made for this request's photos, kept for a retry of the change (photoChange): from source.
 	made struct {
 		source string

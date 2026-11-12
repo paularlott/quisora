@@ -29,6 +29,9 @@ type auditReq struct {
 	// Offset is how many of this node's matching events, in the request's order, come before the ones asked for: a
 	// page cut short by the reply's size (auditResp.More) is followed by one that starts where it ended.
 	Offset int
+	// CountMax bounds the node's count of matching events (store.ListQuery.CountMax; 0: none, as from a node of an
+	// older build).
+	CountMax int
 }
 
 // auditFilter is a store.Filter on the wire: a string value, a time (UnixMicro), or a bool (the readers below super
@@ -139,7 +142,8 @@ const auditPageMax = 5000
 func (n *Node) localAudit(ctx context.Context, req auditReq) ([]*store.Record, int, error) {
 	limit := min(max(req.Limit, 1), auditPageMax)
 	res, err := n.st.inner.List(ctx, model.KindAudit, store.ListQuery{Scope: req.Scope, Search: req.Search,
-		Filters: fromAuditFilters(req.Filters), Sort: req.Sort, Desc: req.Desc, Limit: limit, Offset: max(req.Offset, 0)})
+		Filters: fromAuditFilters(req.Filters), Sort: req.Sort, Desc: req.Desc, Limit: limit, Offset: max(req.Offset, 0),
+		CountMax: req.CountMax})
 	if err != nil {
 		return nil, 0, err
 	}
@@ -148,12 +152,13 @@ func (n *Node) localAudit(ctx context.Context, req auditReq) ([]*store.Record, i
 
 // AuditQuery returns the first q.Limit audit events matching q (scope, search, sort; q.Offset is ignored: ask for
 // offset+limit and skip) across every node of the cluster, this one included, merged in q's order, with the total
-// of matches on the nodes that answered. nodes is the cluster size and answered how many nodes answered within
-// auditWait (this one counts): a node that is down or slow is missing from the page, not an error. Only the nodes that
-// publish this node's data set are asked: a node set up apart is not part of this cluster's log.
+// of matches on the nodes that answered (each node counting up to q.CountMax). nodes is the cluster size and
+// answered how many nodes answered within auditWait (this one counts): a node that is down or slow is missing from
+// the page, not an error. Only the nodes that publish this node's data set are asked: a node set up apart is not
+// part of this cluster's log.
 func (n *Node) AuditQuery(ctx context.Context, q store.ListQuery) (recs []*store.Record, total, nodes, answered int, err error) {
 	req := auditReq{Scope: q.Scope, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Limit: q.Limit,
-		Filters: toAuditFilters(q.Filters)}
+		Filters: toAuditFilters(q.Filters), CountMax: q.CountMax}
 	own, total, err := n.localAudit(ctx, req)
 	if err != nil {
 		return nil, 0, 0, 0, err

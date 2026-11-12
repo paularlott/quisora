@@ -26,10 +26,11 @@ func TestProfileAndEnterprise(t *testing.T) {
 	if r := e.patch(id, op("Replace", "timezone", "Mars/Base")); r.Status != 400 {
 		t.Errorf("bad time zone: %d", r.Status)
 	}
-	// filters on the new attributes
+	// filters on the new attributes; a listing names the manager as a read of the user does (the managers of a page
+	// are read together)
 	for _, f := range []string{`userType eq "contractor"`, entURN + `:department eq "QA"`} {
 		r := e.do("GET", "/scim/v2/acme/Users?filter="+url.QueryEscape(f), e.admA, nil)
-		if r.Status != 200 || len(r.list("Resources")) != 1 {
+		if r.Status != 200 || len(r.list("Resources")) != 1 || !strings.Contains(string(r.Raw), `"displayName":"Big Boss"`) {
 			t.Errorf("filter %s: %d %s", f, r.Status, r.Raw)
 		}
 	}

@@ -164,3 +164,52 @@ func BenchmarkScopeListings(b *testing.B) {
 		})
 	}
 }
+
+// An administrator's audit page (newest first, the super admins' events left out) of an organization with n
+// retained events: counting every match walks the whole log (exact); a bounded count (store.ListQuery.CountMax, as
+// the audit pages ask) stops at 10,000 however long the log.
+func BenchmarkAuditPage(b *testing.B) {
+	for _, n := range []int{10000, 50000, 200000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			ctx := context.Background()
+			s, err := OpenBadger(ctx, b.TempDir(), BadgerOptions{InMemory: true})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer s.Close()
+			base, recs := time.Now(), make([]*store.Record, 0, 1000)
+			for i := range n {
+				e := &model.Audit{Meta: model.Meta{ID: model.NewID(), Created: base.Add(time.Duration(i) * time.Millisecond)},
+					OrgID: "org", Action: "login.success", Actor: fmt.Sprintf("user-%06d", i), Outcome: "success",
+					SuperAdmin: i%50 == 7, Expires: base.Add(time.Hour)}
+				rec, err := store.Encode(e)
+				if err != nil {
+					b.Fatal(err)
+				}
+				recs = append(recs, rec)
+				if len(recs) == cap(recs) || i == n-1 {
+					if _, err := s.PutReplicatedBatch(ctx, recs); err != nil {
+						b.Fatal(err)
+					}
+					recs = recs[:0]
+				}
+			}
+			for _, bc := range []struct {
+				name string
+				most int
+			}{{"exact", 0}, {"bounded", 10001}} {
+				b.Run(bc.name, func(b *testing.B) {
+					q := store.ListQuery{Scope: "org", Sort: "created", Desc: true, Limit: 50, CountMax: bc.most,
+						Filters: []store.Filter{{Field: "super_admin", Value: false}}}
+					b.ReportAllocs()
+					for b.Loop() {
+						page, err := s.List(ctx, model.KindAudit, q)
+						if err != nil || len(page.Records) != 50 || page.Total < min(n*49/50, 10001) {
+							b.Fatalf("page: %d %d %v", len(page.Records), page.Total, err)
+						}
+					}
+				})
+			}
+		})
+	}
+}

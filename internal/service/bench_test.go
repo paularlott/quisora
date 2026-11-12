@@ -1,12 +1,14 @@
 package service_test
 
 import (
+	"fmt"
 	"strconv"
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/store/kvstore"
 )
 
 // CreateUser without a password skips argon2id, so this measures validation, the store write and the audit record.
@@ -61,6 +63,58 @@ func BenchmarkListUsers1000(b *testing.B) {
 			}
 		}
 	})
+}
+
+// A page of an organization's users sorted by username, for an administrator and for a manager (to whom the
+// administrators are directory entries, sorted on ""): both are a page of the store's sort index, however large the
+// organization.
+func BenchmarkUsersPageByRole(b *testing.B) {
+	for _, n := range []int{10000, 50000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			st, err := kvstore.OpenBadger(b.Context(), b.TempDir(), kvstore.BadgerOptions{InMemory: true})
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { _ = st.Close() })
+			e := newEnvOn(b, st)
+			org := e.org("big")
+			admin := e.user(org.ID, "boss", model.RoleAdmin)
+			mgr := e.user(org.ID, "mgr", model.RoleManager)
+			recs := make([]*store.Record, 0, 1000)
+			for i := range n {
+				name := fmt.Sprintf("user-%06d", i)
+				u := &model.User{Meta: model.Meta{ID: model.NewID()}, OrgID: org.ID, Username: name, Email: name + "@example.test",
+					GivenName: name, Role: model.RoleUser, Active: true}
+				if i%1000 == 7 {
+					u.Role = model.RoleAdmin
+				}
+				rec, err := store.Encode(u)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if recs = append(recs, rec); len(recs) == cap(recs) || i == n-1 {
+					if _, err := st.PutReplicatedBatch(e.ctx, recs); err != nil {
+						b.Fatal(err)
+					}
+					recs = recs[:0]
+				}
+			}
+			for _, who := range []struct {
+				name string
+				u    *model.User
+			}{{"admin", admin}, {"manager", mgr}} {
+				b.Run(who.name, func(b *testing.B) {
+					b.ReportAllocs()
+					for b.Loop() {
+						l, total, err := e.svc.ListUsers(e.ctx, actor(who.u), org.ID, store.ListQuery{Sort: "username", Offset: 100, Limit: 25})
+						if err != nil || len(l) != 25 || total != n+2 {
+							b.Fatal(err, len(l), total)
+						}
+					}
+				})
+			}
+		})
+	}
 }
 
 func BenchmarkValidateAPIToken(b *testing.B) {

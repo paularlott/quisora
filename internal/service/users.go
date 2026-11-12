@@ -342,6 +342,29 @@ func (s *Service) GetUser(ctx context.Context, a *Actor, id string) (*model.User
 	return u, nil
 }
 
+// GetUsers is GetUser for each of ids, in one read: the users a may see, in the order of ids, those it may not (or
+// that do not exist) left out.
+func (s *Service) GetUsers(ctx context.Context, a *Actor, ids []string) ([]*model.User, error) {
+	found, err := s.Users.GetMany(ctx, ids)
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	out, full := found[:0], []*model.User{}
+	for _, u := range found {
+		if a != nil && a.UserID != u.ID && !s.canManageUsers(a, u.OrgID) {
+			continue
+		}
+		switch s.Visibility(a, u) {
+		case Directory:
+			out = append(out, DirectoryEntry(u))
+		case Full:
+			out, full = append(out, u), append(full, u)
+		}
+	}
+	s.WithSignIn(ctx, full...)
+	return out, nil
+}
+
 // FindUser is the user of orgID with external id ext, or whose primary or linked address is email (exactly one of
 // them given): an indexed lookup, with the same access as GetUser. ErrNotFound when there is none, and for a user a
 // sees only as a directory entry: the match would confirm an address or external id the entry does not show, which
@@ -376,15 +399,9 @@ func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store
 	if err != nil {
 		return nil, 0, err
 	}
-	if q.Sort != "" && !directorySortable[q.Sort] {
+	if q.Sort != "" && !directorySortable[q.Sort] && seesDirectoryEntries(a) {
 		// The store orders on the stored value, which a directory entry does not show: the row's place would.
-		unseen, err := s.NotSeenInFull(ctx, a, q.Scope)
-		if err != nil {
-			return nil, 0, err
-		}
-		if len(unseen) > 0 {
-			return s.listByPresented(ctx, a, q, leaks)
-		}
+		return s.listByPresented(ctx, a, q, leaks)
 	}
 	l, n, err := s.Users.List(ctx, q)
 	if err != nil {
@@ -402,29 +419,53 @@ func (s *Service) ListUsers(ctx context.Context, a *Actor, orgID string, q store
 // directorySortable are the sort fields a directory entry keeps: sorting on them orders every row on what it shows.
 var directorySortable = map[string]bool{"name": true, "role": true, "active": true, "created": true}
 
-// listByPresented is ListUsers sorted on a field directory entries blank (username, email...) for a
-// caller who sees some users only as directory entries: the matches are loaded, presented and sorted in memory on the
-// values as shown, as the store would sort them, so a directory entry sorts on "" and its place reveals nothing.
+// listByPresented is ListUsers sorted on a field directory entries blank (username, email...) for a caller who sees
+// some users only as directory entries (seesDirectoryEntries): every row sorts on the value it shows, as the store
+// would sort it, so a directory entry sorts on "" and its place reveals nothing. Only users of administrator rank can
+// be directory entries, and they are few: they are loaded and sorted in among a page of the others, which the store
+// sorts from its index (leaving the administrators out by their indexed set), however large the organization.
+//
+// The page at offset off holds at most len(above) administrators, so the store's page of the others starts
+// len(above) rows before off (rq.Offset) and runs len(above) rows past the page's end. Sorted together with every
+// administrator, the administrators ordered before its first row (k of them) come first, and that row, at position
+// rq.Offset+k, at index k: from there on index i is position rq.Offset+i, up to its last row. An administrator after
+// its last row sorts there whatever others lie between, but is then past the page, unless the store's page holds the
+// last of the others.
 func (s *Service) listByPresented(ctx context.Context, a *Actor, q store.ListQuery, leaks map[string]bool) ([]*model.User, int, error) {
 	if err := store.ValidateQuery(model.KindUser, q); err != nil {
 		return nil, 0, mapStore(err)
 	}
-	offset, limit, field, desc := q.Offset, q.Limit, q.Sort, q.Desc
-	q.Sort, q.Desc, q.Offset, q.Limit = "", false, 0, 0
-	all, _, err := s.Users.List(ctx, q)
+	aq := q // the administrators the listing selects
+	aq.Filters = append(slices.Clone(q.Filters), store.Filter{Field: "admin_rank", Value: true})
+	aq.Sort, aq.Desc, aq.Offset, aq.Limit = "", false, 0, 0
+	above, _, err := s.Users.List(ctx, aq)
 	if err != nil {
 		return nil, 0, mapStore(err)
 	}
-	all = slices.DeleteFunc(all, func(u *model.User) bool { return leaks[u.ID] })
-	s.WithSignIn(ctx, all...)
-	all = s.present(a, all)
-	key := make(map[string]any, len(all))
-	for _, u := range all {
-		key[u.ID] = u.Index().Fields[field]
+	above = slices.DeleteFunc(above, func(u *model.User) bool { return leaks[u.ID] })
+	offset := max(q.Offset, 0)
+	rq := q // the others
+	rq.Filters = append(slices.Clone(q.Filters), store.Filter{Field: "admin_rank", Value: false})
+	rq.Offset = max(offset-len(above), 0)
+	if q.Limit > 0 {
+		rq.Limit = q.Limit + len(above)
 	}
-	slices.SortStableFunc(all, func(x, y *model.User) int {
+	rows, n, err := s.Users.List(ctx, rq)
+	if err != nil {
+		return nil, 0, mapStore(err)
+	}
+	page := append(rows, above...)
+	key := make(map[string]any, len(page)) // each row's sort value, as the caller sees it
+	for _, u := range page {
+		if s.Visibility(a, u) == Directory {
+			key[u.ID] = DirectoryEntry(u).Index().Fields[q.Sort]
+		} else {
+			key[u.ID] = u.Index().Fields[q.Sort]
+		}
+	}
+	slices.SortFunc(page, func(x, y *model.User) int {
 		c := store.CompareValues(key[x.ID], key[y.ID])
-		if desc {
+		if q.Desc {
 			c = -c
 		}
 		if c == 0 {
@@ -432,12 +473,12 @@ func (s *Service) listByPresented(ctx context.Context, a *Actor, q store.ListQue
 		}
 		return c
 	})
-	total := len(all)
-	all = all[min(max(offset, 0), total):]
-	if limit > 0 && limit < len(all) {
-		all = all[:limit]
+	page = page[min(offset-rq.Offset, len(page)):]
+	if q.Limit > 0 && len(page) > q.Limit {
+		page = page[:q.Limit]
 	}
-	return all, total, nil
+	s.WithSignIn(ctx, page...)
+	return s.present(a, page), n + len(above), nil
 }
 
 // ListUsersTagged lists the users of an org carrying exactly the tag: ListUsers with a filter on the tag, which the

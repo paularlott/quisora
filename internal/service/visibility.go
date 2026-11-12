@@ -37,6 +37,12 @@ func viewerRank(a *Actor) int {
 // seesSuperAdmins reports whether a may see super admins at all.
 func seesSuperAdmins(a *Actor) bool { return a == nil || a == System || a.IsSuper() }
 
+// seesDirectoryEntries reports whether a sees some users only as directory entries: the administrators, to an actor
+// below their rank (Visibility). Everyone else sees every user they may see at all in full.
+func seesDirectoryEntries(a *Actor) bool {
+	return !seesSuperAdmins(a) && viewerRank(a) < model.RoleAdmin.Rank()
+}
+
 // Visibility returns how much of u the actor sees (nil: the system, inside the service).
 func (s *Service) Visibility(a *Actor, u *model.User) Visibility {
 	switch {

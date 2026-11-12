@@ -1203,7 +1203,7 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		if q.After != "" {
 			return s.listAfter(ctx, kind, bucket, q.After, q.Limit)
 		}
-		p := pageQuery{Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
+		p := pageQuery{Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, CountMax: q.CountMax}
 		return s.listPage(ctx, kind, bucket, p, nil, bucket, false, q.IDsOnly)
 	}
 	if q.Search != "" {
@@ -1222,7 +1222,7 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 	case in != "" && unsorted && len(q.Filters) == 1 && q.Scope != "":
 		// One indexed filter: the scope's range of the bucket is the result, in id order; page it like a plain scan.
 		from, to := scopeBounds(q.Scope)
-		p := pageQuery{From: from, To: to, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
+		p := pageQuery{From: from, To: to, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, CountMax: q.CountMax}
 		if q.After != "" {
 			p.From, p.Offset = from+q.After+"\x00", 0
 		}
@@ -1230,13 +1230,13 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 	case unsorted && excluding:
 		return s.listExcluding(ctx, kind, bucket, q, out)
 	case q.Search == "" && excluding && (q.Scope != "" || model.Unscoped(kind)):
-		if f, ok := sortIndexed(kind, q.Sort); ok {
+		if _, ok := sortIndexed(kind, q.Sort); ok {
 			from, to := scopeBounds(q.Scope)
-			return s.listSorted(ctx, kind, q, f, nil, out, from, to)
+			return s.listSorted(ctx, kind, q, nil, out, from, to)
 		}
 	case in != "" && q.Search == "" && len(out) == len(q.Filters)-1 && (q.Scope != "" || model.Unscoped(kind)):
-		if f, ok := sortIndexed(kind, q.Sort); ok {
-			return s.listSortedMatches(ctx, kind, q, f, in, out)
+		if _, ok := sortIndexed(kind, q.Sort); ok {
+			return s.listSortedMatches(ctx, kind, q, in, out)
 		}
 	}
 	if in == "" && q.Search == "" && (q.Scope != "" || model.Unscoped(kind)) {
@@ -1245,7 +1245,7 @@ func (s *Store) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*
 		// candidates.
 		if f, ok := sortIndexed(kind, q.Sort); ok {
 			if from, to, ok := sortBounds(q.Scope, f, q.Filters); ok {
-				return s.listSorted(ctx, kind, q, f, nil, nil, from, to)
+				return s.listSorted(ctx, kind, q, nil, nil, from, to)
 			}
 		}
 		for _, flt := range q.Filters {
@@ -1331,11 +1331,11 @@ func (s *Store) searchIDs(ctx context.Context, kind model.Kind, q store.ListQuer
 }
 
 // counted returns the total of the page p selects from the counted range rng (counterKey) of kind, or -1 when only a
-// count of the page's members gives it. When no member of the range carries an expiry its counter, less the members
-// p skips (every one a live member of the range), is the total, and p is set to stop at the end of the page. A page
-// without a limit reads the whole range anyway, and counts it as it goes; a kind that keeps no counters has no
-// counted range.
-func (s *Store) counted(ctx context.Context, kind model.Kind, rng string, p *pageQuery) (int, error) {
+// count of the page's members gives it. When no member of the range carries an expiry its counter, less the left
+// members p leaves out (every one a live member of the range), is the total, and p is set to stop at the end of the
+// page. A page without a limit reads the whole range anyway, and counts it as it goes; a kind that keeps no counters
+// has no counted range.
+func (s *Store) counted(ctx context.Context, kind model.Kind, rng string, p *pageQuery, left int) (int, error) {
 	if rng == "" || p.Limit <= 0 || !counting(kind) {
 		return -1, nil
 	}
@@ -1344,7 +1344,7 @@ func (s *Store) counted(ctx context.Context, kind model.Kind, rng string, p *pag
 		return -1, err
 	}
 	p.NoTotal = true
-	return n - len(p.Skip), nil
+	return n - left, nil
 }
 
 // listPage loads the page p selects from bucket. idOf maps a member to its record id (nil: members are ids). rng is
@@ -1354,7 +1354,7 @@ func (s *Store) listPage(ctx context.Context, kind model.Kind, bucket string, p 
 	total := -1
 	if after {
 		p.NoTotal = true
-	} else if t, err := s.counted(ctx, kind, rng, &p); err != nil {
+	} else if t, err := s.counted(ctx, kind, rng, &p, len(p.Skip)); err != nil {
 		return nil, err
 	} else {
 		total = t
@@ -1404,7 +1404,7 @@ func (s *Store) listExcluding(ctx context.Context, kind model.Kind, bucket strin
 	for _, id := range ids {
 		skip[id] = struct{}{}
 	}
-	p := pageQuery{Skip: skip, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
+	p := pageQuery{Skip: skip, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, CountMax: q.CountMax}
 	if q.After != "" {
 		p.From, p.Offset = q.After+"\x00", 0
 	}
@@ -1443,7 +1443,7 @@ const keysPerRecord = 16
 // (a role) pages the index, one that selects few of a large scope (its super admins) loads them. n is the scope's
 // counter (an estimate is enough: it may hold expired members Purge has yet to remove); a kind that keeps none
 // loads its matches.
-func (s *Store) listSortedMatches(ctx context.Context, kind model.Kind, q store.ListQuery, f model.Field, in string, out []string) (*store.ListResult, error) {
+func (s *Store) listSortedMatches(ctx context.Context, kind model.Kind, q store.ListQuery, in string, out []string) (*store.ListResult, error) {
 	ids, err := s.indexedIDs(ctx, kind, in, q.Scope, nowMs())
 	if err != nil {
 		return nil, err
@@ -1470,23 +1470,23 @@ func (s *Store) listSortedMatches(ctx context.Context, kind model.Kind, q store.
 		keep[id] = struct{}{}
 	}
 	from, to := scopeBounds(q.Scope)
-	return s.listSorted(ctx, kind, q, f, keep, out, from, to)
+	return s.listSorted(ctx, kind, q, keep, out, from, to)
 }
 
 // listSorted serves a listing sorted on f (a SortIndex field) from the sort index: the scope's range of the
-// field's bucket, with the records of the excluded sets (buckets out) skipped; their members are computed from the
-// records, which are loaded (an excluded set is small). keep (nil: every record) restricts it to the records with
-// those ids, the matches of an indexed equality filter (listSortedMatches): the excluded leave the set instead, the
-// rest of it is the total, and the range is read until the page is full. Ascending, the page is a plain page of the
+// field's bucket, with the records of the excluded sets (buckets out) skipped by id, which the sets' field indexes
+// give without loading a record (an organization's super admins' audit events are many). keep (nil: every record)
+// restricts it to the records with those ids, the matches of an indexed equality filter (listSortedMatches): the
+// excluded leave the set instead, the rest of it is the total, and the range is read until the page is full. Ascending, the page is a plain page of the
 // range. Descending, the range is read backwards, which orders the records of equal values by id descending where
 // the store's order (store.ListQuery: ties break by id ascending, whatever the direction) wants them ascending: the
 // runs of equal values the page holds are put right by fixDescTies.
-func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQuery, f model.Field, keep map[string]struct{}, out []string, from, to string) (*store.ListResult, error) {
+func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQuery, keep map[string]struct{}, out []string, from, to string) (*store.ListResult, error) {
 	bucket, rng := sortBucket(kind, q.Sort), listBucket(kind, q.Scope)
 	if sf, st := scopeBounds(q.Scope); from != sf || to != st {
 		rng = "" // a range of the scope: its total is counted as it is read, not taken from the scope's counter
 	}
-	p := pageQuery{From: from, To: to, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit}
+	p := pageQuery{From: from, To: to, Reverse: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, CountMax: q.CountMax}
 	var excl []string
 	if len(out) > 0 {
 		var err error
@@ -1495,29 +1495,28 @@ func (s *Store) listSorted(ctx context.Context, kind model.Kind, q store.ListQue
 		}
 	}
 	total := -1
+	ids, in := keep, true // the ids a member's record must be among (in), or must not be
 	if keep != nil {
-		for _, id := range excl { // no member of theirs need be computed
+		for _, id := range excl {
 			delete(keep, id)
-		}
-		p.Keep = func(m []byte) bool {
-			i := bytes.IndexByte(m, '/') + 1
-			_, ok := keep[string(m[i+bytes.IndexByte(m[i:], 0)+1:])] // its id (sortMemberID); the lookup does not allocate
-			return ok
 		}
 		p.NoTotal, total = true, len(keep)
 	} else if len(excl) > 0 {
-		recs, err := s.loadMembers(ctx, kind, excl)
-		if err != nil {
-			return nil, err
+		ids, in = make(map[string]struct{}, len(excl)), false
+		for _, id := range excl {
+			ids[id] = struct{}{}
 		}
-		p.Skip = make(map[string]struct{}, len(recs))
-		for _, r := range recs {
-			p.Skip[sortMember(r.Scope, f, r.Fields[f.Name], r.ID)] = struct{}{}
+	}
+	if ids != nil {
+		p.Keep = func(m []byte) bool {
+			i := bytes.IndexByte(m, '/') + 1
+			_, ok := ids[string(m[i+bytes.IndexByte(m[i:], 0)+1:])] // its id (sortMemberID); the lookup does not allocate
+			return ok == in
 		}
 	}
 	if total < 0 {
 		var err error
-		if total, err = s.counted(ctx, kind, rng, &p); err != nil {
+		if total, err = s.counted(ctx, kind, rng, &p, len(excl)); err != nil {
 			return nil, err
 		}
 	}
@@ -1707,6 +1706,11 @@ func (s *Store) listStreaming(ctx context.Context, kind model.Kind, q store.List
 			}
 		}
 		if len(members) < streamBatch { // (expired members do not fill a page: fewer means the range is read)
+			break
+		}
+		// Counted far enough (store.ListQuery.CountMax), with the page full: matched leaves out the current run of
+		// equal values, which then comes after the page.
+		if ordered && q.CountMax > 0 && q.Limit > 0 && matched >= max(q.CountMax, offset+q.Limit) {
 			break
 		}
 	}

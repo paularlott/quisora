@@ -42,7 +42,8 @@ type engine interface {
 // means nothing. Skip is an exclusion set (nil: none): a listing that leaves out the records of a small indexed set
 // pages the scope's index with them skipped, instead of loading the scope. Keep (nil: every member) tests a member
 // (which it must not retain): a sorted listing of the matches of an indexed filter pages the sort index keeping only
-// their members, instead of loading every match to sort them.
+// their members, instead of loading every match to sort them. CountMax (0: no bound) stops the count once it holds
+// CountMax members and the page is full (store.ListQuery.CountMax): the total is then at least CountMax.
 type pageQuery struct {
 	From, To string
 	Skip     map[string]struct{}
@@ -51,6 +52,7 @@ type pageQuery struct {
 	Offset   int
 	Limit    int
 	NoTotal  bool
+	CountMax int
 }
 
 // grouper is implemented by engines that commit concurrent record writes together (group commit). Group has the

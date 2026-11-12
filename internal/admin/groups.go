@@ -146,10 +146,9 @@ func (m *Module) listMembers(w http.ResponseWriter, r *http.Request) {
 	lo := min(q.Offset, total)
 	hi := min(lo+q.Limit, total)
 	out := make([]memberView, 0, hi-lo)
-	for _, id := range ids[lo:hi] {
-		if u, err := m.s.Svc.GetUser(r.Context(), a, id); err == nil {
-			out = append(out, memberView{ID: u.ID, Username: u.Username, Name: u.FullName(), Email: u.Email, Role: u.Role})
-		}
+	users, _ := m.s.Svc.GetUsers(r.Context(), a, ids[lo:hi]) // the page's members in one read; none when it fails
+	for _, u := range users {
+		out = append(out, memberView{ID: u.ID, Username: u.Username, Name: u.FullName(), Email: u.Email, Role: u.Role})
 	}
 	writeList(w, out, total)
 }

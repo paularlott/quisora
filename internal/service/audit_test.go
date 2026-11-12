@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -506,6 +507,43 @@ func TestAuditPageReadsOnlyThePage(t *testing.T) {
 		}
 		if cs.rows[model.KindAudit] > 10 || len(cs.rows) > 1 {
 			t.Fatalf("a page of 10 read %v", cs.rows)
+		}
+	}
+}
+
+// An audit page counts the matching events up to 10,000 and then says there are more (AuditPage.More): an exact
+// total would read the whole retained log on every page. A page past the bound counts to its own end, so the next is
+// offered while there are more; the last page's total is exact again.
+func TestAuditTotalStopsAtTheBound(t *testing.T) {
+	c := newCast(t)
+	before, err := c.svc.ListAudit(c.ctx, actor(c.aAdmin), c.a.ID, service.AuditQuery{Limit: 10})
+	if err != nil || before.More {
+		t.Fatal(before, err)
+	}
+	const n = 10050
+	for i := range n {
+		e := &model.Audit{OrgID: c.a.ID, Action: "login.success", Actor: "u" + strconv.Itoa(i), Outcome: "success",
+			Expires: time.Now().Add(time.Hour)}
+		if err := c.svc.Audits.Put(c.ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := before.Total + n
+	for _, reader := range []service.AuditReader{nil, storeReader{c}} { // this node's store, and a reader given the query
+		c.svc.AuditReader = reader
+		for _, tc := range []struct {
+			offset, limit, total int
+			more                 bool
+		}{
+			{0, 10, 10000, true},
+			{9990, 50, 10040, true}, // past the bound: counted to the page's end, and more after it
+			{all - 5, 50, all, false},
+		} {
+			pg, err := c.svc.ListAudit(c.ctx, actor(c.aAdmin), c.a.ID, service.AuditQuery{Offset: tc.offset, Limit: tc.limit})
+			if err != nil || pg.Total != tc.total || pg.More != tc.more || len(pg.Items) != min(tc.limit, all-tc.offset) {
+				t.Fatalf("offset %d: %d events, total %d more %v; want total %d more %v (%v)", tc.offset, len(pg.Items),
+					pg.Total, pg.More, tc.total, tc.more, err)
+			}
 		}
 	}
 }

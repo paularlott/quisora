@@ -71,6 +71,7 @@ func RunWith(t *testing.T, f Factory, opt Options) {
 		{"ListFoldsUnicodeAndTags", testListFolding},
 		{"ListFilters", testListFilters},
 		{"ListFilterOperators", testListFilterOps},
+		{"ListCountMax", testListCountMax},
 		{"ListIndexedFilters", testListIndexed},
 		{"ListSortIndexes", testListSortIndexes},
 		{"GetMany", testGetMany},
@@ -837,6 +838,50 @@ func testListFilterOps(t *testing.T, s store.Store) {
 		{Field: "action", Op: store.OpGTE, Value: "a"}, {Field: "action", Op: "like", Value: "a"}} {
 		if _, _, err := audits(s).List(ctx, store.ListQuery{Filters: []store.Filter{bad}}); !errors.Is(err, store.ErrBadQuery) {
 			t.Errorf("filter %+v: %v", bad, err)
+		}
+	}
+}
+
+// A bounded count (store.ListQuery.CountMax) changes no page: each is the one an unbounded listing gives. The total is
+// exact below the bound, and otherwise at least the bound and at most the exact total; a page past the bound still
+// says there is more after it.
+func testListCountMax(t *testing.T, s store.Store) {
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	actions := []string{"user.create", "user.update", "login.failure"}
+	for i := range 300 {
+		a := actions[i%3]
+		e := &model.Audit{OrgID: "org1", Action: a, Actor: fmt.Sprintf("actor%d", i), Outcome: model.AuditOutcome(a),
+			SuperAdmin: i%10 == 0}
+		e.Created = base.Add(time.Duration(i/2) * time.Minute) // runs of equal times
+		must(t, audits(s).Put(ctx, e))
+	}
+	visible := store.Filter{Field: "super_admin", Value: false}
+	for i, q := range []store.ListQuery{
+		{Sort: "created", Desc: true, Limit: 10, Filters: []store.Filter{visible}},
+		{Sort: "created", Desc: true, Offset: 30, Limit: 10, Filters: []store.Filter{visible}},
+		{Sort: "created", Desc: true, Offset: 100, Limit: 10, Filters: []store.Filter{visible}}, // past the bound
+		{Sort: "created", Limit: 10},
+		{Sort: "created", Desc: true, Search: "actor1", Limit: 10, Filters: []store.Filter{visible}},
+		{Sort: "action", Desc: true, Offset: 20, Limit: 10, Filters: []store.Filter{visible}},
+		{Sort: "created", Desc: true, Limit: 10, Filters: []store.Filter{{Field: "outcome", Value: "failure"}, visible}},
+		{Sort: "created", Desc: true, Limit: 10, Filters: []store.Filter{{Field: "action", Op: store.OpPrefix, Value: "user."}}},
+		{Limit: 10},
+	} {
+		q.Scope = "org1"
+		want, err := s.List(ctx, model.KindAudit, q)
+		must(t, err)
+		for _, most := range []int{50, 1000} {
+			q.CountMax = most
+			got, err := s.List(ctx, model.KindAudit, q)
+			must(t, err)
+			if !slices.Equal(IDs(got.Records), IDs(want.Records)) {
+				t.Errorf("case %d, at most %d: the page changed:\n got %v\nwant %v", i, most, IDs(got.Records), IDs(want.Records))
+			}
+			exact := want.Total < most && got.Total == want.Total
+			bounded := want.Total >= most && got.Total >= max(most, q.Offset+len(got.Records)) && got.Total <= want.Total
+			if !exact && !bounded {
+				t.Errorf("case %d, at most %d: total %d, of %d", i, most, got.Total, want.Total)
+			}
 		}
 	}
 }

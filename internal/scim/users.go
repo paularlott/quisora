@@ -799,6 +799,7 @@ func (rq *request) listUsers() {
 	needGroups := wantsAttr(p, "groups") || (p.filter != nil && referencesAttr(p.filter, "groups")) ||
 		(p.sortBy != nil && strings.EqualFold(p.sortBy.Name, "groups"))
 	render := func(users []*model.User) ([]map[string]any, error) {
+		rq.loadManagers(users)
 		var idx map[string][]*model.Group
 		if needGroups {
 			var err error
@@ -929,13 +930,45 @@ func (rq *request) enterpriseValue(u *model.User) (map[string]any, error) {
 		}
 		if !unseen[w.ManagerID] { // a manager the caller does not see is not shown
 			m := map[string]any{"value": w.ManagerID, "$ref": rq.location("Users", w.ManagerID)}
-			if mu, err := rq.m.srv.Svc.Users.Get(rq.r.Context(), w.ManagerID); err == nil && mu.OrgID == u.OrgID {
+			mu, read := rq.managers[w.ManagerID]
+			if !read {
+				mu, _ = rq.m.srv.Svc.Users.Get(rq.r.Context(), w.ManagerID)
+			}
+			if mu != nil && mu.OrgID == u.OrgID {
 				m["displayName"] = mu.FullName()
 			}
 			out["manager"] = m
 		}
 	}
 	return out, nil
+}
+
+// loadManagers reads the managers of users not read yet in one read, for enterpriseValue: a listing reads them once,
+// not once a user. When the read fails they are left unread, and each is read on its own.
+func (rq *request) loadManagers(users []*model.User) {
+	var ids []string
+	for _, u := range users {
+		if _, read := rq.managers[u.Work.ManagerID]; u.Work.ManagerID != "" && !read {
+			ids = append(ids, u.Work.ManagerID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	found, err := rq.m.srv.Svc.Users.GetMany(rq.r.Context(), ids)
+	if err != nil {
+		return
+	}
+	if rq.managers == nil {
+		rq.managers = make(map[string]*model.User, len(ids))
+	}
+	for _, id := range ids {
+		rq.managers[id] = nil
+	}
+	for _, mu := range found {
+		rq.managers[mu.ID] = mu
+	}
 }
 
 // profileInput reads the language, time zone, user type, title and enterprise extension of a SCIM user into in.

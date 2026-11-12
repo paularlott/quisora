@@ -15,8 +15,8 @@ import (
 )
 
 // A sorted listing on a SortIndex field, ascending or descending, at any offset, with or without the visibility
-// exclusion, loads the records of its page (plus the excluded set, whose sort members come from the records) and
-// nothing else, and never has the engine count a range: the total is a counter. It returns exactly what applying the
+// exclusion, loads the records of its page and nothing else (the excluded set is skipped by id, read from its index),
+// and never has the engine count a range: the total is a counter. It returns exactly what applying the
 // query to every record of the scope returns, ties (equal values, even a scope made of a few of them) and empty
 // values included. Counters and sort members follow updates and deletions.
 func TestSortedPagesAreBounded(t *testing.T) {
@@ -88,11 +88,11 @@ func TestSortedPagesAreBounded(t *testing.T) {
 		}
 		return got
 	}
-	bounded := func(q store.ListQuery, extra int) {
+	bounded := func(q store.ListQuery) {
 		t.Helper()
 		got := agree(q)
-		if counting.records != len(got.Records)+extra {
-			t.Errorf("%+v: loaded %d records for a page of %d (+%d excluded)", q, counting.records, len(got.Records), extra)
+		if counting.records != len(got.Records) {
+			t.Errorf("%+v: loaded %d records for a page of %d", q, counting.records, len(got.Records))
 		}
 		if counting.counted != 0 {
 			t.Errorf("%+v: %d ranges counted by the engine; the total should come from a counter", q, counting.counted)
@@ -102,16 +102,16 @@ func TestSortedPagesAreBounded(t *testing.T) {
 	for _, sort := range []string{"username", "name", "created", "active", "role", "email"} {
 		for _, desc := range []bool{false, true} {
 			for _, off := range []int{0, 7, 100, 393, 500} {
-				bounded(store.ListQuery{Scope: "org", Sort: sort, Desc: desc, Offset: off, Limit: 25}, 0)
-				bounded(store.ListQuery{Scope: "org", Sort: sort, Desc: desc, Offset: off, Limit: 25, Filters: visibility}, hidden)
+				bounded(store.ListQuery{Scope: "org", Sort: sort, Desc: desc, Offset: off, Limit: 25})
+				bounded(store.ListQuery{Scope: "org", Sort: sort, Desc: desc, Offset: off, Limit: 25, Filters: visibility})
 			}
-			bounded(store.ListQuery{Scope: "org", Sort: sort, Desc: desc}, 0) // everything, in order
+			bounded(store.ListQuery{Scope: "org", Sort: sort, Desc: desc}) // everything, in order
 		}
 	}
 	// The plain and the excluding pages take their totals from the counters too.
-	bounded(store.ListQuery{Scope: "org", Offset: 30, Limit: 25}, 0)
-	bounded(store.ListQuery{Scope: "org", Desc: true, Offset: 30, Limit: 25, Filters: visibility}, 0)
-	bounded(store.ListQuery{Scope: "org", Limit: 3, Filters: []store.Filter{{Field: "super_admin", Value: true}}}, 0)
+	bounded(store.ListQuery{Scope: "org", Offset: 30, Limit: 25})
+	bounded(store.ListQuery{Scope: "org", Desc: true, Offset: 30, Limit: 25, Filters: visibility})
+	bounded(store.ListQuery{Scope: "org", Limit: 3, Filters: []store.Filter{{Field: "super_admin", Value: true}}})
 
 	// Updates move a record in the sort indexes; deletions leave the indexes and the counters.
 	tb := store.NewTable[model.User](s)
@@ -129,8 +129,8 @@ func TestSortedPagesAreBounded(t *testing.T) {
 		}
 	}
 	hidden-- // user 42 was a super admin
-	bounded(store.ListQuery{Scope: "org", Sort: "username", Limit: 3}, 0)
-	bounded(store.ListQuery{Scope: "org", Sort: "name", Desc: true, Limit: 3, Filters: visibility}, hidden)
+	bounded(store.ListQuery{Scope: "org", Sort: "username", Limit: 3})
+	bounded(store.ListQuery{Scope: "org", Sort: "name", Desc: true, Limit: 3, Filters: visibility})
 	if got, _ := s.Count(ctx, model.KindUser, "org"); got != n-4 {
 		t.Errorf("count after deletions: %d", got)
 	}
@@ -290,7 +290,7 @@ func TestSortedIndexedFilterPages(t *testing.T) {
 		t.Helper()
 		storetest.CheckAgainstApplyQuery(t, s, model.KindUser, q)
 		in, out := indexBuckets(model.KindUser, q)
-		f, ok := sortIndexed(model.KindUser, q.Sort)
+		_, ok := sortIndexed(model.KindUser, q.Sort)
 		if in == "" || !ok {
 			t.Fatalf("%+v: not an indexed filter on a sort index", q)
 		}
@@ -307,7 +307,7 @@ func TestSortedIndexedFilterPages(t *testing.T) {
 			keep[id] = struct{}{}
 		}
 		from, to := scopeBounds(q.Scope)
-		got, err := s.listSorted(ctx, model.KindUser, q, f, keep, out, from, to)
+		got, err := s.listSorted(ctx, model.KindUser, q, keep, out, from, to)
 		if err != nil {
 			t.Fatal(err)
 		}

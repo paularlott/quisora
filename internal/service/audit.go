@@ -27,12 +27,15 @@ type AuditQuery struct {
 	Limit         int
 }
 
-// AuditPage is one page of audit events. Nodes and Answered say how many nodes the page was gathered from (a gossip
-// cluster asks every node; a node that does not answer in time is missing from it); Source names where the events
-// come from: "store", "cluster" or "victorialogs".
+// AuditPage is one page of audit events. Total counts the matching events up to a bound (auditCountMax, or the end
+// of the page past it): More says there are more than Total, as an exact count would read the whole retained log on
+// every page. Nodes and Answered say how many nodes the page was gathered from (a gossip cluster asks every node; a
+// node that does not answer in time is missing from it); Source names where the events come from: "store",
+// "cluster" or "victorialogs".
 type AuditPage struct {
 	Items    []*model.Audit
 	Total    int
+	More     bool
 	Nodes    int
 	Answered int
 	Source   string
@@ -81,11 +84,25 @@ func (s *Service) ListAudit(ctx context.Context, a *Actor, orgID string, q Audit
 	// Super admins are invisible below them (Visibility), so their events are too. Only administrators read an
 	// organization's log, and they see everyone else of it in full: the super admins are all they may not see.
 	q.NoSuperAdmins = !seesSuperAdmins(a)
+	var p AuditPage
+	var err error
 	if s.AuditReader != nil {
-		return s.AuditReader.ReadAudit(ctx, q)
+		p, err = s.AuditReader.ReadAudit(ctx, q)
+	} else {
+		p, err = s.readAuditStore(ctx, q)
 	}
-	return s.readAuditStore(ctx, q)
+	if most := auditCount(q); err == nil && p.Total > most {
+		p.Total, p.More = most, true
+	}
+	return p, err
 }
+
+// auditCountMax is how many matching events an audit page counts: past it the page says there are more
+// (AuditPage.More). A page past it counts to its own end, so that the next is offered while there are more.
+const auditCountMax = 10000
+
+// auditCount is the most matching events the page q counts, and reports as its total.
+func auditCount(q AuditQuery) int { return max(auditCountMax, q.Offset+q.Limit) }
 
 // readAuditStore reads the audit log from this node's store (a standalone node, or nodes sharing one database).
 func (s *Service) readAuditStore(ctx context.Context, q AuditQuery) (AuditPage, error) {
@@ -97,8 +114,10 @@ func (s *Service) readAuditStore(ctx context.Context, q AuditQuery) (AuditPage, 
 }
 
 // AuditListQuery is the store query of an audit page. Created times break ties by id (model.NewID: time ordered).
+// The store counts one match past the page's bound (auditCount), which tells ListAudit there are more.
 func AuditListQuery(q AuditQuery) store.ListQuery {
-	lq := store.ListQuery{Scope: q.Org, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Offset: q.Offset, Limit: q.Limit}
+	lq := store.ListQuery{Scope: q.Org, Search: q.Search, Sort: q.Sort, Desc: q.Desc, Offset: q.Offset, Limit: q.Limit,
+		CountMax: auditCount(q) + 1}
 	if !q.From.IsZero() {
 		lq.Filters = append(lq.Filters, store.Filter{Field: "created", Op: store.OpGTE, Value: q.From.UTC()})
 	}

@@ -15,12 +15,14 @@ type auditItem struct {
 	OrgName string `json:"org_name,omitempty"`
 }
 
-// auditList is an audit page: the list envelope plus where the events come from. A gossip cluster asks every node
-// (nodes, nodes_answered: a node that did not answer in time is missing); source is "store", "cluster" or
-// "victorialogs".
+// auditList is an audit page: the list envelope plus where the events come from. total counts the matching events
+// up to a bound (10,000, or the end of the page past it), and total_more says there are more than that. A gossip
+// cluster asks every node (nodes, nodes_answered: a node that did not answer in time is missing); source is "store",
+// "cluster" or "victorialogs".
 type auditList struct {
 	Items         []auditItem `json:"items"`
 	Total         int         `json:"total"`
+	TotalMore     bool        `json:"total_more"`
 	Nodes         int         `json:"nodes"`
 	NodesAnswered int         `json:"nodes_answered"`
 	Source        string      `json:"source"`
@@ -49,8 +51,8 @@ func auditQuery(r *http.Request) (service.AuditQuery, error) {
 }
 
 func (m *Module) writeAudit(w http.ResponseWriter, r *http.Request, p service.AuditPage, names bool) {
-	out := auditList{Items: make([]auditItem, 0, len(p.Items)), Total: p.Total, Nodes: p.Nodes,
-		NodesAnswered: p.Answered, Source: p.Source}
+	out := auditList{Items: make([]auditItem, 0, len(p.Items)), Total: p.Total, TotalMore: p.More,
+		Nodes: p.Nodes, NodesAnswered: p.Answered, Source: p.Source}
 	orgs := map[string]string{}
 	for _, e := range p.Items {
 		it := auditItem{Audit: e}

@@ -10,7 +10,7 @@ import { subscribe, liveRunner, announceUpdate, flashRows } from './live.js'
 
 export function tableMixin() {
   return {
-    items: [], total: 0, loading: true, loadError: '', q: '', sort: '', desc: false, offset: 0, limit: 10,
+    items: [], total: 0, totalMore: false, loading: true, loadError: '', q: '', sort: '', desc: false, offset: 0, limit: 10,
     extra: {}, scope: {}, apiUrl: '', noun: 'items', _timer: null, _seq: 0, _firstLoad: true,
     _root: null, _lastRes: '', _sigs: null, _live: null, _unlive: null, liveText: '',
 
@@ -47,6 +47,7 @@ export function tableMixin() {
         const keep = quiet ? this.focusMark() : null
         this.items = res.items.map((i) => this.transform(i))
         this.total = res.total
+        this.totalMore = !!res.total_more // the server stopped counting: there are more than total (the audit log)
         if (this.afterLoad) this.afterLoad(res)
         this.loading = false
         this.loadError = ''
@@ -141,16 +142,17 @@ export function tableMixin() {
     get from() { return this.total === 0 ? 0 : this.offset + 1 },
     get to() { return this.offset + this.items.length },
     get hasPrev() { return this.offset > 0 },
-    get hasNext() { return this.offset + this.limit < this.total },
+    get hasNext() { return this.totalMore || this.offset + this.limit < this.total },
     get noPrev() { return this.offset <= 0 },
-    get noNext() { return this.offset + this.limit >= this.total },
+    get noNext() { return !this.hasNext },
     get showPager() { return this.total > 0 },
-    get summary() { return 'Showing ' + this.from + '–' + this.to + ' of ' + this.total },
-    get pageLabel() { return 'Page ' + (Math.floor(this.offset / this.limit) + 1) + ' of ' + Math.max(1, Math.ceil(this.total / this.limit)) },
+    get totalText() { return this.total + (this.totalMore ? '+' : '') },
+    get summary() { return 'Showing ' + this.from + '–' + this.to + ' of ' + this.totalText },
+    get pageLabel() { return 'Page ' + (Math.floor(this.offset / this.limit) + 1) + ' of ' + Math.max(1, Math.ceil(this.total / this.limit)) + (this.totalMore ? '+' : '') },
     get statusText() {
       if (this.loading) return 'Loading ' + this.noun + '…'
       if (this.total === 0) return this.q ? 'No ' + this.noun + ' match “' + this.q + '”.' : 'No ' + this.noun + '.'
-      return this.total + ' ' + this.noun + (this.q ? ' match “' + this.q + '”' : '') + '. ' + this.pageLabel + '.'
+      return this.totalText + ' ' + this.noun + (this.q ? ' match “' + this.q + '”' : '') + '. ' + this.pageLabel + '.'
     },
     get busyAttr() { return this.loading ? 'true' : 'false' },
   }

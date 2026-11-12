@@ -175,9 +175,9 @@ func (ev *sshEval) user(ctx context.Context, id string) (*sshUser, error) {
 
 // load reads what reason needs of certificates certs that the evaluation has not read yet, together: their users
 // (loadUsers), then, in one read, the sign-ins the user certificates not revoked were issued under that were taken
-// back (model.SSHRevokedSignIn). The callers load the certificates they evaluate before the first, so that an
-// evaluation reads the application and the groups once, however many users it meets, and the sign-ins once; reason
-// loads what a certificate needs that is not read yet (after a load that failed).
+// back (model.SSHRevokedSignIn). The callers load the certificates they evaluate (a page of them) before the first,
+// so that an evaluation reads the application and the groups once a page, however many users it meets, and the
+// sign-ins once; reason loads what a certificate needs that is not read yet (after a load that failed).
 func (ev *sshEval) load(ctx context.Context, certs []*model.SSHCert) error {
 	if err := ev.loadUsers(ctx, sshCertUsers(certs)); err != nil {
 		return err
@@ -386,14 +386,28 @@ func (s *Service) sshCertsWhere(ctx context.Context, orgID string, filters ...st
 // search, a prefix, ignoring case; "": every one).
 func (s *Service) sshCertsSearch(ctx context.Context, orgID, search string, filters ...store.Filter) ([]*model.SSHCert, error) {
 	var out []*model.SSHCert
-	for after := ""; ; {
-		page, _, err := s.SSHCerts.List(ctx, store.ListQuery{Scope: orgID, Search: search, Filters: filters, After: after, Limit: 500})
-		if err != nil {
-			return nil, mapStore(err)
-		}
+	err := s.sshCertPages(ctx, orgID, search, filters, func(page []*model.SSHCert) error {
 		out = append(out, page...)
-		if len(page) < 500 {
-			return out, nil
+		return nil
+	})
+	return out, err
+}
+
+// sshCertPage is how many certificates sshCertPages reads at a time.
+const sshCertPage = 500
+
+// sshCertPages calls fn with the certificates sshCertsSearch returns, a page at a time, in id order.
+func (s *Service) sshCertPages(ctx context.Context, orgID, search string, filters []store.Filter, fn func([]*model.SSHCert) error) error {
+	for after := ""; ; {
+		page, _, err := s.SSHCerts.List(ctx, store.ListQuery{Scope: orgID, Search: search, Filters: filters, After: after, Limit: sshCertPage})
+		if err != nil {
+			return mapStore(err)
+		}
+		if err := fn(page); err != nil {
+			return err
+		}
+		if len(page) < sshCertPage {
+			return nil
 		}
 		after = page[len(page)-1].ID
 	}
@@ -407,11 +421,8 @@ func (s *Service) sshUserCerts(ctx context.Context, t *model.Tenant, userID stri
 	return s.sshCertsWhere(ctx, t.OrgID, store.Filter{Field: "tenant_id", Value: t.ID})
 }
 
-// sshHostCerts returns the host certificates of tenant t; only those revoked by hand when revoked is set.
-func (s *Service) sshHostCerts(ctx context.Context, t *model.Tenant, revoked bool) ([]*model.SSHCert, error) {
-	if revoked {
-		return s.sshCertsWhere(ctx, t.OrgID, store.Filter{Field: "revoked", Value: true}, store.Filter{Field: "host_tenant_id", Value: t.ID})
-	}
+// sshHostCerts returns the host certificates of tenant t.
+func (s *Service) sshHostCerts(ctx context.Context, t *model.Tenant) ([]*model.SSHCert, error) {
 	return s.sshCertsWhere(ctx, t.OrgID, store.Filter{Field: "host_tenant_id", Value: t.ID})
 }
 
@@ -421,7 +432,7 @@ func (s *Service) tenantCerts(ctx context.Context, t *model.Tenant) ([]*model.SS
 	if err != nil {
 		return nil, err
 	}
-	hosts, err := s.sshHostCerts(ctx, t, false)
+	hosts, err := s.sshHostCerts(ctx, t)
 	if err != nil {
 		return nil, err
 	}
@@ -439,19 +450,39 @@ func (s *Service) SSHRevoked(ctx context.Context, tenantID string) ([]SSHRevoked
 	if t.SSH == nil {
 		return nil, ErrNotFound
 	}
-	certs, err := s.tenantCerts(ctx, t)
-	if err != nil {
-		return nil, err
-	}
-	return s.sshRevokedOf(ctx, t, certs)
-}
-
-// sshRevokedOf evaluates certs, certificates of tenant t, into those revoked.
-func (s *Service) sshRevokedOf(ctx context.Context, t *model.Tenant, certs []*model.SSHCert) ([]SSHRevokedCert, error) {
 	ev, err := s.newSSHEval(ctx, t)
 	if err != nil {
 		return nil, err
 	}
+	users, err := s.sshRevokedWhere(ctx, ev, store.Filter{Field: "tenant_id", Value: t.ID})
+	if err != nil {
+		return nil, err
+	}
+	hosts, err := s.sshRevokedWhere(ctx, ev, store.Filter{Field: "host_tenant_id", Value: t.ID})
+	if err != nil {
+		return nil, err
+	}
+	return append(users, hosts...), nil
+}
+
+// sshRevokedWhere evaluates the certificates of ev's tenant that filters select (sshCertsWhere) into those revoked, a
+// page at a time: what is held at once is a page of certificates and those found revoked, not every certificate of
+// the tenant, which a list made every sshKRLTTL on every node would otherwise hold (a gigabyte for 100,000).
+func (s *Service) sshRevokedWhere(ctx context.Context, ev *sshEval, filters ...store.Filter) ([]SSHRevokedCert, error) {
+	var out []SSHRevokedCert
+	err := s.sshCertPages(ctx, ev.t.OrgID, "", filters, func(page []*model.SSHCert) error {
+		revoked, err := ev.revoked(ctx, page)
+		out = append(out, revoked...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// revoked evaluates certs, certificates of the evaluation's tenant, into those revoked.
+func (ev *sshEval) revoked(ctx context.Context, certs []*model.SSHCert) ([]SSHRevokedCert, error) {
 	now := time.Now()
 	// what reason reads: of the user certificates on the list's span, not revoked, whose CA key is kept
 	var live []*model.SSHCert
@@ -641,18 +672,19 @@ func (s *Service) sshBuildKRL(ctx context.Context, e *sshKRLEntry, tenantID stri
 	s.ssh.krlMu.Lock()
 	e.org = t.OrgID
 	s.ssh.krlMu.Unlock()
-	certs, err := s.sshUserCerts(ctx, t, "")
+	ev, err := s.newSSHEval(ctx, t)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	hosts, err := s.sshHostCerts(ctx, t, true)
+	revoked, err := s.sshRevokedWhere(ctx, ev, store.Filter{Field: "tenant_id", Value: t.ID})
 	if err != nil {
 		return nil, "", nil, err
 	}
-	revoked, err := s.sshRevokedOf(ctx, t, append(certs, hosts...))
+	hosts, err := s.sshRevokedWhere(ctx, ev, store.Filter{Field: "revoked", Value: true}, store.Filter{Field: "host_tenant_id", Value: t.ID})
 	if err != nil {
 		return nil, "", nil, err
 	}
+	revoked = append(revoked, hosts...)
 	keys, err := s.sshKeyRecords(ctx, t)
 	if err != nil {
 		return nil, "", nil, err
@@ -994,7 +1026,7 @@ func (s *Service) sshCertsMatching(ctx context.Context, t *model.Tenant, f SSHCe
 		case host && f.UserID != "": // a user has no host certificates
 			return nil, nil
 		case host:
-			return s.sshHostCerts(ctx, t, false)
+			return s.sshHostCerts(ctx, t)
 		case f.Host != nil || f.UserID != "":
 			return s.sshUserCerts(ctx, t, f.UserID)
 		}

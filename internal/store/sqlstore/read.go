@@ -237,18 +237,32 @@ func (s *Store) list(ctx context.Context, rd runner, kind model.Kind, q store.Li
 	case q.Limit <= 0:
 		res.Total = offset + n
 		if n == 0 && offset > 0 {
-			return res, s.count(ctx, rd, t, where, args, &res.Total)
+			return res, s.countMax(ctx, rd, t, where, args, q.CountMax, &res.Total)
 		}
 	case n < q.Limit && (n > 0 || offset == 0):
 		res.Total = offset + n // a short page is the last page
 	default:
-		return res, s.count(ctx, rd, t, where, args, &res.Total)
+		most := q.CountMax
+		if most > 0 {
+			most = max(most, offset+n) // a page past the bound is counted to its end
+		}
+		return res, s.countMax(ctx, rd, t, where, args, most, &res.Total)
 	}
 	return res, nil
 }
 
 func (s *Store) count(ctx context.Context, rd runner, t *table, where string, args []any, out *int) error {
-	return rd.queryRow(ctx, s.d.bind("SELECT COUNT(*) FROM "+t.name+" WHERE "+where), args...).Scan(out)
+	return s.countMax(ctx, rd, t, where, args, 0, out)
+}
+
+// countMax counts the rows that match where, stopping at most (store.ListQuery.CountMax; 0: every one): a COUNT
+// over a LIMIT reads at most that many rows, where a plain COUNT reads every match of a large table.
+func (s *Store) countMax(ctx context.Context, rd runner, t *table, where string, args []any, most int, out *int) error {
+	if most <= 0 {
+		return rd.queryRow(ctx, s.d.bind("SELECT COUNT(*) FROM "+t.name+" WHERE "+where), args...).Scan(out)
+	}
+	q := s.d.bind("SELECT COUNT(*) FROM (SELECT 1 AS one FROM " + t.name + " WHERE " + where + " LIMIT ?) bounded")
+	return rd.queryRow(ctx, q, append(args[:len(args):len(args)], most)...).Scan(out)
 }
 
 func (s *Store) Count(ctx context.Context, kind model.Kind, scope string) (int, error) {

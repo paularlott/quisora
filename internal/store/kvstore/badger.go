@@ -355,6 +355,9 @@ func page(t *badger.Txn, bucket string, p pageQuery, nowMs int64) ([]string, int
 			if p.NoTotal && p.Limit > 0 && len(out) >= p.Limit {
 				break // the page is full and nobody wants the rest counted
 			}
+			if p.CountMax > 0 && p.Limit > 0 && total >= max(p.CountMax, p.Offset+p.Limit) {
+				break // the page is full and the count has reached its bound
+			}
 		}
 		return nil
 	}()

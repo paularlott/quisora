@@ -187,9 +187,14 @@ type ListQuery struct {
 	// IDsOnly says only the records' ids are wanted: a backend that can answer from an index without loading the
 	// records (the key-value stores, for one indexed filter) returns records holding only Kind and ID. Use Table.IDs.
 	IDsOnly bool
+	// CountMax (0: no bound) lets a backend stop counting the matches once it has counted CountMax of them and the
+	// page: Total is then exact only below CountMax, and one of CountMax or more says there are at least that many.
+	// A listing of a scope too large to count on every page (the audit log) sets it, and shows "more than" past it.
+	CountMax int
 }
 
-// ListResult holds one page of a listing; Total counts every match ignoring Offset and Limit.
+// ListResult holds one page of a listing; Total counts every match ignoring Offset and Limit (but see
+// ListQuery.CountMax).
 type ListResult struct {
 	Records []*Record
 	Total   int
