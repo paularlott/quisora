@@ -83,8 +83,9 @@ func (s *Service) applyRole(ctx context.Context, u *model.User, role model.Role)
 }
 
 // legacySetUpByID is the record (a lock whose lease never runs out) saying that MarkLegacySetUpBy has gone through
-// every sign-in link once: it is not done again.
-const legacySetUpByID = "user-setupby-marked"
+// every sign-in link once: it is not done again. Its "-2" makes a store where the first pass ran (which marked only
+// links made by email or a first sign-in) go through them all again under the rule as it is now.
+const legacySetUpByID = "user-setupby-marked-2"
 
 // LegacySetUpBy is where MarkLegacySetUpBy has got to: the last sign-in link it went through.
 type LegacySetUpBy struct{ after string }
@@ -92,7 +93,8 @@ type LegacySetUpBy struct{ after string }
 // MarkLegacySetUpBy brings accounts from before the provider whose sign-in set up their credentials was recorded
 // (model.User.SetUpBy, which their records read as "") under the same rules as the rest: an account with no second
 // factor of its own (no authenticator app, no passkey), a live link to a provider that it did not connect itself
-// (made by email address or by the provider's first sign-in: its holder could sign in to the account) and a password
+// (any link but "connect", as promotion judges them in unchosenLinks: made by email address, by the provider's first
+// sign-in, by an administrator, or of unknown origin; its holder could sign in to the account) and a password
 // or a live API token records that provider, so that a promotion, or disconnecting the provider, resets its sign-in
 // (applyRole, removeWay). It goes through at most limit links from where m got to, and returns how many accounts it
 // marked and whether it has gone through them all; then it records that it has (legacySetUpByID) and does nothing
@@ -108,7 +110,7 @@ func (s *Service) MarkLegacySetUpBy(ctx context.Context, m *LegacySetUpBy, limit
 	seen := 0
 	all, err := walk(ctx, s.Identities, &m.after, func(l *model.Identity) (bool, error) {
 		seen++
-		if l.Via == "email" || l.Via == "provision" {
+		if l.Via != "connect" { // as unchosenLinks: every link the account did not connect itself
 			ok, err := s.markSetUpBy(ctx, l)
 			if err != nil {
 				return false, err

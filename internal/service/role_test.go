@@ -337,6 +337,8 @@ func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
 	want := map[*model.User]string{
 		account("byemail", "email", true, false, false):         prov.ID,
 		account("provisioned", "provision", false, false, true): prov.ID,
+		account("byadmin", "admin", true, false, false):         prov.ID,
+		account("unknown", "", true, false, false):              prov.ID,
 		account("ownapp", "email", true, true, false):           "",
 		account("connected", "connect", true, false, false):     "",
 		account("nothing", "email", false, false, false):        "",
@@ -350,7 +352,7 @@ func TestLegacyAccountsAreMarkedAndResetOnPromotion(t *testing.T) {
 		}
 		total += n
 	}
-	if total != 2 || runs < 3 {
+	if total != 4 || runs < 4 {
 		t.Fatalf("marked %d in %d runs", total, runs)
 	}
 	for u, by := range want {
