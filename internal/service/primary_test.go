@@ -68,11 +68,11 @@ func TestBackupRestoreKeepsThePrimaryOrg(t *testing.T) {
 		t.Fatalf("the sign-out did not count: %+v %v", before, err)
 	}
 	var buf bytes.Buffer
-	if _, err := backup.WriteWith(e.ctx, e.svc.Store, e.svc.Sealer, &buf, backup.Options{}); err != nil {
+	if _, err := backup.WriteWith(e.ctx, e.svc.Store, e.svc.Sealer, &buf, backup.Options{Password: "correct horse battery"}); err != nil {
 		t.Fatal(err)
 	}
 	st := memstore.New()
-	if _, err := backup.Restore(e.ctx, st, e.svc.Sealer, bytes.NewReader(buf.Bytes()), false, "", t.TempDir()); err != nil {
+	if _, err := backup.Restore(e.ctx, st, e.svc.Sealer, bytes.NewReader(buf.Bytes()), false, "correct horse battery", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	restored := service.New(e.svc.Cfg, st, e.svc.Sealer)

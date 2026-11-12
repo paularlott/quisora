@@ -2,7 +2,6 @@ package backup
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -59,7 +58,7 @@ func covGroup(t testing.TB, id, name string, mod func(*line)) string {
 	return covJSON(t, l)
 }
 
-// covStream assembles a gzip backup from raw lines with a trailer signed over them (unless the caller overwrites
+// covStream assembles an encrypted backup from raw lines with a trailer signed over them (unless the caller overwrites
 // the MAC through trailer): a damaged line then fails on its own account, not on the integrity check.
 func covStream(t testing.TB, s *secure.Sealer, first string, body []string, trailer func(*line)) []byte {
 	t.Helper()
@@ -76,13 +75,11 @@ func covStream(t testing.TB, s *secure.Sealer, first string, body []string, trai
 	if trailer != nil {
 		trailer(&tr)
 	}
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	_, _ = zw.Write([]byte(first + "\n" + strings.Join(append(body, covJSON(t, tr)), "\n") + "\n"))
-	if err := zw.Close(); err != nil {
+	out, err := Pack([]byte(first+"\n"+strings.Join(append(body, covJSON(t, tr)), "\n")+"\n"), covPassword)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return buf.Bytes()
+	return out
 }
 
 func TestVerifyRejectsDamagedRecordLines(t *testing.T) {
@@ -106,7 +103,7 @@ func TestVerifyRejectsDamagedRecordLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Verify(bytes.NewReader(covStream(t, s, h, tc.body, nil)), s, "")
+			_, err := Verify(bytes.NewReader(covStream(t, s, h, tc.body, nil)), s, covPassword)
 			if !errors.Is(err, ErrFormat) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want ErrFormat containing %q", err, tc.want)
 			}
@@ -117,7 +114,7 @@ func TestVerifyRejectsDamagedRecordLines(t *testing.T) {
 func TestVerifyHeaderAndTrailerDamage(t *testing.T) {
 	s := covSealer(t)
 	good := []string{covGroup(t, "g1", "a", nil)}
-	st, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, nil)), s, "")
+	st, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, nil)), s, covPassword)
 	if err != nil || st[model.KindGroup] != 1 {
 		t.Fatalf("a valid crafted backup: %v %v", st, err)
 	}
@@ -126,25 +123,24 @@ func TestVerifyHeaderAndTrailerDamage(t *testing.T) {
 		"wrong format":     covJSON(t, header{Format: "other", Version: version}),
 		"empty header obj": "{}",
 	} {
-		if _, err := Verify(bytes.NewReader(covStream(t, s, first, good, nil)), s, ""); !errors.Is(err, ErrFormat) {
+		if _, err := Verify(bytes.NewReader(covStream(t, s, first, good, nil)), s, covPassword); !errors.Is(err, ErrFormat) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// A stream that holds nothing: the first line cannot be read.
-	var empty bytes.Buffer
-	_ = gzip.NewWriter(&empty).Close()
-	if _, err := Verify(bytes.NewReader(empty.Bytes()), s, ""); !errors.Is(err, ErrFormat) {
+	empty, _ := Pack(nil, covPassword)
+	if _, err := Verify(bytes.NewReader(empty), s, covPassword); !errors.Is(err, ErrFormat) {
 		t.Errorf("empty stream: %v", err)
 	}
-	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, func(l *line) { l.Records = 5 })), s, ""); !errors.Is(err, ErrFormat) ||
+	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, func(l *line) { l.Records = 5 })), s, covPassword); !errors.Is(err, ErrFormat) ||
 		!strings.Contains(err.Error(), "trailer says 5") {
 		t.Errorf("wrong count: %v", err)
 	}
-	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, func(l *line) { l.MAC = "!!!" })), s, ""); !errors.Is(err, ErrFormat) {
+	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, func(l *line) { l.MAC = "!!!" })), s, covPassword); !errors.Is(err, ErrFormat) {
 		t.Errorf("bad mac: %v", err)
 	}
 	// Without a sealer only the structure is checked: a bad MAC passes, a bad count does not.
-	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, func(l *line) { l.MAC = "!!!" })), nil, ""); err != nil {
+	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), good, func(l *line) { l.MAC = "!!!" })), nil, covPassword); err != nil {
 		t.Errorf("structure-only check: %v", err)
 	}
 }
@@ -153,12 +149,12 @@ func TestVerifyHeaderAndTrailerDamage(t *testing.T) {
 func TestVerifyLongRecordLines(t *testing.T) {
 	s := covSealer(t)
 	long := covGroup(t, "g1", strings.Repeat("n", 200<<10), nil)
-	st, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), []string{long}, nil)), s, "")
+	st, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), []string{long}, nil)), s, covPassword)
 	if err != nil || st.Total() != 1 {
 		t.Fatalf("a 200 KB line: %v %v", st, err)
 	}
 	huge := covGroup(t, "g1", "x", func(l *line) { l.Data = strings.Repeat("A", maxLine+(64<<10)) })
-	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), []string{huge}, nil)), s, ""); !errors.Is(err, ErrFormat) {
+	if _, err := Verify(bytes.NewReader(covStream(t, s, covHeader(s), []string{huge}, nil)), s, covPassword); !errors.Is(err, ErrFormat) {
 		t.Fatalf("a line past maxLine: %v", err)
 	}
 }
@@ -169,7 +165,7 @@ func TestRestoreRefusesUniqueClash(t *testing.T) {
 	s := covSealer(t)
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "same", nil), covGroup(t, "g2", "same", nil)}, nil)
 	for _, force := range []bool{false, true} {
-		if _, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), force, "", t.TempDir()); !errors.Is(err, store.ErrConflict) {
+		if _, err := Restore(context.Background(), memstore.New(), s, bytes.NewReader(data), force, covPassword, t.TempDir()); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("clash (force %v): %v", force, err)
 		}
 	}
@@ -244,7 +240,7 @@ func TestWriteSnapshotChoices(t *testing.T) {
 	view := &countingReader{Reader: liveReader{base}}
 	st := snapshottingStore{failingStore{Store: base, snapshot: func() (store.Reader, error) { return view, nil }}}
 	var buf bytes.Buffer
-	if stats, err := WriteWith(ctx, st, s, &buf, Options{}); err != nil || stats[model.KindGroup] != 3 {
+	if stats, err := WriteWith(ctx, st, s, &buf, Options{Password: covPassword}); err != nil || stats[model.KindGroup] != 3 {
 		t.Fatalf("with a snapshot: %v %v", stats, err)
 	}
 	if view.lists == 0 || view.closes != 1 {
@@ -254,14 +250,14 @@ func TestWriteSnapshotChoices(t *testing.T) {
 	// A backend without a snapshot reads the live store.
 	st.snapshot = func() (store.Reader, error) { return nil, store.ErrNoSnapshot }
 	buf.Reset()
-	if stats, err := WriteWith(ctx, st, s, &buf, Options{}); err != nil || stats[model.KindGroup] != 3 {
+	if stats, err := WriteWith(ctx, st, s, &buf, Options{Password: covPassword}); err != nil || stats[model.KindGroup] != 3 {
 		t.Fatalf("no snapshot: %v %v", stats, err)
 	}
 
 	// Any other snapshot failure fails the backup: no silent fall back to a live read.
 	boom := errors.New("snapshot boom")
 	st.snapshot = func() (store.Reader, error) { return nil, boom }
-	if _, err := WriteWith(ctx, st, s, io.Discard, Options{}); !errors.Is(err, boom) || !strings.Contains(err.Error(), "snapshot") {
+	if _, err := WriteWith(ctx, st, s, io.Discard, Options{Password: covPassword}); !errors.Is(err, boom) || !strings.Contains(err.Error(), "snapshot") {
 		t.Fatalf("snapshot failure: %v", err)
 	}
 }
@@ -280,12 +276,12 @@ func TestLiveReaderForwards(t *testing.T) {
 func TestWriteStoreAndContextErrors(t *testing.T) {
 	s := covSealer(t)
 	boom := errors.New("list boom")
-	if _, err := WriteWith(context.Background(), failingStore{Store: memstore.New(), list: boom}, s, io.Discard, Options{}); !errors.Is(err, boom) {
+	if _, err := WriteWith(context.Background(), failingStore{Store: memstore.New(), list: boom}, s, io.Discard, Options{Password: covPassword}); !errors.Is(err, boom) {
 		t.Fatalf("list error: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := WriteWith(ctx, memstore.New(), s, io.Discard, Options{}); !errors.Is(err, context.Canceled) {
+	if _, err := WriteWith(ctx, memstore.New(), s, io.Discard, Options{Password: covPassword}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled: %v", err)
 	}
 }
@@ -298,7 +294,7 @@ func TestEmptyAndRestoreCountError(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "a", nil)}, nil)
-	if _, err := Restore(context.Background(), st, s, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, boom) {
+	if _, err := Restore(context.Background(), st, s, bytes.NewReader(data), false, covPassword, t.TempDir()); !errors.Is(err, boom) {
 		t.Fatalf("restore: %v", err)
 	}
 }
@@ -312,18 +308,18 @@ func TestRestoreSeekPutAndContextErrors(t *testing.T) {
 	data := covStream(t, s, covHeader(s), []string{covGroup(t, "g1", "a", nil)}, nil)
 	ctx := context.Background()
 	// read once, then restored from the private copy it was verified into: the caller's reader is never rewound
-	if _, err := Restore(ctx, memstore.New(), s, noSeek{bytes.NewReader(data)}, false, "", t.TempDir()); err != nil {
+	if _, err := Restore(ctx, memstore.New(), s, noSeek{bytes.NewReader(data)}, false, covPassword, t.TempDir()); err != nil {
 		t.Fatalf("a reader that cannot seek: %v", err)
 	}
 	boom := errors.New("put boom")
-	if _, err := Restore(ctx, failingStore{Store: memstore.New(), put: boom}, s, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, boom) ||
+	if _, err := Restore(ctx, failingStore{Store: memstore.New(), put: boom}, s, bytes.NewReader(data), false, covPassword, t.TempDir()); !errors.Is(err, boom) ||
 		!strings.Contains(err.Error(), "restore group g1") {
 		t.Fatalf("put: %v", err)
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
 	dst := memstore.New()
-	if _, err := Restore(cctx, dst, s, bytes.NewReader(data), false, "", t.TempDir()); !errors.Is(err, context.Canceled) {
+	if _, err := Restore(cctx, dst, s, bytes.NewReader(data), false, covPassword, t.TempDir()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled: %v", err)
 	}
 	if empty, _ := Empty(ctx, dst); !empty {

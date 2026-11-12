@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
@@ -32,8 +33,12 @@ func TestEncryptWriterRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := covSealer(t)
 	src := covStoreWithGroups(t, 3)
-	var plain bytes.Buffer
-	if _, err := WriteWith(ctx, src, s, &plain, Options{}); err != nil {
+	var first bytes.Buffer
+	if _, err := WriteWith(ctx, src, s, &first, Options{Password: covPassword}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := Decrypt(first.Bytes(), covPassword) // the gzip stream, to be encrypted again by EncryptWriter
+	if err != nil {
 		t.Fatal(err)
 	}
 	var enc bytes.Buffer
@@ -41,7 +46,7 @@ func TestEncryptWriterRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Write(plain.Bytes()); err != nil {
+	if _, err := w.Write(plain); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -53,7 +58,7 @@ func TestEncryptWriterRoundTrip(t *testing.T) {
 	if _, err := w.Write([]byte("x")); err == nil {
 		t.Fatal("write after close accepted")
 	}
-	if !PasswordProtected(enc.Bytes()) || PasswordProtected(enc.Bytes()[:4]) || PasswordProtected(plain.Bytes()) {
+	if !PasswordProtected(enc.Bytes()) || PasswordProtected(enc.Bytes()[:4]) || PasswordProtected(plain) {
 		t.Fatal("PasswordProtected")
 	}
 	dst := memstore.New()
@@ -106,9 +111,6 @@ func TestWriteWithPasswordWriterFailures(t *testing.T) {
 	st := covStoreWithGroups(t, 1)
 	if _, err := WriteWith(context.Background(), st, s, &failWriter{failAt: 1}, Options{Password: covPassword}); err == nil {
 		t.Fatal("header failure ignored")
-	}
-	if _, err := WriteWith(context.Background(), st, s, &failWriter{failAt: 1}, Options{}); err == nil {
-		t.Fatal("plain write failure ignored")
 	}
 }
 
@@ -191,4 +193,38 @@ func TestEncryptedBackupDamage(t *testing.T) {
 			t.Fatalf("with a password but no key: %v", err)
 		}
 	})
+}
+
+// There are no unencrypted backups: WriteWith needs a password, and a plain gzip stream is refused as not a backup.
+func TestUnencryptedBackupsRefused(t *testing.T) {
+	ctx := context.Background()
+	s := covSealer(t)
+	for _, pw := range []string{"", "short"} {
+		var buf bytes.Buffer
+		if _, err := WriteWith(ctx, covStoreWithGroups(t, 1), s, &buf, Options{Password: pw}); err == nil || buf.Len() != 0 {
+			t.Errorf("password %q: err %v, %d bytes written", pw, err, buf.Len())
+		}
+	}
+	var first bytes.Buffer
+	if _, err := WriteWith(ctx, covStoreWithGroups(t, 1), s, &first, Options{Password: covPassword}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := Decrypt(first.Bytes(), covPassword) // what an older build's --plain backup was: the bare gzip stream
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pw := range []string{"", covPassword} {
+		for name, sealer := range map[string]*secure.Sealer{"with a sealer": s, "without": nil} {
+			if _, err := Verify(bytes.NewReader(plain), sealer, pw); !errors.Is(err, ErrFormat) {
+				t.Errorf("Verify %s, password %q: %v", name, pw, err)
+			}
+		}
+		dst := memstore.New()
+		if _, err := Restore(ctx, dst, s, bytes.NewReader(plain), false, pw, t.TempDir()); !errors.Is(err, ErrFormat) {
+			t.Errorf("Restore, password %q: %v", pw, err)
+		}
+		if empty, _ := Empty(ctx, dst); !empty {
+			t.Error("a refused plain backup wrote records")
+		}
+	}
 }

@@ -2,10 +2,8 @@ package backup
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
 
@@ -25,18 +23,14 @@ func TestBackupVersionWindow(t *testing.T) {
 	if _, _, err := service.New(cfg, src, s).Bootstrap(ctx, "root@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	var plain bytes.Buffer
-	if _, err := WriteWith(ctx, src, s, &plain, Options{}); err != nil {
+	var plain bytes.Buffer // an encrypted backup, despite the name
+	if _, err := WriteWith(ctx, src, s, &plain, Options{Password: covPassword}); err != nil {
 		t.Fatal(err)
 	}
-	zr, _ := gzip.NewReader(&plain)
-	raw, _ := io.ReadAll(zr)
+	raw, _ := Unpack(plain.Bytes(), covPassword)
 	newer := bytes.Replace(raw, []byte(fmt.Sprintf(`"version":%d`, version)), []byte(`"version":99`), 1)
-	var gz bytes.Buffer
-	zw := gzip.NewWriter(&gz)
-	_, _ = zw.Write(newer)
-	_ = zw.Close()
-	if _, err := Verify(bytes.NewReader(gz.Bytes()), s, ""); err == nil || !strings.Contains(err.Error(), "not supported by this build") {
+	gz, _ := Pack(newer, covPassword)
+	if _, err := Verify(bytes.NewReader(gz), s, covPassword); err == nil || !strings.Contains(err.Error(), "not supported by this build") {
 		t.Fatalf("a newer backup: %v", err)
 	}
 }

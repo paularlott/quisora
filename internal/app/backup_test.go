@@ -29,14 +29,17 @@ func sqliteNode(t *testing.T, key string) *config.Config {
 	return c
 }
 
+// backupPassword is the password of every backup these tests write: there are no unencrypted backups.
+const backupPassword = "s3cret-passphrase"
+
 // populatedBackup starts a node, stops it, and takes its backup offline (quisora backup).
-func populatedBackup(t *testing.T, password string) (*config.Config, []byte, backup.Stats) {
+func populatedBackup(t *testing.T) (*config.Config, []byte, backup.Stats) {
 	t.Helper()
 	a, _, _ := startApp(t, "sqlite")
 	cfg := a.Cfg
 	a.Close()
 	var buf bytes.Buffer
-	stats, err := Backup(context.Background(), cfg, &buf, backup.Options{Password: password})
+	stats, err := Backup(context.Background(), cfg, &buf, backup.Options{Password: backupPassword})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +53,7 @@ func populatedBackup(t *testing.T, password string) (*config.Config, []byte, bac
 func TestOfflineCommandsNeedMasterKey(t *testing.T) {
 	ctx := context.Background()
 	c := sqliteNode(t, "")
-	if _, err := Backup(ctx, c, &bytes.Buffer{}, backup.Options{}); err == nil || !strings.Contains(err.Error(), "master_key is not set") {
+	if _, err := Backup(ctx, c, &bytes.Buffer{}, backup.Options{Password: backupPassword}); err == nil || !strings.Contains(err.Error(), "master_key is not set") {
 		t.Fatalf("backup without a key: %v", err)
 	}
 	if _, err := Restore(ctx, c, bytes.NewReader(nil), false, ""); err == nil || !strings.Contains(err.Error(), "master_key is not set") {
@@ -77,92 +80,90 @@ func TestOpenForCommandStoreLocked(t *testing.T) {
 	}
 }
 
-// Backup then Restore round trip, with and without a password, and every refusal leaves the node as it was.
+// Backup then Restore round trip, and every refusal leaves the node as it was.
 func TestBackupRestoreRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	for _, password := range []string{"", "s3cret-passphrase"} {
-		src, data, stats := populatedBackup(t, password)
-		key := src.Server.MasterKey
+	password := backupPassword
+	src, data, stats := populatedBackup(t)
+	key := src.Server.MasterKey
 
-		if password != "" {
-			dst := sqliteNode(t, key)
-			if _, err := Restore(ctx, dst, bytes.NewReader(data), false, "wrong"); err == nil {
-				t.Fatal("restore with the wrong password succeeded")
-			}
-			if _, err := os.Stat(filepath.Join(dst.Server.DataDir, restoreIncomplete)); err == nil {
-				t.Fatal("a refused restore left the incomplete marker")
-			}
-		}
-		// another master key: refused, nothing written
-		other := sqliteNode(t, base64.StdEncoding.EncodeToString(secure.RandomBytes(32)))
-		if _, err := Restore(ctx, other, bytes.NewReader(data), false, password); err == nil {
-			t.Fatal("restore under another master key succeeded")
-		}
-		if _, err := os.Stat(filepath.Join(other.Server.DataDir, restoreIncomplete)); err == nil {
-			t.Fatal("a refused restore left the incomplete marker")
-		}
-		// garbage
-		if _, err := Restore(ctx, other, bytes.NewReader([]byte("not a backup")), false, ""); err == nil {
-			t.Fatal("garbage restored")
-		}
-
-		file := filepath.Join(t.TempDir(), "q.bak")
-		if err := os.WriteFile(file, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		dst := sqliteNode(t, key)
-		f, err := os.Open(file) // an *os.File names itself in the audit note
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := Restore(ctx, dst, f, false, password)
-		f.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Total() != stats.Total() {
-			t.Fatalf("restored %d records, backed up %d", got.Total(), stats.Total())
-		}
-		dir := dst.Server.DataDir
-		if _, err := os.Stat(filepath.Join(dir, restoreIncomplete)); err == nil {
-			t.Fatal("incomplete marker left after a complete restore")
-		}
-		b, err := os.ReadFile(filepath.Join(dir, restoreAuditFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var notes []restoreNote
-		if err := json.Unmarshal(b, &notes); err != nil || len(notes) != 1 || notes[0].File != file ||
-			notes[0].Records != got.Total() || notes[0].Forced {
-			t.Fatalf("audit note %+v (%v)", notes, err)
-		}
-
-		// a second restore needs force
-		if _, err := Restore(ctx, dst, bytes.NewReader(data), false, password); !errors.Is(err, backup.ErrNotEmpty) {
-			t.Fatalf("restore over data: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(dir, restoreIncomplete)); err == nil {
-			t.Fatal("refused restore left the marker")
-		}
-		if _, err := Restore(ctx, dst, bytes.NewReader(data), true, password); err != nil {
-			t.Fatalf("forced restore: %v", err)
-		}
-		// both restores are noted until the node writes them to the audit log: the second does not replace the first
-		b, _ = os.ReadFile(filepath.Join(dir, restoreAuditFile))
-		notes = nil
-		if json.Unmarshal(b, &notes) != nil || len(notes) != 2 || notes[0].File != file || !notes[1].Forced || notes[1].File != "" {
-			t.Fatalf("notes after a forced restore %+v", notes)
-		}
+	dst := sqliteNode(t, key)
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, "wrong"); err == nil {
+		t.Fatal("restore with the wrong password succeeded")
 	}
+	if _, err := os.Stat(filepath.Join(dst.Server.DataDir, restoreIncomplete)); err == nil {
+		t.Fatal("a refused restore left the incomplete marker")
+	}
+	// another master key: refused, nothing written
+	other := sqliteNode(t, base64.StdEncoding.EncodeToString(secure.RandomBytes(32)))
+	if _, err := Restore(ctx, other, bytes.NewReader(data), false, password); err == nil {
+		t.Fatal("restore under another master key succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(other.Server.DataDir, restoreIncomplete)); err == nil {
+		t.Fatal("a refused restore left the incomplete marker")
+	}
+	// garbage
+	if _, err := Restore(ctx, other, bytes.NewReader([]byte("not a backup")), false, ""); err == nil {
+		t.Fatal("garbage restored")
+	}
+
+	file := filepath.Join(t.TempDir(), "q.bak")
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst = sqliteNode(t, key)
+	f, err := os.Open(file) // an *os.File names itself in the audit note
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Restore(ctx, dst, f, false, password)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Total() != stats.Total() {
+		t.Fatalf("restored %d records, backed up %d", got.Total(), stats.Total())
+	}
+	dir := dst.Server.DataDir
+	if _, err := os.Stat(filepath.Join(dir, restoreIncomplete)); err == nil {
+		t.Fatal("incomplete marker left after a complete restore")
+	}
+	b, err := os.ReadFile(filepath.Join(dir, restoreAuditFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []restoreNote
+	if err := json.Unmarshal(b, &notes); err != nil || len(notes) != 1 || notes[0].File != file ||
+		notes[0].Records != got.Total() || notes[0].Forced {
+		t.Fatalf("audit note %+v (%v)", notes, err)
+	}
+
+	// a second restore needs force
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, password); !errors.Is(err, backup.ErrNotEmpty) {
+		t.Fatalf("restore over data: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, restoreIncomplete)); err == nil {
+		t.Fatal("refused restore left the marker")
+	}
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), true, password); err != nil {
+		t.Fatalf("forced restore: %v", err)
+	}
+	// both restores are noted until the node writes them to the audit log: the second does not replace the first
+	b, _ = os.ReadFile(filepath.Join(dir, restoreAuditFile))
+	notes = nil
+	if json.Unmarshal(b, &notes) != nil || len(notes) != 2 || notes[0].File != file || !notes[1].Forced || notes[1].File != "" {
+		t.Fatalf("notes after a forced restore %+v", notes)
+	}
+
 }
 
 // Running `quisora restore` again over a store an interrupted run part-filled is refused (the store is not empty) and
 // keeps the incomplete marker: removing it would make the half-restored store servable.
 func TestRestoreRerunKeepsIncompleteMarker(t *testing.T) {
 	ctx := context.Background()
-	src, data, _ := populatedBackup(t, "")
+	src, data, _ := populatedBackup(t)
 	dst := sqliteNode(t, src.Server.MasterKey)
-	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, ""); err != nil {
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, backupPassword); err != nil {
 		t.Fatal(err)
 	}
 	// the state an interrupted run leaves: records in the store, the marker present
@@ -170,7 +171,7 @@ func TestRestoreRerunKeepsIncompleteMarker(t *testing.T) {
 	if err := os.WriteFile(marker, []byte("quisora restore\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, ""); !errors.Is(err, backup.ErrNotEmpty) {
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), false, backupPassword); !errors.Is(err, backup.ErrNotEmpty) {
 		t.Fatalf("rerun over a part-filled store: %v", err)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -185,7 +186,7 @@ func TestRestoreRerunKeepsIncompleteMarker(t *testing.T) {
 func TestRestoreAtStartRefusals(t *testing.T) {
 	ctx := context.Background()
 	log := logger.NewNullLogger()
-	src, data, _ := populatedBackup(t, "")
+	src, data, _ := populatedBackup(t)
 
 	c := sqliteNode(t, src.Server.MasterKey)
 	if err := restoreAtStart(ctx, c, nil, nil, log); err != nil { // no restore_from: nothing to do
@@ -207,7 +208,7 @@ func TestRestoreAtStartRefusals(t *testing.T) {
 	if err := os.WriteFile(file, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c.Server.RestoreFrom = file
+	c.Server.RestoreFrom, c.Server.RestorePassword = file, backupPassword
 	wrong, _ := newSealer(c, secure.RandomBytes(32))
 	if err := restoreAtStart(ctx, c, st, wrong, log); err == nil {
 		t.Fatal("restored under another master key")
@@ -232,6 +233,9 @@ func restoreConfig(t *testing.T, dataDir, from string) *config.Config {
 	c.Storage.Backend = "sqlite"
 	c.Limits.PasswordWorkers = 2
 	c.Server.RestoreFrom = from
+	if from != "" {
+		c.Server.RestorePassword = backupPassword
+	}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +248,7 @@ func TestRestoreFromAtStart(t *testing.T) {
 	ctx := context.Background()
 	src, _, _ := startApp(t, "sqlite")
 	var buf bytes.Buffer
-	if _, err := backup.WriteWith(ctx, src.Store, src.Svc.Sealer, &buf, backup.Options{}); err != nil { // as GET /api/backup does
+	if _, err := backup.WriteWith(ctx, src.Store, src.Svc.Sealer, &buf, backup.Options{Password: backupPassword}); err != nil { // as GET /api/backup does
 		t.Fatal(err)
 	}
 	file := filepath.Join(t.TempDir(), "quisora.bak")
@@ -316,13 +320,13 @@ func TestRestoreFromAtStart(t *testing.T) {
 // records that its data is the cluster's; over data it is refused, forced or not.
 func TestRestoreIntoGossipNodeSeedsItsPartitions(t *testing.T) {
 	ctx := context.Background()
-	src, data, stats := populatedBackup(t, "")
+	src, data, stats := populatedBackup(t)
 	dst := sqliteNode(t, src.Server.MasterKey)
 	dst.Cluster.Bind, dst.Cluster.Size = "127.0.0.1:1", 3
-	if _, err := Restore(ctx, dst, bytes.NewReader(data), true, ""); err == nil || !strings.Contains(err.Error(), "empty database") {
+	if _, err := Restore(ctx, dst, bytes.NewReader(data), true, backupPassword); err == nil || !strings.Contains(err.Error(), "empty database") {
 		t.Fatalf("a forced restore into a gossip node: %v", err)
 	}
-	got, err := Restore(ctx, dst, bytes.NewReader(data), false, "")
+	got, err := Restore(ctx, dst, bytes.NewReader(data), false, backupPassword)
 	if err != nil || got.Total() != stats.Total() {
 		t.Fatalf("restore: %v (%d of %d records)", err, got.Total(), stats.Total())
 	}

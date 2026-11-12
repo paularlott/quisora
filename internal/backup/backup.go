@@ -9,10 +9,10 @@
 // the master key: the header carries a check value derived from it, and a restore with a different key is refused
 // (the sealed data would be unreadable).
 //
-// By default the whole compressed stream is encrypted with AES-256-GCM under a key derived from a password (argon2id),
+// The whole compressed stream is always encrypted with AES-256-GCM under a key derived from a password (argon2id),
 // in authenticated chunks (a STREAM construction: a truncated, reordered or altered file is refused), so the backup
-// file reveals nothing — not even the names and addresses that are not sealed. Restore and Verify detect an encrypted
-// backup by its magic bytes.
+// file reveals nothing — not even the names and addresses that are not sealed. A stream that is not encrypted (it does
+// not start with the encryption magic bytes) is refused by Restore and Verify.
 //
 // The backup reads through the backend's point-in-time view (store.Snapshotter: every backend has one) and is a
 // consistent snapshot of the whole store. A store without one is read live, page by page: every record that existed
@@ -132,8 +132,8 @@ func (s Stats) Total() int {
 
 // Options adjust WriteWith.
 type Options struct {
-	// Password encrypts the backup with a key derived from it (see crypt.go). Every caller that writes sets it (at least
-	// MinPassword characters); only reading still accepts the unencrypted backups that older builds wrote with --plain.
+	// Password encrypts the backup with a key derived from it (see crypt.go). It is required, and at least MinPassword
+	// characters: there are no unencrypted backups.
 	Password string
 }
 
@@ -156,18 +156,16 @@ func WriteWith(ctx context.Context, st store.Store, sealer *secure.Sealer, w io.
 			return nil, fmt.Errorf("backup: snapshot: %w", err)
 		}
 	}
-	if opt.Password != "" {
-		ew, eerr := newEncWriter(w, opt.Password)
-		if eerr != nil {
-			return nil, eerr
-		}
-		defer func() {
-			if cerr := ew.Close(); err == nil {
-				err = cerr
-			}
-		}()
-		w = ew
+	ew, eerr := newEncWriter(w, opt.Password) // refuses a password shorter than MinPassword, an empty one included
+	if eerr != nil {
+		return nil, eerr
 	}
+	defer func() {
+		if cerr := ew.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	w = ew
 	zw := gzip.NewWriter(w)
 	bw := bufio.NewWriterSize(zw, 64<<10)
 	// One key for the whole file: the ring can be replaced while a backup runs (a master key reload), and the MAC and
@@ -310,23 +308,22 @@ func Empty(ctx context.Context, st store.Store) (bool, error) {
 // and (with a sealer) the MAC. fn may be nil.
 func read(r io.Reader, sealer *secure.Sealer, password string, fn func(line, *store.Record) error) (Stats, error) {
 	br0 := bufio.NewReader(r)
-	r = br0
-	if encrypted(br0) {
-		if password == "" {
-			if sealer == nil {
-				// Without the password (or the master key) only the encryption framing can be checked: every chunk
-				// present, the last one marked as such. The content is verified when it is restored.
-				return nil, checkFraming(br0)
-			}
-			return nil, ErrNeedPassword
-		}
-		dr, err := newPasswordDecReader(br0, password)
-		if err != nil {
-			return nil, err
-		}
-		r = dr
+	if !encrypted(br0) {
+		return nil, fmt.Errorf("%w: not an encrypted Quisora backup", ErrFormat)
 	}
-	zr, err := gzip.NewReader(r)
+	if password == "" {
+		if sealer == nil {
+			// Without the password (or the master key) only the encryption framing can be checked: every chunk
+			// present, the last one marked as such. The content is verified when it is restored.
+			return nil, checkFraming(br0)
+		}
+		return nil, ErrNeedPassword
+	}
+	dr, err := newPasswordDecReader(br0, password)
+	if err != nil {
+		return nil, err
+	}
+	zr, err := gzip.NewReader(dr)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrFormat, err)
 	}

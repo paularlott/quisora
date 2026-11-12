@@ -849,8 +849,7 @@ quisora restore quisora.bak                   # into the configured store, witho
 
 - An encrypted backup needs its password: `quisora restore` reads it as `quisora backup` does (`--password-file`, a
   pipe, or the terminal); `serve --restore-from` takes it from `server.restore_password` (`QUISORA_RESTORE_PASSWORD`).
-- Unencrypted backups written by older builds with `--plain` still restore (they need no password; new backups are always
-  encrypted).
+- Unencrypted backups from pre-release builds (written with `--plain`) are refused: every backup is encrypted.
 - Backups encrypted with the master key by earlier builds still restore, with no password, given that master key.
 
 - Ids and versions are kept, into any backend (a BadgerDB backup can go into PostgreSQL).

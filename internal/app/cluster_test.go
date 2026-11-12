@@ -105,9 +105,9 @@ func TestGossipBootstrapAndRestoreRefuseANodeThatWasInACluster(t *testing.T) {
 	if _, _, err := Bootstrap(ctx, c, logger.NewNullLogger()); err == nil || !strings.Contains(err.Error(), "already holds") {
 		t.Fatalf("bootstrap of a node that was in a cluster: %v", err)
 	}
-	src, data, _ := populatedBackup(t, "")
+	src, data, _ := populatedBackup(t)
 	c.Server.MasterKey = src.Server.MasterKey
-	if _, err := Restore(ctx, c, bytes.NewReader(data), false, ""); err == nil || !strings.Contains(err.Error(), "already holds") {
+	if _, err := Restore(ctx, c, bytes.NewReader(data), false, backupPassword); err == nil || !strings.Contains(err.Error(), "already holds") {
 		t.Fatalf("restore into a node that was in a cluster: %v", err)
 	}
 	// so is a restore at start (server.restore_from), before anything is written
@@ -115,7 +115,7 @@ func TestGossipBootstrapAndRestoreRefuseANodeThatWasInACluster(t *testing.T) {
 	if err := os.WriteFile(file, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c.Server.RestoreFrom = file
+	c.Server.RestoreFrom, c.Server.RestorePassword = file, backupPassword
 	stR, err := OpenStore(ctx, c)
 	if err != nil {
 		t.Fatal(err)

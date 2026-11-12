@@ -4,7 +4,6 @@ package backup_test
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,13 +22,13 @@ import (
 func TestDeepVerifyRejectsDamagedGzipFooter(t *testing.T) {
 	f := setup(t, 1)
 	var buf bytes.Buffer
-	if _, err := backup.WriteWith(f.ctx, f.src, f.sealer, &buf, backup.Options{}); err != nil {
+	if _, err := backup.WriteWith(f.ctx, f.src, f.sealer, &buf, backup.Options{Password: testPassword}); err != nil {
 		t.Fatal(err)
 	}
 	data := buf.Bytes()
 	for _, cut := range []int{1, 8} {
 		t.Run(string(rune('0'+cut)), func(t *testing.T) {
-			if _, err := backup.Verify(bytes.NewReader(data[:len(data)-cut]), f.sealer, ""); err == nil {
+			if _, err := backup.Verify(bytes.NewReader(data[:len(data)-cut]), f.sealer, testPassword); err == nil {
 				t.Fatalf("Verify accepted backup missing %d gzip footer bytes", cut)
 			}
 		})
@@ -51,21 +50,13 @@ func TestDeepBackupTrailerKeyRequirementsAuthenticated(t *testing.T) {
 	ring, _ := secure.NewKeyring(k2, k1)
 	only2, _ := secure.NewSealer(k2)
 	var buf bytes.Buffer
-	if _, err := backup.WriteWith(f.ctx, f.src, ring, &buf, backup.Options{}); err != nil {
+	if _, err := backup.WriteWith(f.ctx, f.src, ring, &buf, backup.Options{Password: testPassword}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2, ""); !errors.Is(err, backup.ErrKeyMissing) {
+	if _, err := backup.Verify(bytes.NewReader(buf.Bytes()), only2, testPassword); !errors.Is(err, backup.ErrKeyMissing) {
 		t.Fatalf("setup should require missing old key: %v", err)
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := io.ReadAll(zr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zr.Close()
+	raw := unpack(t, buf.Bytes())
 	lines := bytes.Split(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n"))
 	var trailer map[string]any
 	if err := json.Unmarshal(lines[len(lines)-1], &trailer); err != nil {
@@ -73,13 +64,8 @@ func TestDeepBackupTrailerKeyRequirementsAuthenticated(t *testing.T) {
 	}
 	delete(trailer, "sealed")
 	lines[len(lines)-1], _ = json.Marshal(trailer)
-	var altered bytes.Buffer
-	zw := gzip.NewWriter(&altered)
-	zw.Write(append(bytes.Join(lines, []byte("\n")), '\n'))
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := backup.Verify(bytes.NewReader(altered.Bytes()), only2, ""); err == nil {
+	altered := pack(t, append(bytes.Join(lines, []byte("\n")), '\n'))
+	if _, err := backup.Verify(bytes.NewReader(altered), only2, testPassword); err == nil {
 		t.Fatal("altering only the un-MACed trailer bypassed required-key verification")
 	}
 }
@@ -125,20 +111,16 @@ func TestRestoreWritesWhatItVerified(t *testing.T) {
 		t.Fatal(err)
 	}
 	forged := f.backup(t) // as the attacker's: the records first, the trailer's MAC broken
-	zr, _ := gzip.NewReader(bytes.NewReader(forged))
-	plain, _ := io.ReadAll(zr)
+	plain := unpack(t, forged)
 	lines := bytes.Split(bytes.TrimSuffix(plain, []byte("\n")), []byte("\n"))
 	var tr map[string]any
 	_ = json.Unmarshal(lines[len(lines)-1], &tr)
 	tr["mac"] = "AAAA"
 	lines[len(lines)-1], _ = json.Marshal(tr)
-	var gz bytes.Buffer
-	zw := gzip.NewWriter(&gz)
-	_, _ = zw.Write(append(bytes.Join(lines, []byte("\n")), '\n'))
-	_ = zw.Close()
+	gz := pack(t, append(bytes.Join(lines, []byte("\n")), '\n'))
 
 	dst := memstore.New()
-	if _, err := backup.Restore(f.ctx, dst, f.sealer, &changedFile{r: bytes.NewReader(verified), next: gz.Bytes()}, false, "", t.TempDir()); err != nil {
+	if _, err := backup.Restore(f.ctx, dst, f.sealer, &changedFile{r: bytes.NewReader(verified), next: gz}, false, testPassword, t.TempDir()); err != nil {
 		t.Fatalf("restoring the verified backup: %v", err)
 	}
 	if _, err := dst.Get(f.ctx, model.KindUser, injected.ID); err == nil {
@@ -181,7 +163,7 @@ func TestRestoreCopiesIntoTheDataDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &dirWatch{r: bytes.NewReader(data), dir: dir}
-	if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, w, false, "", dir); err != nil {
+	if _, err := backup.Restore(f.ctx, memstore.New(), f.sealer, w, false, testPassword, dir); err != nil {
 		t.Fatal(err)
 	}
 	copies := 0

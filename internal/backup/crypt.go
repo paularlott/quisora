@@ -32,11 +32,14 @@ const (
 	kdfLen      = saltLen + 4 + 4 + 1
 	chunkSize   = 64 << 10
 	maxChunkLen = chunkSize + 16 // plaintext plus the GCM tag
+)
 
-	// argon2id cost of a backup's key: once per backup and restore, so it can be high.
-	kdfTime    = 3
-	kdfMemory  = 64 * 1024 // KiB
-	kdfThreads = 4
+// argon2id cost of a backup's key: once per backup and restore, so it can be high. Variables so that tests can lower
+// it (export_test.go); the reader's bounds follow them.
+var (
+	kdfTime    uint32 = 3
+	kdfMemory  uint32 = 64 * 1024 // KiB
+	kdfThreads uint8  = 4
 )
 
 var (
