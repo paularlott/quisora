@@ -596,23 +596,25 @@ func (m *Module) setReauth(ctx context.Context, sessID string, gen uint64, at ti
 }
 
 // readReauth returns the security generation, the time and whether it used a second factor of a session's standing
-// re-authentication (a mark without that part, from before it was recorded, did not count as having used one).
+// re-authentication ("gen@unix@0|1", setReauth).
 func (m *Module) readReauth(ctx context.Context, sessID string) (gen uint64, at time.Time, secondFactor, ok bool) {
 	b, err := m.s.Eph.Get(ctx, nsReauth, sessID)
 	if err != nil {
 		return 0, time.Time{}, false, false
 	}
 	parts := strings.Split(string(b), "@")
+	if len(parts) != 3 {
+		return 0, time.Time{}, false, false
+	}
 	gen, err = strconv.ParseUint(parts[0], 10, 64)
 	if err != nil {
 		return 0, time.Time{}, false, false
 	}
-	if len(parts) > 1 {
-		if sec, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-			at = time.Unix(sec, 0)
-		}
+	sec, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, time.Time{}, false, false
 	}
-	return gen, at, len(parts) > 2 && parts[2] == "1", true
+	return gen, time.Unix(sec, 0), parts[2] == "1", true
 }
 
 // reauthed reports whether the session re-authenticated within reauthTTL against the account as it still is. A

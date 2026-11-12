@@ -110,8 +110,9 @@ func TestPartitionApplyFailureChangesNothing(t *testing.T) {
 	}
 }
 
-// A database made before the partition columns and state table existed gains them at open.
-func TestPartitionSchemaUpgrade(t *testing.T) {
+// A database made before the partition columns existed (an earlier pre-release build) is refused at open: there is
+// no conversion.
+func TestPartitionSchemaUpgradeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	s, dsn := openTest(t, "sqlite", "", 0)
 	for _, stmt := range []string{
@@ -123,24 +124,11 @@ func TestPartitionSchemaUpgrade(t *testing.T) {
 		}
 	}
 	s.Close()
-	s, err := Open(ctx, Config{Driver: "sqlite", DSN: dsn})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	u := mustRec(t, "o", "upgraded")
-	if err := s.ApplyPartition(ctx, 1, []*store.Record{u}, store.PartitionPos{Seq: 4}); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	if err := s.ExportPartition(ctx, 1, 0, func(store.PartitionPos) error { return nil }, func(r store.PartitionRecord) error {
-		n++
-		if r.Seq != 4 || r.Partition != "o" {
-			t.Errorf("exported %+v seq %d", r.Record, r.Seq)
+	if s, err := Open(ctx, Config{Driver: "sqlite", DSN: dsn}); err == nil || !strings.Contains(err.Error(), "incompatible pre-release build") {
+		if s != nil {
+			s.Close()
 		}
-		return nil
-	}); err != nil || n != 1 {
-		t.Fatalf("export after the upgrade: %d %v", n, err)
+		t.Fatalf("a database without the partition columns: %v", err)
 	}
 }
 

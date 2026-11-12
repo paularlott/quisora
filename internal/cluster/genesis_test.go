@@ -352,7 +352,7 @@ func TestStartNewClusterRefusesAFormedNode(t *testing.T) {
 	dir := t.TempDir()
 	st := memBackend().open(t, dir)
 	seedPlain(t, st, 0, 5)
-	state := []byte(`{"self":"` + st.FeedID() + `","intact":true,"genesis":"g","established":true}`) // (an older file's name for "formed")
+	state := []byte(`{"self":"` + st.FeedID() + `","intact":true,"genesis":"g","formed":true}`)
 	if err := os.WriteFile(filepath.Join(dir, "cluster-state.json"), state, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestStartNewClusterRefusesAFormedNode(t *testing.T) {
 		t.Fatalf("%d records seeded by a refused bootstrap", n)
 	}
 	if ps, trusted := readState(dir, st); !trusted || !ps.Formed {
-		t.Fatalf("an older file's \"established\" is not read as formed: %+v", ps)
+		t.Fatalf("the state does not read as formed: %+v", ps)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "cluster-state.json"))
 	if string(b) != string(state) {
@@ -373,7 +373,7 @@ func TestStartNewClusterRefusesAFormedNode(t *testing.T) {
 	// a state that never formed (a bootstrap run twice) is fine
 	var ps persisted
 	_ = json.Unmarshal(state, &ps)
-	ps.Formed, ps.LegacyEstablished = false, false
+	ps.Formed = false
 	b, _ = json.Marshal(ps)
 	if err := os.WriteFile(filepath.Join(dir, "cluster-state.json"), b, 0o600); err != nil {
 		t.Fatal(err)

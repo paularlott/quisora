@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -17,7 +18,7 @@ import (
 // Services must therefore tolerate zero values in newly added fields until a record is rewritten.
 func (s *Store) reconcile(ctx context.Context, ex execer) error {
 	d := s.d
-	for _, stmt := range s.partitionDDL() { // the partition state table of a database that predates it
+	for _, stmt := range s.partitionDDL() { // the partition protocol's own tables, as for any table that is missing
 		if _, err := ex.ExecContext(ctx, stmt); err != nil && !d.ignorableDDL(err) {
 			return fmt.Errorf("reconcile partition state: %w\n%s", err, stmt)
 		}
@@ -29,18 +30,14 @@ func (s *Store) reconcile(ctx context.Context, ex execer) error {
 			return fmt.Errorf("reconcile %s: %w", k, err)
 		}
 		stmts := t.ddl(d) // CREATE TABLE IF NOT EXISTS + indexes
-		if len(have) > 0 && (!have["epoch"] || !have["created_v"]) {
+		if len(have) > 0 && (!have["epoch"] || !have["created_v"] || slices.ContainsFunc(partColumns(d),
+			func(c struct{ name, def string }) bool { return !have[c.name] })) {
 			return fmt.Errorf("sqlstore: table %s was created by an earlier, incompatible pre-release build of Quisora "+
-				"(no epoch column): there is no conversion; drop the database and start clean (restore from a backup "+
-				"made by this build if needed)", t.name)
+				"(no epoch or partition columns): there is no conversion; drop the database and start clean (restore "+
+				"from a backup made by this build if needed)", t.name)
 		}
 		if len(have) > 0 {
 			var add []string
-			for _, c := range partColumns(d) { // a table from before partition replication gains its columns
-				if !have[c.name] {
-					add = append(add, "ALTER TABLE "+t.name+" ADD COLUMN "+c.name+" "+c.def)
-				}
-			}
 			for _, f := range t.fields {
 				if !have[strings.ToLower(f.Name)] {
 					add = append(add, "ALTER TABLE "+t.name+" ADD COLUMN "+d.quote(f.Name)+" "+d.colType(f))

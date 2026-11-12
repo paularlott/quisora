@@ -213,7 +213,7 @@ func TestHandleAuditAndAuditQueryStandalone(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := r.(*auditResp)
-	if !resp.Filtered || resp.Total != 2 || len(resp.Recs) != 2 {
+	if resp.Total != 2 || len(resp.Recs) != 2 {
 		t.Fatalf("%+v", resp)
 	}
 	if _, err := n.handleAudit(nil, badPacket(t)); err == nil {

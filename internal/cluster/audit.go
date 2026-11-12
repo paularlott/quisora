@@ -29,8 +29,7 @@ type auditReq struct {
 	// Offset is how many of this node's matching events, in the request's order, come before the ones asked for: a
 	// page cut short by the reply's size (auditResp.More) is followed by one that starts where it ended.
 	Offset int
-	// CountMax bounds the node's count of matching events (store.ListQuery.CountMax; 0: none, as from a node of an
-	// older build).
+	// CountMax bounds the node's count of matching events (store.ListQuery.CountMax; 0: none).
 	CountMax int
 }
 
@@ -49,9 +48,6 @@ type auditFilter struct {
 type auditResp struct {
 	Recs  [][]byte
 	Total int
-	// Filtered says the node applied the request's filters: a node of an older build ignores them and answers with
-	// unfiltered events, which are left out of the page (it counts as not answering).
-	Filtered bool
 	// More says the node had more of the events asked for than fit one reply (auditReplyBytes): ask again from
 	// the offset after the ones received.
 	More bool
@@ -112,7 +108,7 @@ func (n *Node) handleAudit(sender *gossip.Node, pkt *gossip.Packet) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	resp := &auditResp{Total: total, Filtered: true}
+	resp := &auditResp{Total: total}
 	size := 0
 	for _, r := range recs {
 		b, err := encodeRecord(r)
@@ -204,15 +200,14 @@ type auditAnswer struct {
 
 // askAudit asks one node for its first want events matching req, a reply at a time (the node cuts a reply by size:
 // auditResp.More). Events are kept once each, whatever shifts between the pages (a newer event pushes the later ones
-// down). A node that fails part-way, or of an older build that ignores the filters, does not count as answering.
+// down). A node that fails part-way does not count as answering.
 func (n *Node) askAudit(ctx context.Context, nd *gossip.Node, req auditReq, want int) (rp auditAnswer) {
 	seen := map[string]bool{}
 	for len(rp.recs) < want {
 		page := req
 		page.Offset, page.Limit = len(seen), want-len(seen)
 		var resp auditResp
-		if err := n.gc.SendToWithResponseContext(ctx, nd, msgAudit, &page, &resp); err != nil ||
-			(len(req.Filters) > 0 && !resp.Filtered) {
+		if err := n.gc.SendToWithResponseContext(ctx, nd, msgAudit, &page, &resp); err != nil {
 			return rp
 		}
 		rp.total = resp.Total

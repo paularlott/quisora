@@ -47,8 +47,6 @@ type persisted struct {
 	// from the founder alone (the protocol's formation rule); a node that adopts a data set starts unformed too. A formed
 	// node already holds a data set, and is never made the first node of a new one (CheckNewCluster).
 	Formed bool `json:"formed,omitempty"`
-	// LegacyEstablished is the name Formed had in earlier files ("established"): read as Formed, never written.
-	LegacyEstablished bool `json:"established,omitempty"`
 	// Starts counts this node's starts: raised, durably, at every start before the partition protocol runs (and kept in
 	// the database too). PeerStarts is the highest count this node has seen each peer publish. Together they find a node
 	// restored in place from a snapshot of itself (rollback.go). Starts only grows, whatever happens to the database;
@@ -65,7 +63,6 @@ func readState(dataDir string, st store.Store) (ps persisted, trusted bool) {
 	if err != nil || json.Unmarshal(b, &ps) != nil {
 		return persisted{}, false
 	}
-	ps.Formed, ps.LegacyEstablished = ps.Formed || ps.LegacyEstablished, false
 	return ps, ps.Self != "" && ps.Self == st.FeedID()
 }
 

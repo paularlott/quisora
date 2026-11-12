@@ -153,9 +153,8 @@ func TestSchemaVersionGuards(t *testing.T) {
 	}
 }
 
-// A database from before records carried a request id gains the column at open; its rows read with none, and a write
-// stores one.
-func TestReconcileAddsRequestColumn(t *testing.T) {
+// A database from before records carried a request id (an earlier pre-release build) is refused at open.
+func TestReconcileRefusesTableWithoutRequestColumn(t *testing.T) {
 	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
 		ctx := context.Background()
 		cfg := schemaDatabase(t, d)
@@ -163,30 +162,15 @@ func TestReconcileAddsRequestColumn(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rec := record(model.KindLink, "old", time.Time{}, "u/old")
-		if err := s.Put(ctx, rec); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := s.wdb.Exec("ALTER TABLE link_tokens DROP COLUMN req"); err != nil {
 			t.Fatal(err)
 		}
 		s.Close()
-		if s, err = Open(ctx, cfg); err != nil {
-			t.Fatal(err)
-		}
-		defer s.Close()
-		if have, err := s.columns(ctx, s.wdb, "link_tokens"); err != nil || !have["req"] {
-			t.Fatalf("columns after reconcile: %v %v", have, err)
-		}
-		if got, err := s.Get(ctx, model.KindLink, "old"); err != nil || got.Req != "" || got.Version != rec.Version {
-			t.Fatalf("a row from before the column: %v %+v", err, got)
-		}
-		next := record(model.KindLink, "old", time.Time{}, "u/old")
-		if err := s.Put(ctx, next); err != nil {
-			t.Fatal(err)
-		}
-		if got, err := s.Get(ctx, model.KindLink, "old"); err != nil || got.Req == "" {
-			t.Fatalf("a write after the column was added: %v %+v", err, got)
+		if s, err = Open(ctx, cfg); err == nil || !strings.Contains(err.Error(), "incompatible pre-release build") {
+			if s != nil {
+				s.Close()
+			}
+			t.Fatalf("a table without the request column: %v", err)
 		}
 	})
 }

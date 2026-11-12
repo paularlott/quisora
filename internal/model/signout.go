@@ -7,7 +7,6 @@ import "time"
 // works only while its stamp is still current: pulling the lever increments a counter, which ends at once everything
 // stamped before it. It is one small write, so it cannot be half done, and it does not depend on the nodes' clocks
 // (a credential made on a node that has not yet seen the new counter is stamped with the old one and ends too).
-// Records from before the counters existed carry zeros, which stay current until the first pull.
 
 // SignOutCounters are the counters of an organization, or of the server (kept on the primary organization).
 type SignOutCounters struct {

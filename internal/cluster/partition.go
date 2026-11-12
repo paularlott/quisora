@@ -230,7 +230,7 @@ func stateOf(ps store.PartitionState) (partition.State, error) {
 }
 
 // unpartitioned reports whether no partition has ever committed a write here: with records in the store, they were
-// written by something other than the partition protocol (an older build, a restore outside "quisora restore").
+// written by something other than the partition protocol (a restore outside "quisora restore").
 func (s *pstore) unpartitioned() bool {
 	for p := range partitions {
 		if s.states[p].Load().Committed.Seq > 0 {
