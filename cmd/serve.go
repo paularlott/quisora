@@ -42,10 +42,11 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if err != nil {
 				return err
 			}
-			// SIGHUP re-reads the configuration: the master keys and, when clustering, the cluster keys and the
-			// cluster size (rotations and resizes without restarts; docs/RUNNING.md). POST /api/cluster/reload does
-			// the same on every node at once. SIGHUP also loads the TLS certificate again (a renewed certificate is
-			// picked up within an hour anyway). Nothing else is reloaded.
+			// SIGHUP re-reads the configuration: the limits and server.deny_networks (tightened mid-attack without a
+			// restart, which would reset every counter), the master keys and, when clustering, the cluster keys and
+			// the cluster size (rotations and resizes without restarts; docs/RUNNING.md). POST /api/cluster/reload
+			// does the same on every node at once. SIGHUP also loads the TLS certificate again (a renewed certificate
+			// is picked up within an hour anyway). Nothing else is reloaded.
 			a.Node.SetReloader(reloader(c, a, log))
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
@@ -73,10 +74,12 @@ var reloadedSecrets = []string{"server.master_key", "server.previous_master_keys
 
 // reloader re-reads the configuration for a configuration reload (SIGHUP, or a cluster-wide reload): it parses the
 // command line, the environment and the config file again (read afresh) into a scratch configuration, through a
-// second command tree, and takes from it server.master_key and server.previous_master_keys, and when clustering
-// cluster.key, cluster.previous_keys, cluster.size and cluster.peers. Checking only reads them and asks whether they
-// can be applied; applying switches to them, master keys first. Values given on the command line cannot change while
-// the server runs and are left alone (the report says so).
+// second command tree, and takes from it the limits, server.deny_networks, server.master_key and
+// server.previous_master_keys, and when clustering cluster.key, cluster.previous_keys, cluster.size and
+// cluster.peers. Checking only reads them and asks whether they can be applied; applying switches to them, the
+// limits and denied networks first (they cannot fail), then the master keys. A file that does not parse, or any of
+// these that is not valid, fails the reload before anything is applied. Values given on the command line cannot
+// change while the server runs and are left alone (the report says so for the keys).
 func reloader(c *cli.Command, a *app.App, log logpkg.Logger) cluster.Reloader {
 	onCommandLine := func(names ...string) bool {
 		return slices.ContainsFunc(names, func(n string) bool { return c.FlagSource(n) == cli.SourceCommandLine })
@@ -95,6 +98,14 @@ func reloader(c *cli.Command, a *app.App, log logpkg.Logger) cluster.Reloader {
 		// Keys that name a secret store are read from it again now: rotating one is an edit there and a reload.
 		if err := secrets.Apply(ctx, fresh, reloadedSecrets...); err != nil {
 			return fail("secret stores", err)
+		}
+		limits, err := fresh.CheckedLimits()
+		if err != nil {
+			return fail("limits", err)
+		}
+		deny, err := fresh.DeniedNetworks()
+		if err != nil {
+			return fail("server.deny_networks", err)
 		}
 
 		var master string
@@ -139,6 +150,7 @@ func reloader(c *cli.Command, a *app.App, log logpkg.Logger) cluster.Reloader {
 			return fail("cluster size", fmt.Errorf("this node's configuration names %d nodes, the others %d", r.Size, want))
 		}
 
+		r.Changes = append(r.Changes, a.ApplyLimits(limits, deny)...)
 		if masterKeys {
 			before := a.Svc.Sealer.KeyIDs()
 			if err := a.ReloadMasterKeys(ctx, master, masterPrev); err != nil {

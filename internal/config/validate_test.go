@@ -48,6 +48,8 @@ func TestValidateMessages(t *testing.T) {
 		"notify on a wildcard without advertise": {notify("postgres", Notify{Bind: "0.0.0.0:7947", Peers: []string{"10.0.0.2:7947"}, Key: key(3)}), "cluster.notify.advertise is required"},
 		"listen":                                 {func(c *Config) { c.Server.Listen = "nope" }, "server.listen"},
 		"trust proxy":                            {func(c *Config) { c.Server.TrustProxy = []string{"x"} }, "trust_proxy"},
+		"deny network":                           {func(c *Config) { c.Server.DenyNetworks = []string{"10.0.0.0/8", "x"} }, "server.deny_networks \"x\""},
+		"deny every address":                     {func(c *Config) { c.Server.DenyNetworks = []string{"::/0"} }, "is every address"},
 		"public url path":                        {func(c *Config) { c.Server.PublicURL = "https://x/path" }, "server.public_url"},
 		"extra ca":                               {func(c *Config) { c.Server.ExtraCAFile = "/nonexistent/ca.pem" }, "ca.pem"},
 		"master key":                             {func(c *Config) { c.Server.MasterKey = "short" }, "server.master_key"},

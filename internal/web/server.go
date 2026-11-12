@@ -11,6 +11,7 @@ import (
 	stdlog "log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -63,8 +64,9 @@ type Server struct {
 	addr    string
 	certs   *certSource
 
-	lastProbe atomic.Int64 // unix nanos of the last GET /readyz: something is routing traffic by it
-	draining  atomic.Bool  // shutting down: /readyz answers 503
+	denied    atomic.Pointer[[]netip.Prefix] // server.deny_networks (SetDenyNetworks)
+	lastProbe atomic.Int64                   // unix nanos of the last GET /readyz: something is routing traffic by it
+	draining  atomic.Bool                    // shutting down: /readyz answers 503
 	stopOnce  sync.Once
 	stopping  chan struct{} // closed when the listener closes (Stopping)
 	closeOnce sync.Once
@@ -104,6 +106,8 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 	SetTrustedProxies(cfg.Server.TrustProxy)
 	s := &Server{Cfg: cfg, Svc: svc, Log: log, Eph: eph, Sessions: NewSessions(svc), Render: r, stopping: make(chan struct{}),
 		Site: SiteFromConfig(cfg), Mux: http.NewServeMux()}
+	deny, _ := cfg.DeniedNetworks() // config.Validate reports the bad ones
+	s.SetDenyNetworks(deny)
 	s.baseRoutes()
 	return s, nil
 }
@@ -117,9 +121,11 @@ func (s *Server) Use(mods ...Module) {
 
 // Handler returns the full middleware chain around the mux.
 func (s *Server) Handler() http.Handler {
-	// recoverer inside observe: a request that panics is answered 500 and is still logged and counted as one.
-	return requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
-		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(s.Cfg.Limits.MaxInFlight, limitBody(s.serveGate(s.Mux)))))))
+	// deny outside everything: a denied client costs nothing more. recoverer inside observe: a request that panics is
+	// answered 500 and is still logged and counted as one.
+	maxInFlight := func() int { return s.Cfg.LiveLimits().MaxInFlight }
+	return s.deny(requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
+		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(maxInFlight, limitBody(s.serveGate(s.Mux))))))))
 }
 
 // alwaysServed reports whether a path answers whatever the node's state: the probes and static files, which hold
@@ -288,7 +294,7 @@ const defaultLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 
 // Page builds the common page data for r.
 func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string, data any) *Page {
-	p := &Page{Site: s.Site, Title: title, Nav: nav, Data: data}
+	p := &Page{Site: s.site(), Title: title, Nav: nav, Data: data}
 	if u := User(r); u != nil {
 		p.User = u
 		p.CSRF = Session(r).CSRF

@@ -33,7 +33,7 @@ type Site struct {
 	Pictures     bool // users have profile pictures (server.disable_pictures off; an organization may still have none)
 	MCP          bool // organizations may switch their own MCP server on (server.disable_mcp off)
 	Clustered    bool // nodes replicate over gossip: super admins get the cluster page
-	PasswordMin  int  // limits.password_min_length: the forms say how long a password must be
+	PasswordMin  int  // limits.password_min_length as in force (Server.site): the forms say how long a password must be
 }
 
 // Page is the data every template receives; Data carries the page-specific values.
@@ -156,7 +156,13 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, p *Pag
 // SiteFromConfig builds the branding block.
 func SiteFromConfig(c *config.Config) Site {
 	s := Site{Name: c.UI.SiteName, Brand: c.UI.SiteName, DefaultTheme: c.UI.DefaultTheme, Footer: FooterHTML(c.UI.Footer), PublicURL: c.Server.PublicURL,
-		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled(), MCP: !c.Server.DisableMCP, Pictures: !c.Server.DisablePictures,
-		PasswordMin: c.Limits.PasswordMinLength}
+		LogoLight: "/branding/logo-light", LogoDark: "/branding/logo-dark", Mail: c.Mail.Enabled(), MCP: !c.Server.DisableMCP, Pictures: !c.Server.DisablePictures}
 	return s
+}
+
+// site is the server's branding block with the limits in force now (a configuration reload changes them).
+func (s *Server) site() Site {
+	st := s.Site
+	st.PasswordMin = s.Cfg.LiveLimits().PasswordMinLength
+	return st
 }

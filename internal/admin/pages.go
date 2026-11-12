@@ -218,9 +218,9 @@ type OrgDefaults struct {
 }
 
 func (m *Module) orgDefaults() OrgDefaults {
-	c := m.s.Cfg
-	return OrgDefaults{c.Limits.PasswordMinLength, c.Limits.LockoutAttempts, c.Limits.LockoutMinutes, c.Tokens.APITokenMaxDays,
-		c.Session.PrivilegedTTL, c.Session.PrivilegedIdle, c.Limits.GrantsPerUser}
+	c, l := m.s.Cfg, m.s.Cfg.LiveLimits()
+	return OrgDefaults{l.PasswordMinLength, l.LockoutAttempts, l.LockoutMinutes, c.Tokens.APITokenMaxDays,
+		c.Session.PrivilegedTTL, c.Session.PrivilegedIdle, l.GrantsPerUser}
 }
 
 func (m *Module) pageOrgs(w http.ResponseWriter, r *http.Request) {

@@ -137,7 +137,9 @@ var (
 	HTTPRequests = Default.NewCounter("quisora_http_requests_total", "HTTP requests answered, by status class.", "code")
 	HTTPDuration = Default.NewHistogram("quisora_http_request_duration_seconds", "Time to answer an HTTP request.",
 		0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
-	HTTPShed    = Default.NewCounter("quisora_http_shed_total", "Requests refused with 503 because too many were in progress.")
+	HTTPShed   = Default.NewCounter("quisora_http_shed_total", "Requests refused with 503 because too many were in progress.")
+	HTTPDenied = Default.NewCounter("quisora_http_denied_total",
+		"Requests refused with 403 because the client's address is in server.deny_networks (not in quisora_http_requests_total).")
 	AuditEvents = Default.NewCounter("quisora_audit_events_total",
 		"Audit events recorded, by action and outcome: login.failure, login.lockout, login.limited, "+
 			"oauth.refresh.reuse, oauth.code.replay, oauth.client_auth.limited and the others (docs/RUNNING.md).",

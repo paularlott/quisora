@@ -16,13 +16,14 @@ func (s *Service) PasswordMinLength(o *model.Org) int {
 	if o != nil && o.Settings.PasswordMinLength > 0 {
 		return o.Settings.PasswordMinLength
 	}
-	return s.Cfg.Limits.PasswordMinLength
+	return s.Cfg.LiveLimits().PasswordMinLength
 }
 
 // Lockout is how many wrong credentials lock an account of organization o (0: never) and for how long: its own,
 // else limits.lockout_attempts and limits.lockout_minutes.
 func (s *Service) Lockout(o *model.Org) (attempts int, window time.Duration) {
-	attempts, mins := s.Cfg.Limits.LockoutAttempts, s.Cfg.Limits.LockoutMinutes
+	l := s.Cfg.LiveLimits()
+	attempts, mins := l.LockoutAttempts, l.LockoutMinutes
 	if o != nil && o.Settings.LockoutAttempts > 0 {
 		attempts = o.Settings.LockoutAttempts
 	}
@@ -52,7 +53,7 @@ func (s *Service) GrantsPerUser(o *model.Org) int {
 	if o != nil && o.Settings.GrantsPerUser > 0 {
 		return o.Settings.GrantsPerUser
 	}
-	return s.Cfg.Limits.GrantsPerUser
+	return s.Cfg.LiveLimits().GrantsPerUser
 }
 
 // OrgPolicy returns organization id as stored now, for its policy: not the cached copy (Org), so a policy just changed

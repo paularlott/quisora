@@ -292,7 +292,7 @@ func (m *Module) methods(ctx context.Context, org *model.Org, tenantName, next s
 // closed: a counter that cannot be read or updated refuses (ok is false) and err says so, so that the refusal is
 // answered as "unavailable" and no limit is reported as tripped.
 func (m *Module) allow(r *http.Request, bucket string, k known) (ok bool, tripped string, uid string, err error) {
-	limit := int64(m.s.Cfg.Limits.LoginPerIPMin)
+	limit := int64(m.s.Cfg.LiveLimits().LoginPerIPMin)
 	if limit <= 0 {
 		return true, "", "", nil
 	}
@@ -365,7 +365,7 @@ func (m *Module) auditLimited(r *http.Request, bucket, limit, uid string) {
 	ctx := r.Context()
 	orgID := web.Org(r).ID
 	a := &service.Actor{IP: web.ClientIP(r), Name: "anonymous"}
-	detail := map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.Limits.LoginPerIPMin), "bucket": bucket}
+	detail := map[string]string{"limit": limit, "per_minute": strconv.Itoa(m.s.Cfg.LiveLimits().LoginPerIPMin), "bucket": bucket}
 	if uid != "" { // the budget of an account (a browser it signed in from): the account is the target
 		m.s.Svc.AuditUser(ctx, a, m.s.Svc.AuditTargetUser(ctx, orgID, uid), "login.limited", detail)
 		return

@@ -77,7 +77,7 @@ func (st Site) For(o *model.Org) Site {
 // siteFor is the site's branding for the pages of organization o (Site.For), with its skin (withSkin; preview is a
 // page's ?skin=) and the primary organization's footer when o has none of its own (else ui.footer).
 func (s *Server) siteFor(ctx context.Context, o *model.Org, preview string) Site {
-	st := s.withSkin(ctx, s.Site.For(o), o, preview)
+	st := s.withSkin(ctx, s.site().For(o), o, preview)
 	if o != nil && o.Branding.Footer != "" || o != nil && o.Primary {
 		return st
 	}

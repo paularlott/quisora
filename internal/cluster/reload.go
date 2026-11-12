@@ -10,8 +10,8 @@ import (
 )
 
 // A configuration reload re-reads every node's configuration file at once (ReloadCluster, behind POST
-// /api/cluster/reload) — the master keys, the cluster keys and the cluster size — so a key rotation or a change of
-// size reaches the whole cluster without a restart. The size changes by one node at a time (see CheckResize): any
+// /api/cluster/reload) — the limits and denied networks, the master keys, the cluster keys and the cluster size — so a
+// key rotation, a change of size or a tighter limit reaches the whole cluster without a restart. The size changes by one node at a time (see CheckResize): any
 // majority of the old size and any majority of the new one then share a node. The partition protocol carries the
 // cluster size in every message and ignores a node configured with another, so while the nodes disagree about it (a
 // reload takes a moment on every node) writes pause; they resume as soon as every node has the new size.

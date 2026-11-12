@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +44,10 @@ type Config struct {
 	Log     Log     `toml:"log" flag:"log"`
 	Metrics Metrics `toml:"metrics" flag:"metrics"`
 	Secrets Secrets `toml:"secrets" cmd:"serve bootstrap invite sign-out backup restore force-start"`
+
+	// reloaded holds the limits a configuration reload applied (SetLiveLimits), shared by copies of this Config: nil
+	// until one has, and Limits is in force.
+	reloaded *atomic.Pointer[Limits]
 }
 
 // Metrics configures GET /metrics (Prometheus). It is served only with a token: the counters say how the server is
@@ -62,6 +68,7 @@ type Server struct {
 	BootstrapAdmin       string   `toml:"bootstrap_admin" flag:"bootstrap-admin" cmd:"bootstrap" usage:"Email of the first super admin, created by the bootstrap command with the primary organization"`
 	AllowPrivateNetworks bool     `toml:"allow_private_networks" flag:"allow-private-networks" usage:"Let outbound calls to admin-supplied URLs (back-channel logout, jwks_uri, providers) reach every private address (a home lab)"`
 	AllowedNetworks      []string `toml:"allowed_networks" flag:"allowed-networks" usage:"Networks (CIDRs or IPs) outbound calls to admin-supplied URLs may reach although private: the internal providers and applications"`
+	DenyNetworks         []string `toml:"deny_networks" flag:"deny-networks" usage:"Client addresses (CIDRs or IPs, behind server.trust_proxy as it decides them) answered 403 before anything else but the probes and metrics; a reload (SIGHUP) applies a change"`
 	RestorePassword      string   `toml:"restore_password" flag:"restore-password" secret:"true" usage:"Password of the server.restore_from backup, when it is encrypted"`
 	RestoreFrom          string   `toml:"restore_from" flag:"restore-from" usage:"Backup file (quisora backup) loaded at start-up when the store is empty; ignored once it holds data, so it can stay set"`
 	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" cmd:"serve invite sign-out" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
@@ -235,12 +242,62 @@ func Default() *Config {
 		Storage: Storage{Backend: "badgerdb", BadgerDB: BadgerDB{SyncWrites: true}},
 		Tokens: Tokens{SigningAlg: "ES256", AccessTTL: 600, IDTokenTTL: 600, RefreshTTL: 30 * 86400, CodeTTL: 60,
 			KeyRotationDays: 30, APITokenMaxDays: 365},
-		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
-		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
-		Audit:   Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
-		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
-		Log:     Log{Level: "info", Format: "console", Access: true},
+		Session:  Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
+		Mail:     Mail{SMTPPort: 587, TLS: "starttls"},
+		Audit:    Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
+		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
+		Log:      Log{Level: "info", Format: "console", Access: true},
+		reloaded: new(atomic.Pointer[Limits]),
 	}
+}
+
+// LiveLimits returns the limits in force: Limits, until a configuration reload replaces them (SetLiveLimits). Every
+// limit read while the server runs is read here, at each use, so a reload changes it without a restart.
+func (c *Config) LiveLimits() Limits {
+	if l := c.reloaded.Load(); l != nil {
+		return *l
+	}
+	return c.Limits
+}
+
+// SetLiveLimits puts the limits l in force (a configuration reload; LiveLimits). Limits itself stays as read at
+// start-up.
+func (c *Config) SetLiveLimits(l Limits) { c.reloaded.Store(&l) }
+
+// CheckedLimits returns the limits, checked, for a reload, as MasterKeys does the master keys.
+func (c *Config) CheckedLimits() (Limits, error) {
+	return c.Limits, errors.Join(limitErrors(c.Limits)...)
+}
+
+// LimitChanges lists the limits that differ between from and to, as "limits.<key> <from> to <to>".
+func LimitChanges(from, to Limits) []string {
+	var out []string
+	f, t := reflect.ValueOf(from), reflect.ValueOf(to)
+	for i := range f.NumField() {
+		if a, b := f.Field(i).Int(), t.Field(i).Int(); a != b {
+			out = append(out, fmt.Sprintf("limits.%s %d to %d", f.Type().Field(i).Tag.Get("toml"), a, b))
+		}
+	}
+	return out
+}
+
+// DeniedNetworks returns server.deny_networks, parsed and checked: each an IP address or CIDR range, none of them
+// every address (that would refuse every client).
+func (c *Config) DeniedNetworks() ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	var errs []error
+	for _, s := range c.Server.DenyNetworks {
+		p, err := parseNetwork("server.deny_networks", s)
+		switch {
+		case err != nil:
+			errs = append(errs, err)
+		case p.Bits() == 0:
+			errs = append(errs, fmt.Errorf("server.deny_networks %q is every address", s))
+		default:
+			out = append(out, p)
+		}
+	}
+	return out, errors.Join(errs...)
 }
 
 // masterKeyErrors checks server.master_key and server.previous_master_keys.
@@ -353,6 +410,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("server.trust_proxy %q trusts every address: list your proxies' "+
 				"addresses or their network", p))
 		}
+	}
+	if _, err := c.DeniedNetworks(); err != nil {
+		errs = append(errs, err)
 	}
 	for _, s := range c.Server.AllowedNetworks {
 		if p, err := parseNetwork("server.allowed_networks", s); err != nil {
@@ -483,11 +543,6 @@ func (c *Config) Validate() error {
 	}
 	positive("server.shutdown_timeout", c.Server.ShutdownTimeout)
 	positive("tokens.access_ttl", c.Tokens.AccessTTL)
-	positive("limits.ephemeral_mb", c.Limits.EphemeralMB)
-	if n := c.Limits.PasswordMinLength; n < 8 || n > 64 {
-		errs = append(errs, fmt.Errorf("limits.password_min_length must be between 8 and 64 (NIST SP 800-63B: at least 8, "+
-			"and 15 where a password may be the only factor), not %d", n))
-	}
 	positive("tokens.id_token_ttl", c.Tokens.IDTokenTTL)
 	positive("tokens.refresh_ttl", c.Tokens.RefreshTTL)
 	positive("tokens.code_ttl", c.Tokens.CodeTTL)
@@ -509,17 +564,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	positive("audit.victorialogs_spool_max_mb", c.Audit.SpoolMaxMB)
-	positive("limits.max_in_flight", c.Limits.MaxInFlight)
-	nonNegative("limits.login_per_ip_min", c.Limits.LoginPerIPMin)
-	nonNegative("limits.lockout_attempts", c.Limits.LockoutAttempts)
-	nonNegative("limits.org_failures_per_minute", c.Limits.OrgFailuresPerMin)
-	nonNegative("limits.password_workers", c.Limits.PasswordWorkers)
-	if c.Limits.GrantsPerUser < MinGrantsPerUser || c.Limits.GrantsPerUser > MaxGrantsPerUser {
-		errs = append(errs, fmt.Errorf("limits.grants_per_user must be between %d and %d", MinGrantsPerUser, MaxGrantsPerUser))
-	}
-	if c.Limits.LockoutAttempts > 0 {
-		positive("limits.lockout_minutes", c.Limits.LockoutMinutes)
-	}
+	errs = append(errs, limitErrors(c.Limits)...)
 	if c.Tokens.CodeTTL > 600 {
 		errs = append(errs, errors.New("tokens.code_ttl must be at most 600 seconds (RFC 6749 §4.1.2)"))
 	}
@@ -579,6 +624,38 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// limitErrors checks the limits section.
+func limitErrors(l Limits) []error {
+	var errs []error
+	positive := func(name string, v int) {
+		if v <= 0 {
+			errs = append(errs, fmt.Errorf("%s must be greater than 0", name))
+		}
+	}
+	nonNegative := func(name string, v int) {
+		if v < 0 {
+			errs = append(errs, fmt.Errorf("%s must be 0 or more", name))
+		}
+	}
+	positive("limits.ephemeral_mb", l.EphemeralMB)
+	if n := l.PasswordMinLength; n < 8 || n > 64 {
+		errs = append(errs, fmt.Errorf("limits.password_min_length must be between 8 and 64 (NIST SP 800-63B: at least 8, "+
+			"and 15 where a password may be the only factor), not %d", n))
+	}
+	positive("limits.max_in_flight", l.MaxInFlight)
+	nonNegative("limits.login_per_ip_min", l.LoginPerIPMin)
+	nonNegative("limits.lockout_attempts", l.LockoutAttempts)
+	nonNegative("limits.org_failures_per_minute", l.OrgFailuresPerMin)
+	nonNegative("limits.password_workers", l.PasswordWorkers)
+	if l.GrantsPerUser < MinGrantsPerUser || l.GrantsPerUser > MaxGrantsPerUser {
+		errs = append(errs, fmt.Errorf("limits.grants_per_user must be between %d and %d", MinGrantsPerUser, MaxGrantsPerUser))
+	}
+	if l.LockoutAttempts > 0 {
+		positive("limits.lockout_minutes", l.LockoutMinutes)
+	}
+	return errs
 }
 
 // logoError checks a logo setting: empty (the built-in logo), an https URL, or an absolute path to a regular file.

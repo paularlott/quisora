@@ -51,7 +51,7 @@ type sprayState struct {
 // takes its record and audits the end (org.spray.end). A record that cannot be read is an error: the caller refuses
 // the attempt as charge does when its counter fails.
 func (m *Module) spray(ctx context.Context, org *model.Org) (sprayState, bool, error) {
-	if m.s.Cfg.Limits.OrgFailuresPerMin <= 0 {
+	if m.s.Cfg.LiveLimits().OrgFailuresPerMin <= 0 {
 		return sprayState{}, false, nil
 	}
 	st, err := readSpray(m.s.Eph.Get(ctx, nsSpray, org.ID))
@@ -100,7 +100,7 @@ func (m *Module) putSpray(ctx context.Context, org *model.Org, st sprayState) {
 // counter is the organization's alone) puts org under spray for a lockout time from now, and records the start
 // (org.spray.start) when it was not under one already.
 func (m *Module) sprayFailed(r *http.Request, org *model.Org) {
-	limit := int64(m.s.Cfg.Limits.OrgFailuresPerMin)
+	limit := int64(m.s.Cfg.LiveLimits().OrgFailuresPerMin)
 	if limit <= 0 {
 		return
 	}

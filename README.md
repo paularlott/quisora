@@ -134,7 +134,7 @@ release: [docs/RELEASE.md](docs/RELEASE.md). Reporting a vulnerability:
 | `/healthz`, `/readyz` | Liveness, and readiness for load balancers (with the clock offset and cluster state) |
 | `/metrics` | Prometheus metrics, with `metrics.token` as a bearer token ([Metrics](docs/RUNNING.md#metrics)) |
 | `/api-docs`, `/api/openapi.json` | The management API's reference and its OpenAPI document |
-| SIGHUP | Reload the master keys and, in a gossip cluster, the cluster key and size (read from the secret store again where they name one), and the TLS certificate, without a restart ([Rotating the master key](docs/RUNNING.md#rotating-the-master-key)) |
+| SIGHUP | Reload the limits and `server.deny_networks` without resetting any counter ([Limits and denied addresses](docs/RUNNING.md#limits-and-denied-addresses)), the master keys and, in a gossip cluster, the cluster key and size (read from the secret store again where they name one), and the TLS certificate, without a restart ([Rotating the master key](docs/RUNNING.md#rotating-the-master-key)). Each node reads its own file: signal every node |
 
 Behind a load balancer set `server.trust_proxy` to its addresses (the per-address limits and the audit log's
 addresses come from `X-Forwarded-For` only then), and `server.shutdown_drain` to how long it takes to stop sending

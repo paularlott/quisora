@@ -38,6 +38,27 @@ func TestRateLimit(t *testing.T) {
 	wantStatus(t, res, out, 200)
 }
 
+// A configuration reload that changes limits.login_per_ip_min applies at the next attempt, counted against the
+// attempts already made in the minute: tightening the limit mid-attack hands the attacker no fresh budget, and
+// loosening it lets the address in again at once.
+func TestRateLimitReloadKeepsCount(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 10; c.Limits.LockoutAttempts = 0 })
+	b := e.browser(t)
+	for i := 1; i <= 3; i++ {
+		res, out := b.login("primary", "admin", "wrong")
+		wantStatus(t, res, out, 401)
+	}
+	l := e.Cfg.LiveLimits()
+	l.LoginPerIPMin = 3
+	e.Cfg.SetLiveLimits(l)
+	res, out := b.login("primary", "admin", "wrong")
+	wantStatus(t, res, out, 429)
+	l.LoginPerIPMin = 10
+	e.Cfg.SetLiveLimits(l)
+	res, out = b.login("primary", "admin", "wrong") // the fifth attempt of the minute: within 10
+	wantStatus(t, res, out, 401)
+}
+
 // An organization's name in any case and its id are one address space: they share one per-IP bucket. An organization
 // that does not exist has no endpoints, so there is nothing for random names to mint buckets of.
 func TestRateLimitOrgNormalisation(t *testing.T) {

@@ -264,10 +264,14 @@ tripped it. An organization may set its own number of attempts and lockout time;
 
 **Signs of an attack in the metrics or the audit log** (bursts of `login.failure`, `login.limited`,
 `org.spray.start` ([password spraying](#lockout-and-password-spraying)), `oauth.client_auth.limited`,
-`api.request.refused`; any `apitoken.refused` with reason `wrong secret`, `oauth.refresh.reuse`, `oauth.code.replay`
-or `passkey.clone`): the event names the target and the address. Reuse and replay have already revoked the grant
-concerned; a cloned passkey has already been disabled and its sessions ended. Block the address upstream if the
-attack continues, and follow the account steps above for the targets.
+`api.request.refused`; any `apitoken.refused` with reason `wrong secret`,
+`oauth.refresh.reuse`, `oauth.code.replay` or `passkey.clone`): the event names the
+target and the address. Reuse and replay have already revoked the grant concerned; a cloned passkey has already been
+disabled and its sessions ended. If the attack continues, deny the address: add it to `server.deny_networks` in every
+node's config file and reload every node (SIGHUP, or **Reload configuration**), which refuses it with a bare 403 before
+any other work and keeps every rate-limit and lockout counter; tighten the limits the same way, by a reload rather than
+a restart ([under attack](RUNNING.md#under-attack)). Block many addresses upstream (a firewall, the proxy in front).
+Follow the account steps above for the targets.
 
 Keep the evidence: export the relevant audit events before their retention ends.
 

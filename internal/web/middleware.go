@@ -198,21 +198,18 @@ func limitBody(next http.Handler) http.Handler {
 	})
 }
 
-// shed rejects requests with 503 once max are in flight on this node.
-func shed(max int, next http.Handler) http.Handler {
-	if max <= 0 {
-		return next
-	}
+// shed rejects requests with 503 once max() are in flight on this node. max is read at each request, so a
+// configuration reload changes it (limits.max_in_flight) and the requests in flight stay counted.
+func shed(max func() int, next http.Handler) http.Handler {
 	// An atomic counter rather than a channel semaphore: every request passes here, and a channel's lock taken
 	// twice per request by every core is itself a bottleneck under load.
 	var inFlight atomic.Int64
-	limit := int64(max)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if unshed(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if inFlight.Add(1) > limit {
+		if inFlight.Add(1) > int64(max()) {
 			inFlight.Add(-1)
 			metrics.HTTPShed.Inc()
 			w.Header().Set("Retry-After", "1")
@@ -222,6 +219,52 @@ func shed(max int, next http.Handler) http.Handler {
 		defer inFlight.Add(-1)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// SetDenyNetworks sets the networks whose clients are refused (server.deny_networks; deny), at start-up and on a
+// configuration reload: the next request is checked against them.
+func (s *Server) SetDenyNetworks(nets []netip.Prefix) { s.denied.Store(&nets) }
+
+// DenyNetworks returns the networks whose clients are refused now (SetDenyNetworks).
+func (s *Server) DenyNetworks() []netip.Prefix {
+	if nets := s.denied.Load(); nets != nil {
+		return *nets
+	}
+	return nil
+}
+
+// deny answers a bare 403 to a client whose address (ClientIP, so behind server.trust_proxy the address the proxies
+// name) is in server.deny_networks, before any other work: no request id, no store or session read, no body read, no
+// access log line and no audit event, so a flood from it costs next to nothing and fills no log. It is counted
+// (quisora_http_denied_total). The probes and /metrics (behind its own token) are never refused: a load balancer or
+// Prometheus in a denied network still sees the node.
+func (s *Server) deny(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if nets := s.DenyNetworks(); len(nets) > 0 && !undenied(r.URL.Path) && inNetworks(nets, ClientIP(r)) {
+			metrics.HTTPDenied.Inc()
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// undenied reports whether a path answers a client in server.deny_networks too: the probes and the metrics.
+func undenied(p string) bool { return p == "/healthz" || p == "/readyz" || p == "/metrics" }
+
+// inNetworks reports whether address ip is in one of nets.
+func inNetworks(nets []netip.Prefix, ip string) bool {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	for _, p := range nets {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // unshed reports whether a path is exempt from load shedding: the liveness and readiness probes (a busy node must

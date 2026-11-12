@@ -12,6 +12,10 @@ data_dir = "/var/lib/quisora"             # required: everything this node keeps
 # previous_master_keys = []               # during a master key rotation only: the old key, until the log says the rotation is complete
                                           # (docs/RUNNING.md#rotating-the-master-key)
 # trust_proxy = ["10.0.0.0/8"]            # honour X-Forwarded-For only from these
+# deny_networks = []                      # client addresses (IPs or CIDRs, as trust_proxy decides them) answered a bare 403
+                                          # before any other work; /healthz, /readyz and /metrics still answer. A reload
+                                          # (SIGHUP) applies a change: edit every node's file and signal every node
+                                          # (docs/RUNNING.md#limits-and-denied-addresses)
 # bootstrap_admin = "admin@example.com"   # email of the first super admin (the sign-in name; default admin@example.com),
                                           # created by `quisora bootstrap` with the primary organization (which
                                           # requires a second factor). The admin has no password: bootstrap prints the
@@ -105,8 +109,10 @@ tokens = false                            # also record every refresh and client
 # victorialogs_url = "http://victorialogs:9428"   # send audit events there instead, and read the audit pages from it
 # victorialogs_spool_max_mb = 256        # most disk the spool (<data_dir>/auditspool) may use; past it the oldest events go
 
+# A reload (SIGHUP, on every node: each reads its own file) applies these without a restart and without resetting
+# any counter, except password_workers and ephemeral_mb, which need a restart (docs/RUNNING.md#limits-and-denied-addresses).
 [limits]
-max_in_flight = 4096                      # concurrent requests per node before 503
+max_in_flight = 4096                     # concurrent requests per node before 503
 login_per_ip_min = 300                    # sign-in attempts per organization and IP per minute (per account for a browser that has signed in to it before)
 lockout_attempts = 10                     # failed passwords before an account is locked
 lockout_minutes = 15
