@@ -224,6 +224,97 @@ func TestPromotionKeepsCredentialsOfTheAccountsOwn(t *testing.T) {
 	}
 }
 
+// A personal API token made, or another sign-in provider connected, from a sign-in through a provider while the
+// account has no second factor of its own is that provider's too: it is recorded on the account in the write that
+// makes it, and a promotion that takes the provider's link ends it (the reset's new credential epoch). With a second
+// factor of the account's own nothing is recorded, and the promotion leaves them.
+func TestPromotionTakesTokensAndProvidersAProviderSetUp(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ownFactor bool
+		token     bool // make an API token; otherwise connect another provider
+	}{
+		{"token, no second factor", false, true},
+		{"connected provider, no second factor", false, false},
+		{"token, own second factor", true, true},
+		{"connected provider, own second factor", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			u := newUpEnv(t, nil)
+			u.setSettings(t, u.org, allowAPITokens)
+			p := u.oidcProvider(t, nil)
+			other := u.oidcProvider(t, func(in *service.ProviderInput) { in.Name, in.AutoProvision = ptr("Other SSO"), ptr(false) })
+			b := u.browser(t)
+			res := b.via(t, u, p, "acme", "", claims("sub-1", "pat@corp.example"))
+			if !strings.Contains(res.Header.Get("Location"), "/account") {
+				t.Fatalf("first sign-in: %q", res.Header.Get("Location"))
+			}
+			pat, err := u.Svc.FindUserByEmail(ctx, u.org.ID, "pat@corp.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.ownFactor {
+				secret := u.giveTOTP(t, pat) // set up outside any provider's sign-in
+				b = u.browser(t)
+				res = b.via(t, u, p, "acme", "/x", claims("sub-1", "pat@corp.example"))
+				_, body := b.get(res.Header.Get("Location"))
+				res2, out := b.post("/api-internal/login/totp", map[string]any{"ticket": attr(body, "data-ticket"), "code": totpAt(secret, time.Now())})
+				wantStatus(t, res2, out, 200)
+			}
+			sessionCSRF(t, b)
+			var plain string
+			if tc.token {
+				b.markReauth()
+				res2, out := b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}})
+				wantStatus(t, res2, out, 201)
+				plain = str(out, "token")
+			} else {
+				authURL := u.connectURL(t, b, other)
+				if loc := u.connectCallback(t, b, other, authURL, claims("other-sub", "pat@elsewhere.example")); loc != u.at("/account?provider=connected#providers") {
+					t.Fatalf("connect callback: %q", loc)
+				}
+			}
+			set, err := u.Svc.Users.Get(ctx, pat.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]string{false: p.ID, true: ""}[tc.ownFactor]; set.SetUpBy != want {
+				t.Errorf("set up by %q, want %q", set.SetUpBy, want)
+			}
+
+			if _, err := u.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := u.Svc.Users.Get(ctx, pat.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.ownFactor != (fresh.CredEpoch == set.CredEpoch) {
+				t.Errorf("after the promotion: same epoch %v", fresh.CredEpoch == set.CredEpoch)
+			}
+			if tc.token {
+				if _, _, err := u.Svc.ValidateAPIToken(ctx, plain); tc.ownFactor != (err == nil) {
+					t.Fatalf("the token after the promotion: %v", err)
+				}
+				return
+			}
+			// (the reset's tidying may have deleted the link already)
+			id, err := u.Svc.Identities.GetByUnique(ctx, model.IdentityKey(other.ID, "other-sub"))
+			if counts := err == nil && fresh.Counts(id); tc.ownFactor != counts {
+				t.Errorf("the connected provider counts %v after the promotion: %v", counts, err)
+			}
+			if tc.ownFactor {
+				return
+			}
+			b2 := u.browser(t)
+			if loc := b2.via(t, u, other, "acme", "/x", claims("other-sub", "pat@elsewhere.example")).Header.Get("Location"); !strings.Contains(loc, "error=") || b2.hasSession() {
+				t.Fatalf("the provider connected through the other one still signs in: %q session=%v", loc, b2.hasSession())
+			}
+		})
+	}
+}
+
 // The sign-in page shows the step a provider sign-in left only while its ticket still binds to the account, as every
 // step's POST checks: after a promotion (or any change of what signs the account in) the page is the sign-in form to
 // start again from, with the message a POST would give, and not the enrolment the ticket was at.

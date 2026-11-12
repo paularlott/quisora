@@ -594,9 +594,10 @@ func (s *Service) createUser(ctx context.Context, u *model.User, links []*model.
 
 // LinkExisting links a new way into user userID's existing account (a sign-in provider's identity matched by email
 // address): link makes the identity, and it is created in the one write that moves the account's security generation
-// on (what is in flight for the account ends), only while allow passes on the account as that write finds it. A change
-// of the account committed meanwhile (a promotion, say) makes the write stale, and allow is asked again on the newer
-// copy, so the account is never linked on a judgement of a copy it has moved past. replace names identities the new
+// on (what is in flight for the account ends), only while allow passes on the account as that write finds it; allow
+// may also change that copy, and the write records it (model.User.SetUpBy, for a connection). A change of the account
+// committed meanwhile (a promotion, say) makes the write stale, and allow is asked again on the newer copy, so the
+// account is never linked on a judgement of a copy it has moved past. replace names identities the new
 // one replaces (an earlier link of the account to the provider, one of the provider's former authority holding the
 // subject): they are deleted in the same write, so nothing is removed unless the link is made, and the new identity
 // may take a subject one of them held.

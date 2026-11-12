@@ -161,11 +161,14 @@ func (m *Module) connectFinish(w http.ResponseWriter, r *http.Request, res *upst
 	// a credential changed at any point since, even between the check above and this write, refuses it, and nothing is
 	// linked or replaced. A change of the account that leaves the generation alone (its profile, say) makes the write
 	// stale, and it is tried again on the newer copy (service.LinkExisting), so such an edit does not fail the link.
-	fresh, err := m.s.Svc.LinkExisting(ctx, u.ID, func(cur *model.User) error {
+	// Connected from a sign-in through a provider while the account has no second factor of its own, it is recorded as
+	// that provider's in the same write (setUpBy), as a password set up then is.
+	fresh, err := m.s.Svc.LinkExisting(ctx, u.ID, func(cur *model.User) (err error) {
 		if cur.SecurityGen != res.ConnectGen {
 			return errSecurityChanged
 		}
-		return nil
+		cur.SetUpBy, err = m.setUpBy(ctx, cur, sess.Provider)
+		return err
 	}, func(cur *model.User) *model.Identity {
 		return model.NewIdentity(cur, res.Provider, res.Claims.Subject, res.Claims.Email, "connect")
 	}, replace...)

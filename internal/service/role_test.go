@@ -145,6 +145,49 @@ func TestPromotionResetsCredentialsAProviderSetUp(t *testing.T) {
 	}
 }
 
+// An API token made for a provider's sign-in while the account had no second factor of its own
+// (APITokenInput.SetUpBy) records the provider on the account in the write that makes it, and a promotion that leaves
+// the account without that provider ends the token. One made without it records nothing and stays.
+func TestPromotionEndsTokenAProviderSetUp(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setUp bool
+	}{{"made through the provider", true}, {"the account's own", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.setAPITokens(e.primary.ID, model.APITokensEveryone)
+			u := e.user(e.primary.ID, "pat", model.RoleUser)
+			prov, err := e.svc.CreateProvider(e.ctx, service.System, e.primary.ID, goodProvider("sso"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.svc.Identities.Create(e.ctx, model.NewIdentity(e.fresh(u), prov, "sub-1", u.Email, "email")); err != nil {
+				t.Fatal(err)
+			}
+			in := service.APITokenInput{Name: "ci", Scopes: []string{service.ScopeAPI}}
+			if tc.setUp {
+				in.SetUpBy = prov.ID
+			}
+			_, plain, err := e.svc.CreateAPIToken(e.ctx, actor(e.fresh(u)), in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := e.fresh(u); got.SetUpBy != in.SetUpBy {
+				t.Errorf("set up by %q, want %q", got.SetUpBy, in.SetUpBy)
+			}
+			if _, _, err := e.svc.ValidateAPIToken(e.ctx, plain); err != nil {
+				t.Fatalf("the new token: %v", err)
+			}
+			if _, err := e.svc.UpdateUser(e.ctx, service.System, u.ID, service.UserInput{Role: ptr(model.RoleManager)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := e.svc.ValidateAPIToken(e.ctx, plain); tc.setUp == (err == nil) {
+				t.Fatalf("the token after the promotion: %v", err)
+			}
+		})
+	}
+}
+
 // A promotion whose outcome is unknown (it may have landed, and a rerun finds nothing left to change) finishes the same
 // way: the links nobody chose go.
 func TestPromotionOfUnknownOutcomeDropsEmailLinks(t *testing.T) {

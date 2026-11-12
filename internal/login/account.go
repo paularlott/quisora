@@ -1447,6 +1447,13 @@ func (m *Module) createToken(w http.ResponseWriter, r *http.Request, a acct) {
 		writeErr(w, http.StatusForbidden, "Sign in again with your second factor to create an API token.", "mfa")
 		return
 	}
+	// A token is a way into the account, as a password is: one made from a sign-in through a provider while the
+	// account has no second factor of its own is recorded as that provider's (setUpBy), in the write that makes it.
+	var err error
+	if in.SetUpBy, err = m.setUpBy(r.Context(), a.u, a.sess.Provider); err != nil {
+		m.internalError(w, r, "count passkeys", err)
+		return
+	}
 	t, plain, err := m.s.Svc.CreateAPIToken(r.Context(), a.actor, in)
 	if err != nil {
 		web.WriteError(w, err)

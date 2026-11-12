@@ -50,6 +50,10 @@ type APITokenInput struct {
 	Audience []string `json:"audience"`
 	// AppScopes (api scope only) narrows the token to some of its applications' own scopes; empty: full access.
 	AppScopes []string `json:"app_scopes"`
+	// SetUpBy goes with a token made from the account page for a sign-in through this provider while the account has
+	// no second factor of its own: it is recorded on the account (model.User.SetUpBy) in the write that makes the
+	// token. Never read from a request body.
+	SetUpBy string `json:"-"`
 }
 
 // APITokenUpdate changes a token's name, applications or scopes; nil leaves a field as it is. The secret, the
@@ -195,8 +199,25 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	if t.Stamp, err = s.apiTokenStamp(ctx, a.OrgID); err != nil {
 		return nil, "", mapStore(err)
 	}
+	create := func() error { return s.APITokens.Create(ctx, t) }
+	if in.SetUpBy != "" && owner.SetUpBy == "" {
+		// The account records the provider in the transaction that makes the token, a compare-and-swap of the user
+		// tried again over a concurrent change: a promotion that leaves the account without that provider then ends
+		// the token with the rest of what the provider's sign-in set up (applyRole). The token keeps the epoch read
+		// above, so a reset of the account's sign-in meanwhile ends it all the same.
+		create = func() error {
+			_, err := s.modifyUserWith(ctx, owner.ID, func(u *model.User) ([]store.Op, error) {
+				if u.SetUpBy == "" {
+					u.SetUpBy = in.SetUpBy
+				}
+				rec, err := store.Encode(t)
+				return []store.Op{{Rec: rec, Match: true}}, err
+			})
+			return err
+		}
+	}
 	if err := s.audited(ctx, a, a.OrgID, "apitoken.create", name, map[string]string{"scopes": strings.Join(in.Scopes, " ")},
-		func() error { return s.APITokens.Create(ctx, t) }); err != nil {
+		create); err != nil {
 		return nil, "", mapStore(err)
 	}
 	return t, plain, nil
