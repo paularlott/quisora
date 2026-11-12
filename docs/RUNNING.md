@@ -165,6 +165,7 @@ TLS, the proxy's configuration decides.
 | `limits.login_per_ip_min`     | 300     | Sign-in attempts per organization and address per minute (three times it per address across organizations; a browser that signed in to the account before counts against the account's own) | Next attempt         |
 | `limits.lockout_attempts`     | 10      | Failed passwords before an account is locked (0: never)                                                | Next attempt         |
 | `limits.lockout_minutes`      | 15      | How long the lock lasts                                                                                | Next attempt         |
+| `limits.org_failures_per_minute` | 100  | Failed passwords per organization per minute before it counts as [under a spray](SECURITY.md#lockout-and-password-spraying) and limits failures per address too (0: never) | Next attempt         |
 | `limits.password_min_length`  | 15      | Shortest password accepted (8 to 64)                                                                   | Next password set    |
 | `limits.grants_per_user`      | 1000    | Refresh grants one user may hold                                                                       | Next grant           |
 | `limits.password_workers`     | CPUs    | Passwords hashed at once                                                                               | Restart only         |

@@ -365,6 +365,11 @@ func TestDiscoveryFailureIsShared(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("abandoned sign-ins waited for the upstream: %v", d)
 	}
+	// The one shared fetch outlives the abandoned sign-ins; on a loaded machine it may reach the server only after
+	// they gave up, so wait for it rather than look at once.
+	for deadline := time.Now().Add(2 * time.Second); hits.Load() == 0 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if n := hits.Load(); n != 1 {
 		t.Fatalf("concurrent sign-ins fetched discovery %d times", n)
 	}
