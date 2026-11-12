@@ -3294,10 +3294,9 @@ paths:
       tags: [Backup]
       summary: Download a backup of the whole store
       description: "Download a backup of the whole store (super admin, with an API token: the backup scope): every record,
-        secrets still sealed with the master key. It is encrypted (AES-256-GCM, the key derived from the
-        X-Backup-Password header by argon2id; application/octet-stream) unless ?plain=1 asks for it unencrypted (a gzip
-        stream); one or the other is required (400 otherwise). \"quisora backup --server\" downloads it with ?plain=1
-        over TLS and encrypts it on the operator's machine, so the password never reaches the server. A point-in-time
+        secrets still sealed with the master key. It is always encrypted (AES-256-GCM, the key derived from the
+        X-Backup-Password header by argon2id); without the header it answers 400. \"quisora backup --server\" sends the
+        password over TLS. A point-in-time
         snapshot where the backend has one; taken while the server runs; one at a time per server (409 otherwise).
         Restore it with \"quisora restore\" or \"quisora serve --restore-from\""
       operationId: get_backup
@@ -3305,14 +3304,10 @@ paths:
         - session: []
         - bearer: [backup]
       parameters:
-        - name: plain
-          in: query
-          description: "1: download the backup unencrypted (required unless X-Backup-Password is given)"
-          schema:
-            type: string
         - name: X-Backup-Password
           in: header
-          description: password to encrypt the backup with, at least 12 characters (required unless ?plain=1)
+          required: true
+          description: password to encrypt the backup with, at least 12 characters
           schema:
             type: string
       responses:
@@ -3321,7 +3316,7 @@ paths:
           headers:
             Api-Version: {$ref: "#/components/headers/ApiVersion"}
           content:
-            application/gzip:
+            application/octet-stream:
               schema:
                 format: binary
                 type: string

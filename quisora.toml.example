@@ -98,7 +98,7 @@ upstream_check_minutes = 60               # replay sign-in providers' refresh to
 # tls = "starttls"                        # starttls, tls or none
 
 [audit]
-retention_days = 7                        # in the database (with gossip, on each node): development, home labs, testing. Production and SOC 2: VictoriaLogs
+retention_days = 90                       # in the database (with gossip, on each node): development, home labs, testing. Production and SOC 2: VictoriaLogs
 logins = true                             # also record successful sign-ins (failures are always recorded)
 tokens = false                            # also record every refresh and client_credentials token (new grants,
                                           # revocations and token reuse are always recorded)

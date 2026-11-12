@@ -914,9 +914,8 @@ whether the node that is up holds every acknowledged write.
 
 `quisora backup` and `GET /api/backup` write every live record with its version, generation and origin. Where the backend offers a
 point-in-time view (BadgerDB: one read transaction; SQLite, PostgreSQL, MySQL and MariaDB: one read-only repeatable-read
-transaction) the backup is a **consistent snapshot**. A backup is encrypted with a password by default (AES-256-GCM in
-authenticated chunks, the key derived from the password with argon2id; `--plain` writes it unencrypted, with secrets still sealed by
-the master key): a truncated, reordered or altered file is refused before anything is restored. A remote download is checked for
+transaction) the backup is a **consistent snapshot**. A backup is always encrypted with a password (AES-256-GCM in
+authenticated chunks, the key derived from the password with argon2id; secrets inside stay sealed by the master key too): a truncated, reordered or altered file is refused before anything is restored. A remote download is checked for
 completeness as it arrives. The remote download needs a super administrator's API token with the **`backup`** scope. Passwords,
 the schedule and restoring: [RUNNING.md](RUNNING.md#backup-and-restore).
 

@@ -232,7 +232,7 @@ func Default() *Config {
 			KeyRotationDays: 30, APITokenMaxDays: 365},
 		Session: Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:    Mail{SMTPPort: 587, TLS: "starttls"},
-		Audit:   Audit{RetentionDays: 7, Logins: true, SpoolMaxMB: 256},
+		Audit:   Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
 		Limits:  Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, EphemeralMB: 1024, PasswordMinLength: 15, GrantsPerUser: 1000},
 		Log:     Log{Level: "info", Format: "console", Access: true},
 	}

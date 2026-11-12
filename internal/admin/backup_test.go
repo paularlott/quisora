@@ -11,27 +11,22 @@ import (
 	"github.com/paularlott/quisora/internal/service"
 )
 
-// GET /api/backup streams a complete backup of the live store; super admins only. It is encrypted with the
-// password in X-Backup-Password, or unencrypted with ?plain=1; one or the other must be asked for.
+// GET /api/backup streams a complete backup of the live store; super admins only. It is always encrypted, with the
+// password in X-Backup-Password: an unencrypted one is never handed out.
 func TestBackupDownload(t *testing.T) {
 	w := newWorld(t)
-	wantField(t, w.as("super").get("/api/backup"), 400, "")
+	wantField(t, w.as("super").get("/api/backup"), 400, "password")
+	wantField(t, w.as("super").get("/api/backup?plain=1"), 400, "password")
 	wantField(t, w.as("super").do("GET", "/api/backup", nil, "X-Backup-Password", "short"), 400, "password")
 	enc := w.as("super").do("GET", "/api/backup", nil, "X-Backup-Password", "correct horse battery")
 	want(t, enc, 200)
 	if !backup.PasswordProtected(enc.Raw) || enc.Header.Get("Content-Type") != "application/octet-stream" {
 		t.Fatalf("encrypted download: %v", enc.Header)
 	}
-	if _, err := backup.Verify(bytes.NewReader(enc.Raw), w.env.Svc.Sealer, "correct horse battery"); err != nil {
-		t.Fatal(err)
+	if cd := enc.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, ".bak") {
+		t.Fatalf("headers %v", enc.Header)
 	}
-	r := w.as("super").get("/api/backup?plain=1")
-	want(t, r, 200)
-	if cd := r.Header.Get("Content-Disposition"); r.Header.Get("Content-Type") != "application/gzip" || !strings.Contains(cd, "attachment") ||
-		!strings.Contains(cd, ".bak") {
-		t.Fatalf("headers %v", r.Header)
-	}
-	stats, err := backup.Verify(bytes.NewReader(r.Raw), w.env.Svc.Sealer, "")
+	stats, err := backup.Verify(bytes.NewReader(enc.Raw), w.env.Svc.Sealer, "correct horse battery")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +34,7 @@ func TestBackupDownload(t *testing.T) {
 		t.Fatalf("backup has %d users, the store %d", stats[model.KindUser], n)
 	}
 	want(t, w.as("admin").get("/api/backup"), 403)
-	want(t, w.as("manager").get("/api/backup?plain=1"), 403)
+	want(t, w.as("manager").get("/api/backup"), 403)
 	// a token needs the backup scope (admin is not enough); only super admins get it, and it expires within 30 days
 	want(t, w.withBearer("super", "admin").get("/api/backup"), 403)
 	want(t, w.withBearer("super", "api").get("/api/backup"), 403)
@@ -50,7 +45,7 @@ func TestBackupDownload(t *testing.T) {
 	}
 	c := w.withBearer("super", "api")
 	c.bearer = tok
-	want(t, c.get("/api/backup?plain=1"), 200)
+	want(t, c.do("GET", "/api/backup", nil, "X-Backup-Password", "correct horse battery"), 200)
 	for name, in := range map[string]service.APITokenInput{
 		"no expiry": {Name: "b", Scopes: []string{"backup"}},
 		"too long":  {Name: "b", Scopes: []string{"backup"}, Expires: 31},
@@ -65,11 +60,10 @@ func TestBackupDownload(t *testing.T) {
 	}
 	// a node that is not ready (catching up, cut off) refuses rather than back up a partial store
 	w.env.Server.Health = notReady{}
-	want(t, w.as("super").get("/api/backup?plain=1"), 503)
+	want(t, w.as("super").do("GET", "/api/backup", nil, "X-Backup-Password", "correct horse battery"), 503)
 	w.env.Server.Health = nil
-	want(t, w.as("super").get("/api/backup?plain=true"), 200)
-	// every download is audited: encrypted, plain, by token, plain=true
-	if n := len(auditActions(t, w, "backup.download")); n != 4 {
+	// every download is audited: by a session and by a token
+	if n := len(auditActions(t, w, "backup.download")); n != 2 {
 		t.Fatalf("backup downloads audited: %d", n)
 	}
 }

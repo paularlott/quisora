@@ -151,11 +151,13 @@ func TestDangerousChangesNeedStepUp(t *testing.T) {
 		"end an administrator's account": func(c *caller) resp {
 			return c.patch(AU+"/"+ended, map[string]any{"valid_until": time.Now().Add(48 * time.Hour).Format(time.DateOnly)})
 		},
-		"delete an organization":        func(c *caller) resp { return c.delete("/api/orgs/globex?cascade=1") },
-		"rotate the signing keys":       func(c *caller) resp { return c.post("/api/keys/rotate", nil) },
-		"remove a signing key":          func(c *caller) resp { return c.delete("/api/keys/old") },
-		"reload the cluster":            func(c *caller) resp { return c.post("/api/cluster/reload", nil) },
-		"download a backup":             func(c *caller) resp { return c.get("/api/backup?plain=1") },
+		"delete an organization":  func(c *caller) resp { return c.delete("/api/orgs/globex?cascade=1") },
+		"rotate the signing keys": func(c *caller) resp { return c.post("/api/keys/rotate", nil) },
+		"remove a signing key":    func(c *caller) resp { return c.delete("/api/keys/old") },
+		"reload the cluster":      func(c *caller) resp { return c.post("/api/cluster/reload", nil) },
+		"download a backup": func(c *caller) resp {
+			return c.do("GET", "/api/backup", nil, "X-Backup-Password", "correct horse battery")
+		},
 		"primary org sign-in settings":  func(c *caller) resp { return c.patch("/api/orgs/primary", map[string]any{"settings": settings}) },
 		"make someone an administrator": func(c *caller) resp { return c.patch(AU+"/"+victim, map[string]any{"role": "admin"}) },
 		"create an administrator": func(c *caller) resp {

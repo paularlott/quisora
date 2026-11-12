@@ -40,11 +40,10 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			"With --server it downloads the backup from a running server (any backend, the server keeps serving), " +
 			"authenticated with a super admin's API token that has the \"backup\" scope (--token or " +
 			"QUISORA_ADMIN_TOKEN; a token without that scope is refused with 403); the download is checked to be " +
-			"complete before it is kept, and encrypted here: the password never reaches the server. Without --server " +
+			"complete before it is kept; the server encrypts it with the password, sent over TLS. Without --server " +
 			"it reads the configured store directly. " + storeNote,
 		Flags: append(flags,
 			&cli.StringFlag{Name: "server", Usage: "Back up a running server: its base URL, such as https://id.example.com"},
-			&cli.BoolFlag{Name: "plain", Usage: "Write the backup unencrypted (secrets inside stay sealed with the master key)"},
 			&cli.StringFlag{Name: "password-file", Usage: "File holding the password to encrypt the backup with (its first line)"},
 			&cli.StringFlag{Name: "token", Usage: "API token of a super admin with the \"backup\" scope, for --server",
 				EnvVars: []string{config.EnvPrefix + "ADMIN_TOKEN"}},
@@ -58,14 +57,14 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			name := c.GetStringArg("file")
 			var stats backup.Stats
 			var err error
-			password := ""
-			if !c.GetBool("plain") {
-				if password, err = backupPassword(c.GetString("password-file"), true, true); err != nil {
-					return err
-				}
-				if len(password) < backup.MinPassword {
-					return fmt.Errorf("the backup password must have at least %d characters", backup.MinPassword)
-				}
+			// A backup is always encrypted: it holds every account and audit event, and its secrets are only as safe as the
+			// master key that seals them, which may well sit beside it.
+			password, err := backupPassword(c.GetString("password-file"), true, true)
+			if err != nil {
+				return err
+			}
+			if len(password) < backup.MinPassword {
+				return fmt.Errorf("the backup password must have at least %d characters", backup.MinPassword)
 			}
 			// Interrupted from here on (Ctrl+C, SIGTERM), the backup stops and the temporary file is removed.
 			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -103,19 +102,15 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 			if err != nil {
 				return err
 			}
-			how := "encrypted"
-			if password == "" {
-				how = "not encrypted"
-			}
-			fmt.Fprintf(os.Stderr, "Backed up %d records, %s (%s).\n", stats.Total(), how, summary(stats))
+			fmt.Fprintf(os.Stderr, "Backed up %d records, encrypted (%s).\n", stats.Total(), summary(stats))
 			return nil
 		},
 	}
 }
 
-// remoteBackup downloads GET <server>/api/backup?plain=1 (over TLS) into w, checking the stream (backup.Verify)
-// as it arrives (an incomplete or damaged download is an error), and encrypts it here with password unless that is
-// "": the password never reaches the server.
+// remoteBackup downloads GET <server>/api/backup (over TLS) into w, encrypted by the server with password (sent in
+// the X-Backup-Password header), checking the stream (backup.Verify, with the password) as it arrives: an incomplete
+// or damaged download is an error.
 func remoteBackup(ctx context.Context, server, token, caFile string, insecure bool, password string, w io.Writer) (_ backup.Stats, err error) {
 	if token == "" {
 		return nil, fmt.Errorf("--server needs a super admin's API token: --token or %sADMIN_TOKEN", config.EnvPrefix)
@@ -130,12 +125,13 @@ func remoteBackup(ctx context.Context, server, token, caFile string, insecure bo
 	}
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{RootCAs: roots, InsecureSkipVerify: insecure}}}
-	target := u.String() + "/api/backup?plain=1"
+	target := u.String() + "/api/backup"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Backup-Password", password)
 	req.Header.Set(web.APIVersionHeader, web.APIVersionLatest)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -149,18 +145,6 @@ func remoteBackup(ctx context.Context, server, token, caFile string, insecure bo
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e)
 		return nil, fmt.Errorf("server answered %s: %s", resp.Status, e.Error)
 	}
-	if password != "" {
-		ew, err := backup.EncryptWriter(w, password)
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			if cerr := ew.Close(); err == nil {
-				err = cerr
-			}
-		}()
-		w = ew
-	}
 	pr, pw := io.Pipe()
 	type result struct {
 		stats backup.Stats
@@ -168,8 +152,8 @@ func remoteBackup(ctx context.Context, server, token, caFile string, insecure bo
 	}
 	done := make(chan result, 1)
 	go func() {
-		st, err := backup.Verify(pr, nil, "") // structure and completeness: the master key is not needed here
-		_, _ = io.Copy(io.Discard, pr)        // keep the copy below from blocking if Verify stopped early
+		st, err := backup.Verify(pr, nil, password) // structure and completeness: the master key is not needed here
+		_, _ = io.Copy(io.Discard, pr)              // keep the copy below from blocking if Verify stopped early
 		done <- result{st, err}
 	}()
 	_, cerr := io.Copy(w, io.TeeReader(resp.Body, pw))

@@ -120,7 +120,7 @@ func TestCommandFlagsDoNotClobberEachOther(t *testing.T) {
 	if _, errOut, err := e.run(t, "", "bootstrap", "--bootstrap-admin", "boss@example.com"); err != nil || !strings.Contains(errOut, "boss@example.com") {
 		t.Fatalf("bootstrap with its own flag: %v %q", err, errOut)
 	}
-	for _, args := range [][]string{{"invite", "--break-glass", "primary", "a@example.com"}, {"backup", "--plain", "--server", "x", "-"},
+	for _, args := range [][]string{{"invite", "--break-glass", "primary", "a@example.com"}, {"backup", "--password-file", "pw", "--server", "x", "-"},
 		{"restore", "--force", "-"}, {"healthcheck", "--ready"}} {
 		if _, _, err := e.run(t, "", args...); err != nil && strings.Contains(err.Error(), "unknown flag") {
 			t.Errorf("%v: %v", args, err)
@@ -172,11 +172,15 @@ func TestCommandFlagsAreItsOwn(t *testing.T) {
 		}
 	}
 	out := filepath.Join(e.dir, "b")
-	if _, _, err := e.run(t, "", "backup", "--plain", "--site-name", "x", out); err == nil || !strings.Contains(err.Error(), "--site-name") {
+	pw := filepath.Join(e.dir, "pw")
+	if err := os.WriteFile(pw, []byte("correct horse battery\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.run(t, "", "backup", "--password-file", pw, "--site-name", "x", out); err == nil || !strings.Contains(err.Error(), "--site-name") {
 		t.Fatalf("a serve setting on backup's command line: %v", err)
 	}
 	// The same settings from the config file and the environment are read as ever.
-	if _, errOut, err := e.run(t, "", "backup", "--plain", out); err != nil {
+	if _, errOut, err := e.run(t, "", "backup", "--password-file", pw, out); err != nil {
 		t.Fatalf("backup with serve's settings in the file and environment: %v %s", err, errOut)
 	}
 }

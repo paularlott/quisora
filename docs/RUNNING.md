@@ -539,7 +539,7 @@ pages read it from one of two places:
 |                           | Database (default)                                                                            | VictoriaLogs                                    |
 | ------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | For                       | Development, home labs, testing                                                               | Production; required for a retained audit trail |
-| Kept                      | `audit.retention_days` (7)                                                                    | VictoriaLogs' `-retentionPeriod`                |
+| Kept                      | `audit.retention_days` (90)                                                                   | VictoriaLogs' `-retentionPeriod`                |
 | One node, shared database | In the database                                                                               | Sent to VictoriaLogs; nothing in the database   |
 | Gossip cluster            | Each node keeps its own events (never replicated, purged by that node); a page asks every node of the cluster and merges their answers, and says which did not answer | Every node sends; any node reads                |
 
@@ -742,11 +742,11 @@ QUISORA_ADMIN_TOKEN=qsr_… quisora backup --server https://id.example.com quiso
   printf '%s\n' "$BACKUP_PASSWORD" | quisora backup --server https://id.example.com - > quisora.bak
   ```
 
-- `--plain` writes it unencrypted (secrets inside stay sealed with the master key).
-- `--server` downloads the backup unencrypted over TLS and encrypts it on your machine: the password never reaches the
-  server.
-- `GET /api/backup` needs either the password in the `X-Backup-Password` header (encrypted) or `?plain=1`
-  (unencrypted); without one of them it answers 400.
+- A backup is always encrypted: there is no unencrypted form. A stolen backup holds every account and audit event,
+  and its secrets are only as safe as the master key that seals them, which is often kept nearby.
+- `--server` sends the password over TLS and the server encrypts the stream; the download is checked with the
+  password as it arrives.
+- `GET /api/backup` needs the password in the `X-Backup-Password` header; without it, it answers 400.
 - `quisora backup quisora.bak` without `--server` reads the configured store directly. On BadgerDB and SQLite, stop the node
   first.
 - Every backend gives a point-in-time snapshot: the backup is consistent.

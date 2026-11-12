@@ -127,14 +127,15 @@ func TestClientCredentialChangesResetConsent(t *testing.T) {
 	}
 }
 
-// A console session's backup download needs the CSRF header: the GET a link on another site could start leaves an
-// unencrypted copy of the store in the administrator's downloads.
+// A console session's backup download needs the CSRF header: the GET a link on another site could start leaves a
+// copy of the store in the administrator's downloads.
 func TestBackupFromSessionNeedsCSRF(t *testing.T) {
 	w := newWorld(t)
 	su := w.as("super")
-	want(t, su.do("GET", "/api/backup?plain=1", nil, "X-CSRF-Token", ""), 403)
-	want(t, su.do("GET", "/api/backup?plain=1", nil, "Sec-Fetch-Site", "cross-site"), 403)
-	want(t, su.get("/api/backup?plain=1"), 200)
+	const pw = "X-Backup-Password"
+	want(t, su.do("GET", "/api/backup", nil, pw, "correct horse battery", "X-CSRF-Token", ""), 403)
+	want(t, su.do("GET", "/api/backup", nil, pw, "correct horse battery", "Sec-Fetch-Site", "cross-site"), 403)
+	want(t, su.do("GET", "/api/backup", nil, pw, "correct horse battery"), 200)
 }
 
 // A service account with orgs:create gets the default settings of a new organization: choosing them is a super admin's.

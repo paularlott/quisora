@@ -18,10 +18,9 @@ var backupRunning atomic.Bool
 // backupPasswordHeader carries the password a downloaded backup is encrypted with.
 const backupPasswordHeader = "X-Backup-Password"
 
-// downloadBackup streams a backup of the whole store (GET /api/backup; super admins only). It is encrypted with
-// the password in the X-Backup-Password header, or unencrypted with ?plain=1 (quisora backup --server downloads it so
-// over TLS and encrypts it itself, so the password never leaves the operator's machine); one or the other must be
-// given. It reads a point-in-time view of the store where the backend has one (otherwise the live store page by
+// downloadBackup streams a backup of the whole store (GET /api/backup; super admins only), always encrypted with the
+// password in the X-Backup-Password header (quisora backup --server sends it over TLS): an unencrypted copy of every
+// account, audit event and sealed secret is never handed out. It reads a point-in-time view of the store where the backend has one (otherwise the live store page by
 // page) while the server keeps serving; see package backup.
 func (m *Module) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	a := web.Actor(r)
@@ -42,13 +41,12 @@ func (m *Module) downloadBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	password := r.Header.Get(backupPasswordHeader)
-	plain := r.URL.Query().Get("plain")
 	switch {
-	case password == "" && plain != "1" && plain != "true":
+	case password == "":
 		web.WriteJSON(w, http.StatusBadRequest, web.ErrorBody{Error: "Give the password to encrypt the backup with in " +
-			"the " + backupPasswordHeader + " header, or ask for an unencrypted backup with ?plain=1."})
+			"the " + backupPasswordHeader + " header: backups are always encrypted.", Field: "password"})
 		return
-	case password != "" && len(password) < backup.MinPassword:
+	case len(password) < backup.MinPassword:
 		web.WriteJSON(w, http.StatusBadRequest, web.ErrorBody{Error: "The backup password must have at least " +
 			strconv.Itoa(backup.MinPassword) + " characters.", Field: "password"})
 		return
@@ -70,15 +68,12 @@ func (m *Module) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	// A large store takes longer than the server's write timeout; this response has none.
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	name := "quisora-" + time.Now().UTC().Format("20060102-150405") + ".bak"
-	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("Cache-Control", "no-store")
-	if password != "" {
-		w.Header().Set("Content-Type", "application/octet-stream")
-	}
 	stats, err := backup.WriteWith(r.Context(), m.s.Svc.Store, m.s.Svc.Sealer, w, backup.Options{Password: password})
 	detail := map[string]string{"records": strconv.Itoa(stats.Total()), "complete": strconv.FormatBool(err == nil),
-		"encrypted": strconv.FormatBool(password != "")}
+		"encrypted": "true"}
 	if err != nil {
 		// The status line is gone by now; the client sees a stream without the trailer, which restore rejects.
 		m.s.Log.Warn("backup not completed", "error", err)
