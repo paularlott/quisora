@@ -187,18 +187,29 @@ func (p *Provider) ForgetMembership(orgID string) {
 	p.memAll.Add(n)
 }
 
-// Wait blocks until the back-channel logouts queued or being sent are done (tests, shutdown), for at most
-// bcShutdownWait: a shutdown is not held up for long by relying parties that do not answer.
+// Wait blocks until the back-channel logouts queued or being sent are done (tests, shutdown), for a bounded time: a
+// shutdown is not held up for long by relying parties that do not answer. After bcShutdownWait the logouts still
+// queued in memory go to the retry queue, which sends them after the restart, and those being sent have as long
+// again to end (each within its timeout; one that fails goes to the retry queue too). Call it before the retry queue
+// closes.
 func (p *Provider) Wait() {
 	done := make(chan struct{})
 	go func() { p.bcWG.Wait(); close(done) }()
 	select {
 	case <-done:
+		return
 	case <-time.After(bcShutdownWait):
-		p.bcMu.Lock()
-		queued := p.bcQueued
-		p.bcMu.Unlock()
-		p.log.Warn("oidc: back-channel logouts still queued at shutdown were not sent", "queued", queued)
+	}
+	if left := p.unqueue(); len(left) > 0 {
+		p.bcWG.Add(1) // ended by spill
+		p.spill(left, "oidc: back-channel logouts still queued at shutdown: sent from the retry queue after the"+
+			" restart, or not at all if that is full")
+		p.bcWG.Add(-len(left)) // no longer queued here
+	}
+	select {
+	case <-done:
+	case <-time.After(bcShutdownWait):
+		p.log.Warn("oidc: back-channel logouts still being sent at shutdown: those that fail are not retried")
 	}
 }
 

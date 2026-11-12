@@ -231,7 +231,7 @@ func TestBackchannelFanOutBounded(t *testing.T) {
 	for i := range targets {
 		targets[i] = bcTarget{client: ce.c, sub: "user", sid: "s"}
 	}
-	h.p.dispatch(targets)
+	h.p.dispatch(targets, nil)
 	// the organization's senders are all busy with a request the relying party holds, and no more than its share are
 	deadline := time.Now().Add(10 * time.Second)
 	for inFlight.Load() < bcOrgWorkersMax && time.Now().Before(deadline) {
@@ -300,12 +300,12 @@ func TestBackchannelOrganizationsDoNotStarveEachOther(t *testing.T) {
 	for i := range flood {
 		flood[i] = bcTarget{client: slowEntry.c, sub: "user", sid: "s"}
 	}
-	h.p.dispatch(flood)
+	h.p.dispatch(flood, nil)
 	deadline := time.Now().Add(10 * time.Second)
 	for stuck.Load() < bcOrgWorkersMax && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	h.p.dispatch([]bcTarget{{client: other, sub: "user", sid: "s"}})
+	h.p.dispatch([]bcTarget{{client: other, sub: "user", sid: "s"}}, nil)
 	select {
 	case <-delivered:
 	case <-time.After(3 * time.Second):
@@ -366,7 +366,7 @@ func TestBackchannelRetry(t *testing.T) {
 	if err := retries.Add(LogoutRetry{ClientID: "nosuchclient", Sub: "u"}, 20*time.Millisecond, 1); err != nil {
 		t.Fatal(err)
 	}
-	h.p.dispatch([]bcTarget{{client: entry(recovers).c, sub: "u", sid: "s"}, {client: entry(refuses).c, sub: "u", sid: "s"}})
+	h.p.dispatch([]bcTarget{{client: entry(recovers).c, sub: "u", sid: "s"}, {client: entry(refuses).c, sub: "u", sid: "s"}}, nil)
 	h.p.Wait()
 	deadline := time.Now().Add(5 * time.Second)
 	for (requests["/recovers"].Load() < 3 || requests["/refuses"].Load() < 3 || retries.Queued() > 0) && time.Now().Before(deadline) {
@@ -493,7 +493,7 @@ func TestBackchannelRetryShareFullDropsOnlyItsOrganization(t *testing.T) {
 	h.p.retryLogout(stuck, errors.New("down")) // logged, not queued
 	h.p.retryLogout(ok, errors.New("down"))
 	h.p.bcWG.Add(1)
-	h.p.spill([]bcTarget{stuck, ok}) // an overflow of the in-memory queue: the same
+	h.p.spill([]LogoutRetry{stuck.retry(), ok.retry()}, "full") // an overflow of the in-memory queue: the same
 	if n := retries.Queued(); n != logoutRetryOrgMax+2 {
 		t.Fatalf("%d queued, want the organization's %d and the other's two", n, logoutRetryOrgMax)
 	}
@@ -615,7 +615,7 @@ func TestBackchannelRetryKeepsTheLogoutsJTI(t *testing.T) {
 		}
 	}
 
-	targets := h.p.collect(ctx, h.user.ID, nil)
+	targets, _ := h.p.collect(ctx, h.user.ID, nil)
 	if len(targets) != 2 {
 		t.Fatalf("%d logouts collected, want one for each session", len(targets))
 	}
@@ -623,7 +623,7 @@ func TestBackchannelRetryKeepsTheLogoutsJTI(t *testing.T) {
 		t.Fatalf("token ids %q and %q: want one of its own for each logout", targets[0].jti, targets[1].jti)
 	}
 
-	h.p.dispatch(targets[:1])
+	h.p.dispatch(targets[:1], nil)
 	h.p.Wait()
 	waitUntil(t, func() bool { return attempts.Load() >= 3 && retries.Queued() == 0 })
 	mu.Lock()
@@ -650,4 +650,73 @@ func TestBackchannelRetryKeepsTheLogoutsJTI(t *testing.T) {
 	if jti, _ := got["/old"][0]["jti"].(string); jti == "" {
 		t.Error("a retry queued without a token id was sent without one")
 	}
+}
+
+// A logout whose application could not be read (the store failed: the application is not gone) is not lost: it goes
+// to the retry queue, which reads the application again and tells it then.
+func TestBackchannelUnreadClientIsRetried(t *testing.T) {
+	rp, hits := newTLSServer(t, func(http.ResponseWriter, *http.Request) {})
+	h := setup(t, nil)
+	withLogoutBackoff(t, 200*time.Millisecond, 200*time.Millisecond, 200*time.Millisecond)
+	retries := h.p.OpenLogoutQueue("node-1")
+	defer retries.Close()
+	cl, secret := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(rp.URL) })
+	if r, _ := h.login(cl, secret, nil); r.status != 200 {
+		t.Fatal(r.m)
+	}
+	clients := h.env.Svc.Clients.S
+	h.env.Svc.Clients.S = failReads(clients, model.KindClient)
+	h.p.InvalidateClient(cl.ID)
+	h.p.BackchannelLogoutUser(t.Context(), h.user.ID)
+	h.p.Wait()
+	if n := retries.Queued(); n != 1 || hits.Load() != 0 {
+		t.Fatalf("%d logouts in the retry queue and %d sent while the application could not be read, want 1 and none",
+			n, hits.Load())
+	}
+	h.env.Svc.Clients.S = clients
+	waitUntil(t, func() bool { return hits.Load() == 1 && retries.Queued() == 0 })
+}
+
+// Logouts still queued in memory when the server shuts down are not lost: once the shutdown wait is over they go to
+// the retry queue, which sends them after the restart, and the wait stays bounded.
+func TestBackchannelShutdownSpillsQueue(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open() // a failure does not leave handlers holding the server
+	var stuck atomic.Int64
+	tarpit, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		stuck.Add(1)
+		<-release
+	})
+	h := setup(t, nil)
+	withLogoutBackoff(t, time.Hour) // the retries wait for the next start
+	saved := bcShutdownWait
+	bcShutdownWait = 100 * time.Millisecond
+	t.Cleanup(func() { bcShutdownWait = saved })
+	retries := h.p.OpenLogoutQueue("node-1")
+	defer retries.Close()
+	cl, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(tarpit.URL) })
+	ce, err := h.p.client(t.Context(), cl.OrgID, cl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the organization's senders are all held by the relying party, and more logouts wait behind them
+	const left = 5
+	targets := make([]bcTarget, bcOrgWorkersMax+left)
+	for i := range targets {
+		targets[i] = bcTarget{client: ce.c, sub: "user", sid: "s", jti: newJTI()}
+	}
+	h.p.dispatch(targets, nil)
+	waitUntil(t, func() bool { return stuck.Load() == bcOrgWorkersMax })
+	start := time.Now()
+	h.p.Wait()
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the shutdown waited %v", d)
+	}
+	if n := retries.Queued(); n != left {
+		t.Fatalf("%d logouts in the retry queue after the shutdown wait, want the %d still queued", n, left)
+	}
+	open()
+	h.p.Wait()
 }
