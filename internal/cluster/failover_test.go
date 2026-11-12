@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -93,7 +94,11 @@ func TestWritesWaitingForALostOwnerAreCapped(t *testing.T) {
 			elsewhere = o
 		}
 	}
-	stop(c.nodes[owner])
+	// the owner does not answer node 0's writes (a lost owner cannot be told from a slow one until the owner timeout).
+	// Stopped instead, it would leave the cluster and its partitions be taken over at once, and a loaded machine could
+	// have that done before every write below had arrived.
+	c.hold(0, owner, true, gossip.PartChangeMsg)
+	defer c.heal()
 
 	const extra = 16
 	type result struct {
@@ -101,16 +106,22 @@ func TestWritesWaitingForALostOwnerAreCapped(t *testing.T) {
 		took time.Duration
 	}
 	results := make(chan result, maxPartitionWrites+extra)
-	start := make(chan struct{})
-	for range maxPartitionWrites + extra {
-		go func() {
-			<-start
-			began := time.Now()
-			err := c.nodes[0].st().Put(bg, newOrgRec(org))
-			results <- result{err, time.Since(began)}
-		}()
+	write := func() {
+		began := time.Now()
+		err := c.nodes[0].st().Put(bg, newOrgRec(org))
+		results <- result{err, time.Since(began)}
 	}
-	close(start)
+	// the cap's worth first, every one of them under way, then the extra (all at once, the extra could arrive before
+	// the last of the cap's worth on a loaded machine)
+	for range maxPartitionWrites {
+		go write()
+	}
+	waitFor(t, 5*time.Second, "the cap's worth of writes to be under way", func() bool {
+		return c.nodes[0].n.writing[p].Load() == maxPartitionWrites
+	})
+	for range extra {
+		go write()
+	}
 	// the other partitions are written promptly while the lost owner's writes wait
 	for range 5 {
 		began := time.Now()
