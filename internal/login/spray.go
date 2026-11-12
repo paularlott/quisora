@@ -52,7 +52,9 @@ type sprayState struct {
 
 // spray reports whether org is under a password spray, and since when: a minute of its lockout time just past had
 // more failed passwords than limits.org_failures_per_minute (sprayFailed). The first request to find a spray over
-// takes its record and audits the end (org.spray.end). A record that cannot be read is an error: the caller refuses
+// takes its record and audits the end (org.spray.end). A spray whose record is lost (this node's short-lived state
+// restarted, or its owner node changed) is over from then on without an org.spray.end: the record is all there is to
+// remember it by, and keeping it on several nodes would need coordination for a rare, harmless gap. A record that cannot be read is an error: the caller refuses
 // the attempt as charge does when its counter fails.
 func (m *Module) spray(ctx context.Context, org *model.Org) (sprayState, bool, error) {
 	if m.s.Cfg.LiveLimits().OrgFailuresPerMin <= 0 {

@@ -774,8 +774,10 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 		clearFlowCookie(w, id)
 		if err := p.decideDevice(ctx, f, true, sess, user, idp, c.RememberGen); err != nil {
 			if !errors.Is(err, ephemeral.ErrNotFound) {
-				p.message(w, r, http.StatusServiceUnavailable, "Try again", "This could not be finished just now",
-					"Try again in a moment.")
+				// The flow is dropped and the user code is used up (decideDevice takes it before it writes), so there
+				// is nothing to retry here: the device starts again.
+				p.message(w, r, http.StatusServiceUnavailable, "Start again", "This could not be finished just now",
+					"Start again on your device to get a new code.")
 				return
 			}
 			p.message(w, r, http.StatusBadRequest, "Code expired", "This code can no longer be used",

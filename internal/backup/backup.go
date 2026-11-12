@@ -132,7 +132,8 @@ func (s Stats) Total() int {
 
 // Options adjust WriteWith.
 type Options struct {
-	// Password encrypts the backup with a key derived from it (see crypt.go); "" writes it unencrypted.
+	// Password encrypts the backup with a key derived from it (see crypt.go). Every caller that writes sets it (at least
+	// MinPassword characters); only reading still accepts the unencrypted backups that older builds wrote with --plain.
 	Password string
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/paularlott/cli"
@@ -15,6 +16,7 @@ import (
 	"github.com/paularlott/quisora/internal/cluster"
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/secrets"
+	"github.com/paularlott/quisora/internal/service"
 )
 
 func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
@@ -60,13 +62,33 @@ func serveCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 					return nil
 				case <-hup:
 					_ = a.Server.ReloadCertificate() // logs its own outcome
-					if r := a.Node.Reload(ctx); r.Error != "" {
+					r := a.Node.Reload(ctx)
+					if r.Error != "" {
 						log.Error("configuration not (fully) reloaded", "error", r.Error, "applied", r.Changes)
 					}
+					auditReload(ctx, a, r)
 				}
 			}
 		},
 	}
+}
+
+// auditReload records a SIGHUP reload of this node in the primary organization's audit log (config.reload, or
+// config.reload.failure when it was refused or stopped), naming the node and what changed, so that nodes whose limits
+// or deny list diverged in the middle of an incident can be told apart afterwards. A cluster-wide reload is audited
+// once by the console (cluster.reload), with every node's report. Nothing is recorded before the server is set up
+// (there is no primary organization to hold it).
+func auditReload(ctx context.Context, a *app.App, r cluster.ReloadReport) {
+	org, err := a.Svc.PrimaryOrgID(ctx)
+	if err != nil {
+		return
+	}
+	action, detail := "config.reload", map[string]string{"node": r.Node, "source": "sighup",
+		"changed": strings.Join(r.Changes, "; ")}
+	if r.Error != "" {
+		action, detail["error"] = "config.reload.failure", r.Error
+	}
+	a.Svc.Audit(ctx, service.System, org, action, r.Node, detail)
 }
 
 // reloadedSecrets are the secret settings a reload applies, read again from their secret store when they name one.

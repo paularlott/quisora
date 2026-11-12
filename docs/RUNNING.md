@@ -179,7 +179,10 @@ and no audit event, so a flood from them costs the node little and fills no log.
 rest of the server sees it: behind `server.trust_proxy`, the one the proxies name in `X-Forwarded-For`; anyone else's
 `X-Forwarded-For` is ignored. `/healthz`, `/readyz` and `/metrics` (which has its own token) answer every address, so a
 load balancer or Prometheus in a denied network still sees the node. Each refusal counts in `quisora_http_denied_total`
-(and not in `quisora_http_requests_total`). A range of every address (`0.0.0.0/0`, `::/0`) is refused as a mistake. The
+(and not in `quisora_http_requests_total`); the counter has no address label (an address per label value would let an
+attacker fill the metrics), and a refusal writes no log line, so a flood stays cheap. To find the addresses to deny, read
+the client addresses (`ip`) in the request log (`log.access`) of the 429s and the other refusals, and in the audit log's
+`login.failure`, `login.lockout` and `login.limited` entries. A range of every address (`0.0.0.0/0`, `::/0`) is refused as a mistake. The
 list is checked one entry after another: it is for a handful of networks. A request is refused only after its TLS
 handshake, so for many addresses (a botnet), or to save the handshakes, block them in a firewall or the proxy in front.
 
@@ -645,7 +648,7 @@ VictoriaLogs:
 | --- | --- |
 | Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure`, `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `org.spray.start` and `org.spray.end` (an organization's sign-in came under a password spray, and when it was over: [lockout](SECURITY.md#lockout-and-password-spraying)), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `mfa.import` (an authenticator secret imported with a new user: [API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)), `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.grant.evict` (a grant ended because its user held too many: [how many](oauth/sign-in.md#refreshing)), `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
-| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, tenants' SSH certificate authorities (`ssh.settings.update`, `ssh.ca.create`, `ssh.ca.rotate`, `ssh.ca.remove`, `ssh.cert.issue`, `ssh.cert.revoke`, `ssh.cert.refused`, `ssh.host.issue`, `ssh.host.refused`: [SSH certificates](ssh/README.md#what-is-recorded)), `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report) |
+| Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, tenants' SSH certificate authorities (`ssh.settings.update`, `ssh.ca.create`, `ssh.ca.rotate`, `ssh.ca.remove`, `ssh.cert.issue`, `ssh.cert.revoke`, `ssh.cert.refused`, `ssh.host.issue`, `ssh.host.refused`: [SSH certificates](ssh/README.md#what-is-recorded)), `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `config.reload` (and `config.reload.failure`: one node's SIGHUP reload, with the node and what changed; compare nodes after an incident) |
 | API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back: anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
@@ -846,6 +849,8 @@ quisora restore quisora.bak                   # into the configured store, witho
 
 - An encrypted backup needs its password: `quisora restore` reads it as `quisora backup` does (`--password-file`, a
   pipe, or the terminal); `serve --restore-from` takes it from `server.restore_password` (`QUISORA_RESTORE_PASSWORD`).
+- Unencrypted backups written by older builds with `--plain` still restore (they need no password; new backups are always
+  encrypted).
 - Backups encrypted with the master key by earlier builds still restore, with no password, given that master key.
 
 - Ids and versions are kept, into any backend (a BadgerDB backup can go into PostgreSQL).
@@ -1042,7 +1047,9 @@ Alerts worth having:
   `increase(quisora_ephemeral_refused_total{reason="full"}[5m]) > 0`: the node's short-lived state is (nearly) full and
   new sign-ins get 503: a flood of unfinished sign-ins, or `limits.ephemeral_mb` too small for the load. A steady
   `rate(quisora_ephemeral_refused_total{reason="flows_per_ip"}[5m])` is addresses starting sign-ins they do not finish
-  (or many users behind one address: see `server.trust_proxy`).
+  (or many users behind one address: see `server.trust_proxy`). Refusals for `flows_per_ip` are counted only: no audit
+  event or log line is written for each, so a flood of them cannot fill the audit log; the request log (`log.access`)
+  shows the address of each 429.
 - For tenants that use SSH certificates: a log line `oidc: making an SSH revocation list` at error level (the tenant's
   revocation list could not be made; its address answers 503 and servers keep their old list), and, on every server that
   fetches it, the fetch unit failing or the revocation list file older than 5 minutes ([SSH monitoring](ssh/README.md#monitoring)).
