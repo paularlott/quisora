@@ -67,6 +67,7 @@ type Server struct {
 	ExtraCAFile          string   `toml:"extra_ca_file" flag:"extra-ca-file" cmd:"serve invite sign-out" usage:"PEM file of extra CA certificates trusted for outbound HTTPS (sign-in providers, client JWKS, back-channel logout), e.g. an internal CA"`
 	ShutdownDrain        int      `toml:"shutdown_drain" flag:"shutdown-drain" usage:"Seconds /readyz answers 503 before shutting down, when a load balancer has been polling it, so traffic moves to other nodes first (0 = none)"`
 	ShutdownTimeout      int      `toml:"shutdown_timeout" flag:"shutdown-timeout" usage:"Seconds requests in flight get to finish at shutdown"`
+	DisablePictures      bool     `toml:"disable_pictures" flag:"disable-pictures" usage:"Turn off users' profile pictures in every organization (none stored, served or sent), and the setting that chooses who sets them"`
 	DisableMCP           bool     `toml:"disable_mcp" flag:"disable-mcp" usage:"Turn off every organization's own MCP server (AI clients managing users and groups), and the option to switch it on"`
 }
 

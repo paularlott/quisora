@@ -183,7 +183,7 @@ func (m *Module) summary(ctx context.Context, a acct, u *model.User) (accountRes
 	out.CanChangePicture = m.s.Svc.MaySetPicture(ctx, a.actor, u)
 	if org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
 		out.Org.Name, out.Org.Display, out.Org.RequireMFA = org.Name, org.DisplayName, org.Settings.RequireMFA
-		out.PicturesEnabled = org.Settings.PicturesOn()
+		out.PicturesEnabled = m.s.Svc.PicturesOn(org)
 	}
 	n, err := m.s.Svc.UsablePasskeys(ctx, u, "")
 	if err != nil {

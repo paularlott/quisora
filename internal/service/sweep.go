@@ -226,7 +226,7 @@ func (s *Service) offPicture(ctx context.Context, e model.Entity, off map[string
 		if err != nil && !errors.Is(err, store.ErrNotFound) { // an organization gone is the owner check's
 			return false, mapStore(err)
 		}
-		isOff = err == nil && !o.Settings.PicturesOn()
+		isOff = err == nil && !s.PicturesOn(o)
 		off[orgID] = isOff
 	}
 	if !isOff {

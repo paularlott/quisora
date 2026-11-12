@@ -102,6 +102,7 @@
         </div>
       </fieldset>
 
+      {{if .Site.Pictures}}
       <fieldset class="fieldset">
         <legend>Profile pictures</legend>
         <div class="field">
@@ -114,6 +115,7 @@
           <p class="help" id="h-pictures">With only administrators, people cannot change their own picture; administrators, the directory (SCIM) and sign-in providers still can. Off deletes the pictures held and stops sending them to applications.</p>
         </div>
       </fieldset>
+      {{end}}
 
       <fieldset class="fieldset">
         <legend>API tokens for applications</legend>

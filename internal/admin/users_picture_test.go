@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"image"
 	"image/png"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -156,4 +158,63 @@ func TestPicturesSetting(t *testing.T) {
 		}
 	}
 	set(model.PicturesEveryone)
+}
+
+// By default the console offers the organization's pictures setting; with --disable-pictures (server.disable_pictures)
+// every organization behaves as if its pictures were off: nobody sets one, no user shows one or says pictures are
+// enabled, the picture's address answers 404, and the console does not offer the setting.
+func TestDisablePicturesHidesThem(t *testing.T) {
+	page := func(w *world) string {
+		t.Helper()
+		res, err := w.as("super").c.Get(w.env.URL + "/admin/orgs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return string(b)
+	}
+	if on := newWorld(t); !strings.Contains(page(on), `id="f-pictures"`) {
+		t.Fatal("the organization dialog does not offer the setting by default")
+	}
+
+	w := newWorld(t)
+	mgr := w.as("manager")
+	userPath := "/api/orgs/acme/users/" + w.users["user"].ID
+	want(t, mgr.put(userPath+"/picture", map[string]any{"image": pictureURI(t, 6)}), 200)
+	pic := mgr.get(userPath).str("picture")
+	if pic == "" {
+		t.Fatal("no picture")
+	}
+	served := func() int {
+		t.Helper()
+		res, err := w.as("manager").c.Get(w.env.URL + pic[strings.Index(pic, "/o/"):])
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if served() != 200 {
+		t.Fatal("a picture is not served by default")
+	}
+
+	// Switched off as a restart with the flag would (the page's site block is read from the config at start).
+	off := newWorldWith(t, func(c *config.Config) { c.Server.DisablePictures = true })
+	if strings.Contains(page(off), `id="f-pictures"`) {
+		t.Error("the organization dialog offers the setting")
+	}
+	for _, who := range []string{"manager", "admin", "super"} {
+		want(t, off.as(who).put("/api/orgs/acme/users/"+off.users["user"].ID+"/picture", map[string]any{"image": pictureURI(t, 8)}), 403)
+	}
+	got := off.as("manager").get("/api/orgs/acme/users/" + off.users["user"].ID).JSON
+	if got["picture"] != nil || got["pictures_enabled"] != false {
+		t.Fatalf("a user with the server's pictures off: picture %v, pictures_enabled %v", got["picture"], got["pictures_enabled"])
+	}
+
+	// A picture already held is not served once the server turns them off.
+	w.env.Svc.Cfg.Server.DisablePictures = true
+	if served() != 404 {
+		t.Fatal("a held picture is served with the server's pictures off")
+	}
 }

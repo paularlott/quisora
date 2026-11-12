@@ -513,12 +513,14 @@
     </div>
     <fieldset class="fieldset" aria-describedby="h-grants">
       <legend>Grant types</legend>
-      <label class="check"><input class="checkbox" type="checkbox" value="authorization_code" x-model="form.grant_types"><span class="check-text">Authorization code<span class="help">Sign users in (always with PKCE).</span></span></label>
-      <label class="check"><input class="checkbox" type="checkbox" value="refresh_token" x-model="form.grant_types"><span class="check-text">Refresh token</span></label>
-      <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="client_credentials" x-model="form.grant_types"><span class="check-text">Client credentials<span class="help">The application acts as itself, without a user.</span></span></label>
-      <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:token-exchange" x-model="form.grant_types"><span class="check-text">Token exchange<span class="help">Trade a user's access token issued for this client for one to call other APIs on their behalf (RFC 8693).</span></span></label>
-      <label class="check"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:device_code" x-model="form.grant_types"><span class="check-text">Device sign-in<span class="help">For CLIs, TVs and other devices without a browser: the device shows a code, and the user approves it on their phone or computer (RFC 8628). Turn on only if the application needs it: someone can be tricked into entering a code an attacker sent.</span></span></label>
       <p class="help" id="h-grants" x-text="grantsHelp"></p>
+      <div class="check-tiles">
+        <label class="check"><input class="checkbox" type="checkbox" value="authorization_code" x-model="form.grant_types"><span class="check-text">Authorization code<span class="help">Sign users in (always with PKCE).</span></span></label>
+        <label class="check"><input class="checkbox" type="checkbox" value="refresh_token" x-model="form.grant_types"><span class="check-text">Refresh token<span class="help">New access tokens without the user signing in again.</span></span></label>
+        <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="client_credentials" x-model="form.grant_types"><span class="check-text">Client credentials<span class="help">The application acts as itself, without a user.</span></span></label>
+        <label class="check" x-show="notPublic"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:token-exchange" x-model="form.grant_types"><span class="check-text">Token exchange<span class="help">Trade a user's access token issued for this client for one to call other APIs on their behalf (RFC 8693).</span></span></label>
+        <label class="check"><input class="checkbox" type="checkbox" value="urn:ietf:params:oauth:grant-type:device_code" x-model="form.grant_types"><span class="check-text">Device sign-in<span class="help">CLIs, TVs and other devices without a browser show a code the user approves elsewhere (RFC 8628). Only if needed: someone can be tricked into entering an attacker's code.</span></span></label>
+      </div>
       <p class="field-error" id="e-grant_types" x-text="errors.grant_types"></p>
     </fieldset>
     {{template "list-field" (dict "name" "redirect_uris" "label" "Redirect URIs" "item" "Redirect URI" "add" "Add URI" "mono" true "placeholder" "https://app.example.com/callback" "show" "usesRedirects" "help" "Where the application receives the sign-in result. Use https; http is allowed for localhost. Native apps may use a reverse-domain scheme such as com.example.app:/callback.")}}
@@ -530,9 +532,11 @@
     <fieldset class="fieldset" aria-describedby="h-std_scopes">
       <legend>Allowed scopes</legend>
       <p class="help" id="h-std_scopes">What the application may ask users to release.</p>
-      <template x-for="sc in stdScopes" :key="sc.value">
-        <label class="check"><input class="checkbox" type="checkbox" :id="sc.id" :value="sc.value" x-model="form.std_scopes"><span class="check-text"><span class="mono" x-text="sc.value"></span><span class="help" x-text="sc.help"></span></span></label>
-      </template>
+      <div class="check-tiles">
+        <template x-for="sc in stdScopes" :key="sc.value">
+          <label class="check"><input class="checkbox" type="checkbox" :id="sc.id" :value="sc.value" x-model="form.std_scopes"><span class="check-text"><span class="mono" x-text="sc.value"></span><span class="help" x-text="sc.help"></span></span></label>
+        </template>
+      </div>
     </fieldset>
     {{template "tag-field" (dict "name" "custom_scopes" "noun" "scope" "label" "Scopes for your own APIs" "help" "Optional. Scope names your own APIs check in access tokens, such as orders:read; the standard scopes above are ticked, not listed here.")}}
     {{template "textarea-field" (dict "name" "jwks" "label" "Public keys (JWKS)" "rows" 4 "show" "isJwt" "help" "The client's public keys as a JSON Web Key Set. Or give a JWKS URI below.")}}

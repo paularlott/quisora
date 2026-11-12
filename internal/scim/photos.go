@@ -40,7 +40,7 @@ func keepPhotos(res map[string]any) {
 // URL. A value that is neither an https URL nor a data: URI, or an image that cannot be made, is refused.
 func (rq *request) photoChange(res map[string]any, u *model.User) (*service.PictureChange, error) {
 	k, present := keyOf(res, "photos")
-	if !present || !rq.org.Settings.PicturesOn() {
+	if !present || !rq.m.srv.Svc.PicturesOn(rq.org) {
 		return nil, nil
 	}
 	cur := rq.m.srv.Svc.PictureURL(rq.ctx, u)

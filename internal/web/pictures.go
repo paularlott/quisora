@@ -16,7 +16,7 @@ import (
 // id, so each is cached for good.
 func (s *Server) orgPicture(w http.ResponseWriter, r *http.Request) {
 	o := Org(r)
-	if !o.Settings.PicturesOn() {
+	if !s.Svc.PicturesOn(o) {
 		http.NotFound(w, r)
 		return
 	}

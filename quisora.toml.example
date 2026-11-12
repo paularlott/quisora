@@ -24,6 +24,7 @@ data_dir = "/var/lib/quisora"             # required: everything this node keeps
 # restore_from = ""                       # backup file loaded at start-up when the store is empty (ignored once it has data)
 # restore_password = ""                   # its password, when it is encrypted
 # disable_mcp = false                     # turn off every organization's own MCP server, and the option to switch it on
+# disable_pictures = false                # turn off users' profile pictures in every organization (deleting those held), and the setting
 
 [ui]
 site_name = "Identity"

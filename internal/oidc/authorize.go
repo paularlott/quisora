@@ -963,6 +963,9 @@ func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, s := range f.consent() {
 		d := scopeDescriptions[s]
+		if s == "profile" && p.cfg.Server.DisablePictures {
+			d = "Your name, username, language and time zone"
+		}
 		if d == "" {
 			d = "Access: " + s
 		}

@@ -54,7 +54,8 @@ their turn, as long as their requests do, and any more are refused at once with 
 changes at most 20 times an hour. A picture given by URL (SCIM, a sign-in provider) is fetched once through the
 outbound guard and never linked to: applications never reach another site through Quisora's pictures. An
 organization that wants none sets `settings.pictures` to `off`: nothing is uploaded, copied, served or sent, and the
-pictures it held are deleted.
+pictures it held are deleted. A server that wants none for any organization starts with `--disable-pictures`
+(`server.disable_pictures = true`): every organization behaves as if its setting were `off`.
 
 **SSH certificates: known limits.** The [guide](ssh/README.md#known-limits) has the detail.
 

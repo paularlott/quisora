@@ -148,13 +148,21 @@ func (s *Service) FetchPicture(ctx context.Context, rawURL string) (*PictureImag
 	return MakePicture(ctx, raw, rawURL)
 }
 
+// PicturesOn reports whether organization o has users' profile pictures at all: its setting (OrgSettings.Pictures) is
+// not off and the server has not turned pictures off for every organization (server.disable_pictures). Everything that
+// stores, serves, sends or shows a picture asks here, so a server with them off behaves as if every organization's
+// were off.
+func (s *Service) PicturesOn(o *model.Org) bool {
+	return !s.Cfg.Server.DisablePictures && o.Settings.PicturesOn()
+}
+
 // PictureURL is the absolute URL of u's picture, "" when u has none or their organization's pictures are off (as
 // read within orgTTL: Org) or cannot be read.
 func (s *Service) PictureURL(ctx context.Context, u *model.User) string {
 	if u == nil || u.Picture == "" {
 		return ""
 	}
-	if o, err := s.Org(ctx, u.OrgID); err != nil || !o.Settings.PicturesOn() {
+	if o, err := s.Org(ctx, u.OrgID); err != nil || !s.PicturesOn(o) {
 		return ""
 	}
 	return strings.TrimSuffix(s.Cfg.Server.PublicURL, "/") + model.OrgPath(u.OrgID, "/pictures/"+u.Picture)
@@ -208,7 +216,7 @@ func (s *Service) pictureRule(ctx context.Context, a *Actor, u *model.User) erro
 		return mapStore(err)
 	}
 	switch {
-	case !o.Settings.PicturesOn():
+	case !s.PicturesOn(o):
 		return ErrPicturesOff
 	case s.canManageUser(a, u):
 		return nil
@@ -338,7 +346,7 @@ func (s *Service) CopyPicture(ctx context.Context, userID, rawURL, by string) {
 		if err != nil || u.Picture != "" {
 			return
 		}
-		if o, err := s.Orgs.Get(ctx, u.OrgID); err != nil || !o.Settings.PicturesOn() {
+		if o, err := s.Orgs.Get(ctx, u.OrgID); err != nil || !s.PicturesOn(o) {
 			return // the organization's pictures are off: none is fetched
 		}
 		sys := *System

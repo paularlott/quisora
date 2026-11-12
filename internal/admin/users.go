@@ -226,7 +226,7 @@ func (m *Module) getUser(w http.ResponseWriter, r *http.Request) {
 	view.CanResetSignIn = &can
 	canVerify := m.s.Svc.CanMarkEmailVerified(r.Context(), a, u)
 	view.CanVerifyEmail = &canVerify
-	pics := org.Settings.PicturesOn()
+	pics := m.s.Svc.PicturesOn(org)
 	view.PicturesEnabled = &pics
 	web.WriteJSON(w, http.StatusOK, view)
 }

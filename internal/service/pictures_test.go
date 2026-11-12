@@ -606,3 +606,63 @@ func TestPictureRetriedWhenStale(t *testing.T) {
 		t.Fatal("the stale change changed the picture")
 	}
 }
+
+// With server.disable_pictures every organization behaves as if its pictures were off: nothing is set, copied, served
+// or sent, the organization's setting is kept as it is (it counts again once the server's switch is off), and the
+// sweep deletes those held. Pictures are on by default.
+func TestServerPicturesOff(t *testing.T) {
+	e := newEnv(t)
+	if e.svc.Cfg.Server.DisablePictures {
+		t.Fatal("pictures are off by default")
+	}
+	srv := pictureServer(t, testPNG(t, color.NRGBA{0, 120, 200, 255}))
+	e.svc.PictureClient = srv.Client()
+	o := e.org("srvoff")
+	u := e.user(o.ID, "u", model.RoleUser)
+	adm := e.user(o.ID, "adm", model.RoleAdmin)
+	img := fromURI(dataURI(testPNG(t, color.NRGBA{1, 2, 3, 255})))
+	if _, err := e.svc.SetPicture(e.ctx, service.System, u.ID, img); err != nil {
+		t.Fatal(err)
+	}
+	held := e.fresh(u).Picture
+	if !e.served(o.ID, held) || e.svc.PictureURL(e.ctx, e.fresh(u)) == "" {
+		t.Fatal("a picture is not served by default")
+	}
+
+	e.svc.Cfg.Server.DisablePictures = true
+	t.Cleanup(func() { e.svc.Cfg.Server.DisablePictures = false })
+	if e.svc.PicturesOn(o) {
+		t.Fatal("PicturesOn with the server's pictures off")
+	}
+	for _, a := range []*service.Actor{actor(u), actor(adm), actor(e.super), service.System} {
+		if _, err := e.svc.SetPicture(e.ctx, a, u.ID, img); !errors.Is(err, service.ErrPicturesOff) {
+			t.Fatalf("%s set a picture with the server's pictures off: %v", a.Name, err)
+		}
+	}
+	if e.svc.PictureURL(e.ctx, e.fresh(u)) != "" {
+		t.Fatal("PictureURL with the server's pictures off")
+	}
+	fresh := e.user(o.ID, "new", model.RoleUser)
+	e.svc.CopyPicture(e.ctx, fresh.ID, srv.URL+"/a.png", "provider:test")
+	e.svc.WaitBackground()
+	if e.fresh(fresh).Picture != "" {
+		t.Fatal("a provider's picture was copied with the server's pictures off")
+	}
+
+	// The setting can be left as it is or kept at everyone, but not changed to admins or off.
+	cur, err := e.svc.GetOrg(e.ctx, nil, o.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := cur.Settings
+	if _, err := e.svc.UpdateOrg(e.ctx, service.System, o.ID, service.OrgInput{Settings: &st}); err != nil {
+		t.Fatalf("saving settings unchanged: %v", err)
+	}
+
+	if _, err := e.svc.SweepAll(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if e.fresh(u).Picture != "" || e.pictureStored(held) {
+		t.Fatal("the sweep left a picture held with the server's pictures off")
+	}
+}

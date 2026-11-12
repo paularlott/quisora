@@ -2,10 +2,10 @@ package login_test
 
 import (
 	"context"
-	"errors"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"

@@ -292,3 +292,37 @@ func TestPhotosOff(t *testing.T) {
 		t.Fatalf("pictures stored with pictures off: %d, was %d", n, before)
 	}
 }
+
+// With server.disable_pictures photos behave as in an organization whose pictures are off: left out when read, ignored
+// when written, nothing stored.
+func TestPhotosServerOff(t *testing.T) {
+	e := newEnv(t)
+	id := e.mk("pic", map[string]any{"photos": []any{map[string]any{"value": photoURI(t, 50)}}})
+	if r := e.do("GET", "/scim/v2/acme/Users/"+id, e.admA, nil); photoOf(r) == "" {
+		t.Fatalf("no photo by default: %s", r.Raw)
+	}
+	e.Svc.Cfg.Server.DisablePictures = true
+	stored := func() int {
+		l, _, err := e.Svc.Pictures.List(e.ctx, store.ListQuery{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(l)
+	}
+	before := stored()
+	r := e.do("GET", "/scim/v2/acme/Users/"+id, e.admA, nil)
+	if wantStatus(t, "get", r, 200); r.list("photos") != nil {
+		t.Fatalf("photos with the server's pictures off: %s", r.Raw)
+	}
+	r = e.patch(id, op("replace", "photos", []any{map[string]any{"value": photoURI(t, 51)}}), op("replace", "displayName", "Pat"))
+	if wantStatus(t, "patch", r, 200); r.list("photos") != nil {
+		t.Fatalf("patch: %s", r.Raw)
+	}
+	r = e.createUser("acme", e.admA, map[string]any{"userName": "new", "photos": []any{map[string]any{"value": photoURI(t, 52)}}})
+	if wantStatus(t, "create", r, 201); r.list("photos") != nil {
+		t.Fatalf("create: %s", r.Raw)
+	}
+	if n := stored(); n != before {
+		t.Fatalf("pictures stored with the server's pictures off: %d, was %d", n, before)
+	}
+}

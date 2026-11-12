@@ -158,6 +158,12 @@ Who sets pictures is the organization's choice, `settings.pictures` (the organiz
   every picture URL of the organization answers 404 at once. **Turning pictures off deletes those held**: housekeeping
   removes them, and turning pictures on again starts with none.
 
+To have none in any organization, start the server with `--disable-pictures` (`server.disable_pictures = true`,
+`QUISORA_DISABLE_PICTURES=true`). Every organization then behaves as if it had `off`: the same refusals, no `picture`
+claim (it leaves `claims_supported` and the `profile` scope's consent text), 404 for every picture URL, pictures held
+deleted by housekeeping, and the console no longer shows the "Profile pictures" setting; the API refuses to change
+`settings.pictures` to `admins` or `off`. Pictures are on by default.
+
 Each is a JPEG, PNG or WebP image of at most 5 MB and 8192 pixels a side, cropped to its centre square. A server
 makes one picture at a time and lets a few more wait their turn; past that an upload is refused at once with `503` and
 `Retry-After` (try again in a few seconds).
