@@ -169,8 +169,8 @@ func TestAuditAccessAndQuery(t *testing.T) {
 			t.Fatalf("not sorted by action: %v then %v", sorted.Items[i-1].Action, sorted.Items[i].Action)
 		}
 	}
-	// the retention is a week unless configured: events expire then
-	if e := pg.Items[0]; e.Expires.Before(e.Created.Add(6*24*time.Hour)) || e.Expires.After(e.Created.Add(8*24*time.Hour)) {
+	// the retention is 90 days unless configured: events expire then
+	if e := pg.Items[0]; e.Expires.Before(e.Created.Add(89*24*time.Hour)) || e.Expires.After(e.Created.Add(91*24*time.Hour)) {
 		t.Fatalf("expiry %v for an event at %v", e.Expires, e.Created)
 	}
 }
