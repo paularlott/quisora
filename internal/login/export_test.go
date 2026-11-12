@@ -59,6 +59,13 @@ func (m *Module) PutEnrolTicket(userID string) (string, error) {
 	return m.putTicket(ctx, t, enrolTTL)
 }
 
+// ReadReauthStored stores raw as a session's re-authentication mark and reads it back as the account page does.
+func (m *Module) ReadReauthStored(sessionID, raw string) (gen uint64, at time.Time, secondFactor, ok bool) {
+	ctx := context.Background()
+	_ = m.s.Eph.Set(ctx, nsReauth, sessionID, []byte(raw), time.Minute)
+	return m.readReauth(ctx, sessionID)
+}
+
 // ClearReauth forgets a session's re-authentication (as if its window had passed).
 func (m *Module) ClearReauth(sessionID string) {
 	_ = m.s.Eph.Delete(context.Background(), nsReauth, sessionID)

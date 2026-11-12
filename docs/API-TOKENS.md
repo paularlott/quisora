@@ -255,6 +255,10 @@ by email address or creating a second one:
   linked to another user at that provider is a 409 on `identities`, and nothing is created.
 - The links are marked as made by an administrator (`admin`). As with every link the user did not connect themselves,
   they are dropped if the user is promoted to manager or above. The user's own connected providers are unaffected.
+- An imported password hash or authenticator secret is taken as the user's own, as the system it came from vouched
+  for it: it is not recorded as set up through an imported link's provider, so a promotion drops the links but keeps
+  them. Import only credentials and links you vouch for; what a sign-in through one of the providers sets up later is
+  recorded as any other is, and reset on promotion.
 - The user create is the only place for this: there is no separate endpoint to link an existing user.
 - The audit event `user.create` lists the providers (`providers`).
 

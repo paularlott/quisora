@@ -165,3 +165,21 @@ func TestAccountPasswordChangeNeedsTheSecondFactor(t *testing.T) {
 	res, out = e.browser(t).login("acme", "pat", next)
 	wantStatus(t, res, out, 200)
 }
+
+// A re-authentication mark is read only in the form it is written ("gen@unix@0|1"): one missing a part, with a part
+// that is not a number, or with one too many does not count as a re-authentication at all.
+func TestReauthMarkIsReadStrictly(t *testing.T) {
+	e := newEnv(t)
+	gen, at, second, ok := e.Mod.ReadReauthStored("s1", "7@1700000000@1")
+	if !ok || gen != 7 || at.Unix() != 1700000000 || !second {
+		t.Fatalf("a well-formed mark: %d %v %v %v", gen, at, second, ok)
+	}
+	if _, _, second, ok := e.Mod.ReadReauthStored("s1", "7@1700000000@0"); !ok || second {
+		t.Fatalf("a mark without a second factor: %v %v", second, ok)
+	}
+	for _, raw := range []string{"7", "7@1700000000", "7@1700000000@1@x", "x@1700000000@1", "7@x@1", ""} {
+		if _, _, _, ok := e.Mod.ReadReauthStored("s1", raw); ok {
+			t.Errorf("%q read as a re-authentication", raw)
+		}
+	}
+}

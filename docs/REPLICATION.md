@@ -435,10 +435,9 @@ expired are removed by every node from its own copy.
 - **Intact** is decided at start from `cluster-state.json` (`intact`, and `self` naming this very database: a replaced or
   restored database is not): true for a node that has run, for the first node of a new cluster (`quisora bootstrap` and
   `quisora restore` seed its partitions: below), false for everything else. A database that holds records no partition
-  write made (an earlier build's, or loaded by hand) is refused outright, not served and not copied from.
+  write made (loaded by hand) is refused outright, not served and not copied from.
 - **Formation.** Only nodes whose data is intact count, so a new cluster (one seeded node, the others empty) could not
-  start by the rules above alone. A node *forms* (`cluster-state.json`: `formed`, called `established` in older files,
-  which are still read; set durably through the protocol's `Config.SetFormed` before its first promise is stored, or when it
+  start by the rules above alone. A node *forms* (`cluster-state.json`: `formed`; set durably through the protocol's `Config.SetFormed` before its first promise is stored, or when it
   has synchronised with an intact majority); until then it is *unformed*, and says so in its answers. A node copying a data
   set counts only intact answers from formed nodes toward its quorum, except in formation: when it is unformed itself and
   every other node of the cluster answered unformed too (intact or not), at least one intact (the founder), it copies from
