@@ -50,6 +50,8 @@ func TestValidateMessages(t *testing.T) {
 		"trust proxy":                            {func(c *Config) { c.Server.TrustProxy = []string{"x"} }, "trust_proxy"},
 		"deny network":                           {func(c *Config) { c.Server.DenyNetworks = []string{"10.0.0.0/8", "x"} }, "server.deny_networks \"x\""},
 		"deny every address":                     {func(c *Config) { c.Server.DenyNetworks = []string{"::/0"} }, "is every address"},
+		"deny IPv4-mapped range":                 {func(c *Config) { c.Server.DenyNetworks = []string{"::ffff:203.0.113.0/120"} }, "IPv4-mapped"},
+		"trust IPv4-mapped proxy":                {func(c *Config) { c.Server.TrustProxy = []string{"::ffff:10.0.0.0/104"} }, "IPv4-mapped"},
 		"public url path":                        {func(c *Config) { c.Server.PublicURL = "https://x/path" }, "server.public_url"},
 		"extra ca":                               {func(c *Config) { c.Server.ExtraCAFile = "/nonexistent/ca.pem" }, "ca.pem"},
 		"master key":                             {func(c *Config) { c.Server.MasterKey = "short" }, "server.master_key"},

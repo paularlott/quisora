@@ -776,6 +776,13 @@ func parseNetwork(setting, s string) (netip.Prefix, error) {
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("%s %q is not an IP address or CIDR range", setting, s)
 	}
+	if p.Addr().Is4In6() {
+		// Client addresses are compared unmapped (an IPv4 client reached over IPv6 is its IPv4 address), so a range
+		// written in the IPv4-mapped IPv6 form would never match: accepted, a deny rule copied in that form mid-incident
+		// would deny nothing. It is refused, not rewritten (::ffff:0:0/96 rewritten would be every IPv4 address).
+		return netip.Prefix{}, fmt.Errorf("%s %q is an IPv4-mapped IPv6 range, which no client address matches: "+
+			"write it as an IPv4 range", setting, s)
+	}
 	return p.Masked(), nil
 }
 

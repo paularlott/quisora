@@ -84,8 +84,14 @@ Before production:
    with read access to Quisora's items only), else an environment variable or a config file only Quisora's user can
    read; never on the command line or in the data directory. Kept apart from the data and from the backups.
    [Rotate it](RUNNING.md#rotating-the-master-key) on a schedule.
-2. **TLS**: a real certificate; behind a load balancer, `server.trust_proxy` set to its addresses, so rate limits see
-   real client addresses.
+2. **TLS**: a real certificate; behind a load balancer, `server.trust_proxy` set to its addresses (and no wider), so
+   rate limits see real client addresses. Each trusted proxy must append the address it received the connection from
+   to `X-Forwarded-For` (nginx's `$proxy_add_x_forwarded_for`, HAProxy's `option forwardfor`), never pass the header on
+   as the client sent it: the client address is the rightmost entry no trusted proxy wrote, so a pass-through proxy, or
+   a `trust_proxy` range that takes in addresses clients can send from, lets a client name any address it likes, and
+   every per-address defence (the login limit, the spray budget, the per-address flow cap, `deny_networks`) and the
+   audit log's addresses would then fall on that address instead. A malformed entry stops the walk: the address is the
+   last trusted hop's, the proxy itself.
 3. **Database**: verified TLS (no start-up warning about it); encryption at rest (RUNNING.md,
    [Encryption at rest](RUNNING.md#encryption-at-rest)).
 4. **Cluster**: `cluster.key` from a secret store; the gossip port (7946) reachable by the other nodes only.
