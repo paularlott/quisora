@@ -2,8 +2,8 @@
 
 Quisora run against the OpenID Foundation conformance suite (built from source, October 2026) with the harness in
 [conformance/](../conformance/README.md). Static clients, discovery, authorization code flow with PKCE S256. The
-results below are from commit `527d185` (profile pictures and the third review's fixes), run on 11 November
-2026, against a freshly seeded node.
+results below are from commit `34f6c44` (the review rounds through the nineteenth, the siege defences, always-encrypted
+backups), run on 12 November 2026, against a freshly seeded node; the counts are the same as at `527d185`.
 
 The suite's test logic is unmodified. Its OIDC client sends no PKCE, so the seeded confidential clients have
 **Require PKCE** turned off (a per-client setting, on by default; public clients always need PKCE). The only local

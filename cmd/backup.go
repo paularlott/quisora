@@ -33,7 +33,8 @@ func backupCmd(cfg *config.Config, flags []cli.Flag) *cli.Command {
 		Description: "Writes a compressed backup of every organization, user, credential, application, key and audit " +
 			"entry to <file> (\"-\" for standard output). Secrets stay sealed with the master key: a restore needs " +
 			"that key too. Short-lived state (sign-in challenges, rate limits) is not included.\n\n" +
-			"The file is always encrypted (AES-256-GCM, with a key derived from a password by argon2id). The password (at least 12 characters) is read from --password-file, else from standard input " +
+			"The file is always encrypted (AES-256-GCM, with a key derived from a password by argon2id). The " +
+			"password (at least 12 characters) is read from --password-file, else from standard input " +
 			"when it is a pipe, else asked for on the terminal (twice); keep it apart from the backup.\n\n" +
 			"The backup is a consistent snapshot of the whole store (a point-in-time view of the database).\n\n" +
 			"With --server it downloads the backup from a running server (any backend, the server keeps serving), " +
