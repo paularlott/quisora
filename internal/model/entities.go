@@ -1197,7 +1197,14 @@ type Session struct {
 	Clients []string `msgpack:"cl" json:"-"`
 	// Stamp is the session sign-out counters it was made under (signout.go).
 	Stamp SignOutStamp `msgpack:"st" json:"-"`
+	// AppFences counts, by application (client id), the times the user removed that application's access while the
+	// session lasted (service.RevokeAppAccess). An authorization code or device sign-in approved in the session carries
+	// the count as it was then, and makes a grant only while it is the same: one approved before a removal makes none.
+	AppFences map[string]uint32 `msgpack:"af,omitempty" json:"-"`
 }
+
+// AppFence is how many times the user removed client clientID's access while the session lasted (AppFences).
+func (s *Session) AppFence(clientID string) uint32 { return s.AppFences[clientID] }
 
 func (s *Session) Kind() Kind { return KindSession }
 func (s *Session) Index() Index {

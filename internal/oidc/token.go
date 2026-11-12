@@ -53,6 +53,9 @@ type codeData struct {
 	// takes (Grant.ConsentGen). A code issued before the client's redirect URIs or credentials changed is not redeemed
 	// after (userGrant): what the user allowed was the client as it was.
 	ConsentGen int64 `json:"cg"`
+	// AppFence is the session's count of removals of the client's access when the code was issued
+	// (model.Session.AppFence): a removal since, and the code makes no grant (userGrant).
+	AppFence uint32 `json:"af,omitempty"`
 }
 
 // tokenFailuresPerClientMin bounds the token requests per confidential client, grant type and minute that fail on what
@@ -379,6 +382,10 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		}
 		if !usable {
 			return nil, oerr("invalid_grant", "the user's session has ended")
+		}
+		// The user removed the application's access since approving (service.RevokeAppAccess): the approval went with it.
+		if sess.AppFence(c.ID) != cd.AppFence {
+			return nil, oerr("invalid_grant", "the user removed this application's access: sign in again")
 		}
 		return sess, nil
 	}

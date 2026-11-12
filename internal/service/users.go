@@ -1134,6 +1134,12 @@ func (s *Service) endUserSessions(ctx context.Context, userID string, a *Actor) 
 // failures are returned together with the count of those that did go, so the caller can say the removal is partly done
 // (a grant left behind still refreshes; a consent left behind still skips the consent screen).
 func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) (int, error) {
+	// The fence first: each of the user's sessions counts one more removal of the application (model.Session.AppFences).
+	// An authorization code or approved device sign-in from before it then makes no grant, as a grant is written only
+	// while its session is as checked (CreateSessionGrant); one made before it is in the listing below.
+	if err := s.fenceApp(ctx, userID, clientID); err != nil {
+		return 0, err
+	}
 	grants, err := s.Grants.All(ctx, userID)
 	if err != nil {
 		return 0, mapStore(err)
@@ -1178,6 +1184,39 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 		}
 	}
 	return n, errors.Join(errs...)
+}
+
+// fenceApp counts one more removal of client clientID's access on each of the user's sessions (model.Session.AppFences),
+// each written only as read, again on a session changed meanwhile.
+func (s *Service) fenceApp(ctx context.Context, userID, clientID string) error {
+	sessions, err := s.Sessions.All(ctx, userID)
+	if err != nil {
+		return mapStore(err)
+	}
+	var errs []error
+	for _, sess := range sessions {
+		for attempt := 0; ; attempt++ {
+			if sess.AppFences == nil {
+				sess.AppFences = map[string]uint32{}
+			}
+			sess.AppFences[clientID]++
+			err := s.Sessions.Update(ctx, sess)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, store.ErrStale) || attempt == 4 {
+				errs = append(errs, mapStore(err))
+				break
+			}
+			if sess, err = s.Sessions.Get(ctx, sess.ID); err != nil {
+				if !errors.Is(err, store.ErrNotFound) {
+					errs = append(errs, mapStore(err))
+				}
+				break // ended meanwhile: nothing approved in it makes a grant
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RevokeSessions ends every session and refresh grant of a user (admin action or "sign out everywhere"). They end at

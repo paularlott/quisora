@@ -70,6 +70,7 @@ type deviceGrant struct {
 	Account    *model.UpstreamAccount `json:"upa,omitempty"`  // codeData.Upstream
 	GrantID    string                 `json:"g,omitempty"`    // codeData.GrantID
 	ConsentGen int64                  `json:"cg,omitempty"`   // codeData.ConsentGen: the client's when the user approved
+	AppFence   uint32                 `json:"af,omitempty"`   // codeData.AppFence: the session's when the user approved
 }
 
 // devicePoll is when the device last polled, and how far apart its polls must be (it grows with every slow_down).
@@ -292,7 +293,8 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
-		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID, ConsentGen: d.ConsentGen}
+		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID, ConsentGen: d.ConsentGen,
+		AppFence: d.AppFence}
 	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, ad, jkt, "device_code")
 	return tr, restore(oe)
 }
@@ -426,7 +428,7 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 		d.Decision = "allow"
 		d.UserID, d.OrgID, d.SessionID, d.AuthTime, d.AMR = u.ID, u.OrgID, sess.ID, sess.AuthTime.Unix(), sess.AMR
 		d.IdP, d.Upstream, d.Account = idp, sess.UpstreamAMR, upstreamAccount(idp, sess)
-		d.ConsentGen = gen
+		d.ConsentGen, d.AppFence = gen, sess.AppFence(d.ClientID)
 	}
 	b, _ := json.Marshal(d)
 	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl()) == nil

@@ -743,7 +743,8 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	}
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Upstream: upstreamAccount(idp, sess), Scopes: f.Scopes,
-		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT, ConsentGen: c.RememberGen}
+		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT, ConsentGen: c.RememberGen,
+		AppFence: sess.AppFence(c.ID)}
 	b, _ := json.Marshal(cd)
 	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
 	if err != nil {
