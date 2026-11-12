@@ -260,12 +260,17 @@ func (p *Provider) VerifyRequestToken(r *http.Request, scheme, tok string) (*Cla
 	case !dpop:
 		return nil, badToken("a DPoP-bound token was presented as a bearer token")
 	}
-	fapi := false
+	// The client decides which proofs are accepted (a FAPI client's only with the FAPI algorithms): one that cannot be
+	// read now decides nothing, and the caller answers "not now" rather than checking the proof by the looser rules.
 	orgID, _ := p.issuerOrg(cl.Iss) // verified: the token's issuer is an organization's
-	if ce, err := p.client(r.Context(), orgID, cl.ClientID); err == nil {
-		fapi = ce.c.FAPI
+	ce, err := p.client(r.Context(), orgID, cl.ClientID)
+	if err != nil {
+		if gone(err) {
+			return nil, badToken("client gone")
+		}
+		return nil, unavailable(err)
 	}
-	jkt, e := p.checkProof(r, tok, false, fapi)
+	jkt, e := p.checkProof(r, tok, false, ce.c.FAPI)
 	if e != nil && service.IsUnavailable(e) {
 		return nil, e // the proof could not be checked: not refused, and the caller answers "not now"
 	}

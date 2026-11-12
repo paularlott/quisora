@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -260,4 +261,92 @@ func (h *harness) membersOnlyLogin(name string) (*model.Client, string, tokResp)
 		h.t.Fatalf("login: %d %v", tokens.status, tokens.m)
 	}
 	return cl, secret, tokens
+}
+
+// A token names its client's tenant: a tenant that cannot be read when it is issued issues nothing (503), rather than
+// a token that silently lacks it, whether for a user (a code exchange) or for the client itself.
+func TestMintFailsClosedOnTenantReadFailure(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, secret := h.newClient(nil)
+	c, _ := h.session(h.user)
+	v, ch := pkce()
+	code := h.getCode(c, cl, ch, nil)
+	good := h.env.Svc.Tenants.S
+	h.env.Svc.Tenants.S = failReads(good, model.KindTenant)
+	h.p.InvalidateTenant(cl.TenantID)
+	expectUnavailable(t, "code exchange with an unreadable tenant", h.exchangeCode(cl, secret, code, v))
+	expectUnavailable(t, "client_credentials with an unreadable tenant", h.token(url.Values{"grant_type": {"client_credentials"}}, cl, secret))
+	h.env.Svc.Tenants.S = good
+	if r := h.exchangeCode(cl, secret, code, v); r.status != 200 || claimsOf(t, r.str("access_token"))["tenant"] != cl.TenantID {
+		t.Fatalf("the code kept for the retry: %d %v", r.status, r.m)
+	}
+}
+
+// A sign-in whose flow, client or tenant cannot be read is not a bad or expired request: the browser is told to try
+// again (503), or the application is sent server_error, never a 400 that has the user start over for nothing.
+func TestAuthorizeAnswersUnavailableOnReadFailures(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	cl, _ := h.newClient(func(in *service.ClientInput) { in.FirstParty = ptr(false) })
+	c, csrf := h.session(h.user)
+	_, ch := pkce()
+	flow := h.authorize(c, authzQuery(cl, ch, nil)).Query().Get("flow")
+	if flow == "" {
+		t.Fatal("no consent flow")
+	}
+	resume, cancel, consent := h.orgBase+"/oauth/authorize/resume?flow="+flow, h.orgBase+"/oauth/authorize/cancel?flow="+flow,
+		h.orgBase+"/oauth/consent?flow="+flow
+	status := func(path string) int {
+		resp := h.get(c, path)
+		body(resp)
+		return resp.StatusCode
+	}
+
+	// the flow cannot be read
+	h.useEph(func(op, ns string) error {
+		if op == "get" && ns == nsFlow {
+			return errFault
+		}
+		return nil
+	})
+	for _, path := range []string{resume, cancel, consent} {
+		if st := status(path); st != http.StatusServiceUnavailable {
+			t.Errorf("flow unreadable, %s: %d", path, st)
+		}
+	}
+	if st, _ := h.decideConsent(c, csrf, flow, true); st != http.StatusServiceUnavailable {
+		t.Errorf("flow unreadable, consent decision: %d", st)
+	}
+	h.useEph(func(string, string) error { return nil })
+
+	// its client cannot be read
+	clients := h.env.Svc.Clients.S
+	h.env.Svc.Clients.S = failReads(clients, model.KindClient)
+	h.p.InvalidateClient(cl.ID)
+	for _, path := range []string{resume, consent} {
+		if st := status(path); st != http.StatusServiceUnavailable {
+			t.Errorf("client unreadable, %s: %d", path, st)
+		}
+	}
+	if st, _ := h.decideConsent(c, csrf, flow, true); st != http.StatusServiceUnavailable {
+		t.Errorf("client unreadable, consent decision: %d", st)
+	}
+	// nor whether a metadata document's application is stored
+	meta := url.Values{"client_id": {"https://app.example/client.json"}, "redirect_uri": {"https://app.example/cb"}, "response_type": {"code"}}
+	if st := status(h.orgBase + "/oauth/authorize?" + meta.Encode()); st != http.StatusServiceUnavailable {
+		t.Errorf("client unreadable, metadata document application: %d", st)
+	}
+	h.env.Svc.Clients.S = clients
+
+	// its tenant cannot be read, once the user is signed in: the application is told, as server_error
+	tenants := h.env.Svc.Tenants.S
+	h.env.Svc.Tenants.S = failReads(tenants, model.KindTenant)
+	h.p.InvalidateTenant(cl.TenantID)
+	resp := h.get(c, resume)
+	body(resp)
+	if resp.StatusCode != http.StatusFound || loc(t, resp).Query().Get("error") != "server_error" {
+		t.Errorf("tenant unreadable: %d", resp.StatusCode)
+	}
+	h.env.Svc.Tenants.S = tenants
 }

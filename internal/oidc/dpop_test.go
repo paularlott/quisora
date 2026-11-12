@@ -447,3 +447,40 @@ func TestDPoPProofReplayStoreOutageIsUnavailable(t *testing.T) {
 		t.Fatalf("userinfo once the store answers again: %d %s", ui.StatusCode, body(ui))
 	}
 }
+
+// Which proofs a DPoP-bound token is presented with depends on its client (a FAPI client's take only the FAPI
+// algorithms): a client that cannot be read when the proof is checked decides nothing, and the request is answered
+// "not now" (service.IsUnavailable), never let through by the looser rules.
+func TestDPoPProofClientUnreadable(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	ec := newAssertionKeys(t)[0]
+	c := h.jwtClient(ec, func(in *service.ClientInput) { in.FAPI = ptr(true) })
+	k := newDPoPKey(t, AlgES256)
+	f := url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {assertionType},
+		"client_assertion": {h.assertion(ec, h.assertionClaims(c, func(m map[string]any) { m["aud"] = h.issuer() }))}}
+	r := h.post(h.orgBase+"/oauth/token", f, "", "", "DPoP", h.proof(k, "POST", h.orgBase+"/oauth/token", nil))
+	if r.status != 200 || r.str("token_type") != "DPoP" {
+		t.Fatalf("token: %d %v", r.status, r.m)
+	}
+	at := r.str("access_token")
+	req := httptest.NewRequest("GET", "/scim/v2/Users", nil)
+	req.Header.Set("DPoP", h.proof(k, "GET", "/scim/v2/Users", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = nil }))
+	if _, err := h.p.VerifyRequestToken(req, "DPoP", at); err != nil {
+		t.Fatalf("proof of the key: %v", err)
+	}
+	// The token's own check reads the client; the read for the proof's rules, after it, fails.
+	clients := &faultStore{Store: h.p.svc.Clients.S}
+	clients.afterGet = func(kind model.Kind, id string) {
+		if kind == model.KindClient && id == c.ID {
+			h.p.InvalidateClient(id)
+			clients.getKind = model.KindClient
+		}
+	}
+	h.p.svc.Clients.S = clients
+	h.p.InvalidateClient(c.ID)
+	req.Header.Set("DPoP", h.proof(k, "GET", "/scim/v2/Users", func(_, c map[string]any) { c["ath"] = ath(at); c["nonce"] = nil }))
+	if _, err := h.p.VerifyRequestToken(req, "DPoP", at); !service.IsUnavailable(err) {
+		t.Fatalf("client unreadable at the proof: %v", err)
+	}
+}

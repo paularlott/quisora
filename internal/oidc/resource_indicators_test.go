@@ -1,11 +1,13 @@
 package oidc
 
 import (
+	"context"
 	"net/url"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
 
@@ -141,6 +143,52 @@ func TestResourceIndicators(t *testing.T) {
 		}
 		if u := h.authorize(c, authzQuery(cl, ch2, url.Values{"resource": {"https://api.example/b"}})); u.Path != h.orgBase+"/oauth/consent" {
 			t.Fatalf("another resource without consent: %s", u)
+		}
+	})
+}
+
+// A resource taken from a client's registration is not in the tokens of an authorization made before it was taken,
+// whether issued from a code, a device sign-in or a refresh: none names it, and asking for it is refused.
+func TestResourceTakenFromClient(t *testing.T) {
+	t.Parallel()
+	const kept, taken = "https://api.example/a", "https://api.example/b"
+	drop := func(t *testing.T, h *harness, cl *model.Client) {
+		t.Helper()
+		if _, err := h.env.Svc.UpdateClient(context.Background(), h.admin, cl.ID, service.ClientInput{Resources: &[]string{kept}}); err != nil {
+			t.Fatal(err)
+		}
+		h.p.InvalidateClient(cl.ID)
+	}
+	audOf := func(t *testing.T, tok string) []any { aud, _ := claimsOf(t, tok)["aud"].([]any); return aud }
+	t.Run("code", func(t *testing.T) {
+		h := setup(t, nil)
+		cl, secret := h.newClient(nil)
+		c, _ := h.session(h.user)
+		v, ch := pkce()
+		code := h.getCode(c, cl, ch, url.Values{"resource": {kept, taken}})
+		code2 := h.getCode(c, cl, ch, url.Values{"resource": {kept, taken}})
+		drop(t, h, cl)
+		r := h.token(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {rpCallback}, "code_verifier": {v}, "resource": {taken}}, cl, secret)
+		if r.status != 400 || r.str("error") != "invalid_target" {
+			t.Fatalf("taken resource asked for: %d %v", r.status, r.m)
+		}
+		r = h.exchangeCode(cl, secret, code2, v)
+		if aud := audOf(t, r.str("access_token")); r.status != 200 || slices.Contains(aud, any(taken)) || !slices.Contains(aud, any(kept)) {
+			t.Fatalf("exchange after the resource was taken: %d %v %v", r.status, aud, r.m)
+		}
+	})
+	t.Run("device", func(t *testing.T) {
+		h := setup(t, nil)
+		cl := h.deviceClient(nil)
+		dc, uc := h.startDeviceWith(cl, url.Values{"resource": {kept, taken}})
+		b, csrf := h.session(h.user)
+		if st, _ := h.consentDevice(b, csrf, uc, true); st != 200 {
+			t.Fatalf("approve: %d", st)
+		}
+		drop(t, h, cl)
+		r := h.pollDevice(cl, dc)
+		if aud := audOf(t, r.str("access_token")); r.status != 200 || slices.Contains(aud, any(taken)) || !slices.Contains(aud, any(kept)) {
+			t.Fatalf("poll after the resource was taken: %d %v %v", r.status, aud, r.m)
 		}
 	})
 }

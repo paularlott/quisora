@@ -205,6 +205,20 @@ func (p *Provider) expired(w http.ResponseWriter, r *http.Request) {
 		"Return to the application you were using and start again.")
 }
 
+// unknownApp is the page for an authorization request naming no application that may sign in here (none, a
+// disabled one, or a self-registered one the request gives no resource for).
+func (p *Provider) unknownApp(w http.ResponseWriter, r *http.Request) {
+	p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
+		"The link you followed is not valid. Return to the application and try again.")
+}
+
+// tryAgain is the page for a request that a store read it needs could not answer (as opposed to one that found the
+// application, flow or tenant gone): not a bad request, so the user is asked to try again, not to start over.
+func (p *Provider) tryAgain(w http.ResponseWriter, r *http.Request) {
+	p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
+		"This request cannot be completed at the moment. Try again in a moment.")
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Request validation
 
@@ -325,37 +339,41 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil { // the store could not say whether it was used: not an invalid request_uri
-			p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
-				"This request cannot be completed at the moment. Try again in a moment.")
+			p.tryAgain(w, r)
 			return
 		}
 		q, dup, pushedID, pushedUsed = pq, repeated(pq), id, used
 	}
 	// A metadata document is read only for a resource whose tenant accepts self-registered applications: requests
-	// naming documents for anything else never make this server fetch anything.
+	// naming documents for anything else never make this server fetch anything. A read that fails is not an unknown
+	// application either.
 	if metadataURL(q.Get("client_id")) {
 		if res, err := parseResources(q["resource"]); err != nil || len(res) == 0 {
-			ce, _ := p.client(r.Context(), org.ID, q.Get("client_id"))
-			if ce == nil || ce.c.SelfRegistered {
-				p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
-					"The link you followed is not valid. Return to the application and try again.")
+			ce, err := p.client(r.Context(), org.ID, q.Get("client_id"))
+			if err != nil && !gone(err) {
+				p.tryAgain(w, r)
+				return
+			}
+			if err != nil || ce.c.SelfRegistered {
+				p.unknownApp(w, r)
 				return
 			}
 		} else if _, err := p.svc.TenantForResources(r.Context(), org.ID, res); err != nil {
-			p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
-				"The link you followed is not valid. Return to the application and try again.")
+			if !gone(err) {
+				p.tryAgain(w, r)
+				return
+			}
+			p.unknownApp(w, r)
 			return
 		}
 	}
 	ce, err := p.appClient(r.Context(), r, org.ID, q.Get("client_id"))
 	if err != nil && !gone(err) { // the application or its organization cannot be read now: not an unknown one
-		p.message(w, r, http.StatusServiceUnavailable, "Unavailable", "Please try again",
-			"This request cannot be completed at the moment. Try again in a moment.")
+		p.tryAgain(w, r)
 		return
 	}
 	if err != nil || !ce.c.Enabled {
-		p.message(w, r, http.StatusBadRequest, "Unknown application", "This application is not recognised",
-			"The link you followed is not valid. Return to the application and try again.")
+		p.unknownApp(w, r)
 		return
 	}
 	c := ce.c
@@ -483,6 +501,9 @@ func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client
 		}
 		inT, _, err := p.forResources(ctx, c, res)
 		if err != nil {
+			if !gone(err) {
+				return nil, serverError(unavailable(err))
+			}
 			return nil, oerr("invalid_target", "the resource does not accept self-registered applications")
 		}
 		c = inT
@@ -519,49 +540,21 @@ func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client
 
 func (p *Provider) handleResume(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("flow")
-	raw, err := p.s.Eph.Get(r.Context(), nsFlow, id)
+	f, c, err := p.loadFlow(r, id)
 	if err != nil {
-		p.expired(w, r)
+		p.flowFailed(w, r, err)
 		return
 	}
-	var f flow
-	if json.Unmarshal(raw, &f) != nil {
-		p.expired(w, r)
-		return
-	}
-	if f.Org != web.Org(r).ID {
-		p.expired(w, r) // another organization's flow is none of this one's
-		return
-	}
-	if !flowBound(r, id, &f) {
-		p.wrongBrowser(w, r)
-		return
-	}
-	ce, err := p.appClient(r.Context(), r, f.Org, f.ClientID)
-	if err != nil || !ce.c.Enabled {
-		p.expired(w, r)
-		return
-	}
-	c, _, err := p.forResources(r.Context(), ce.c, f.Resources)
-	if err != nil {
-		p.expired(w, r) // the tenant no longer accepts the self-registered application
-		return
-	}
-	p.proceed(w, r, id, &f, c)
+	p.proceed(w, r, id, f, c)
 }
 
 // handleCancel is the sign-in page's Cancel: the user declines the request, and the application gets access_denied
 // (OIDC Core §3.1.2.6). Only the browser that started the flow can cancel it.
 func (p *Provider) handleCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("flow")
-	raw, err := p.s.Eph.Get(r.Context(), nsFlow, id)
-	var f flow
-	if err != nil || json.Unmarshal(raw, &f) != nil || f.Org != web.Org(r).ID {
-		p.expired(w, r)
-		return
-	}
-	if !flowBound(r, id, &f) {
-		p.wrongBrowser(w, r)
+	f, err := p.readFlow(r, id)
+	if err != nil {
+		p.flowFailed(w, r, err)
 		return
 	}
 	_ = p.s.Eph.Delete(r.Context(), nsFlow, id)
@@ -569,7 +562,7 @@ func (p *Provider) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if f.Pushed != "" {
 		p.usePushed(r.Context(), f.Pushed)
 	}
-	p.redirectError(w, r, &f, "access_denied", "the user cancelled the sign-in")
+	p.redirectError(w, r, f, "access_denied", "the user cancelled the sign-in")
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -588,6 +581,10 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	none := f.has("none")
 	tenant, terr := p.clientTenant(ctx, c)
 	if terr != nil {
+		if !gone(terr) { // the tenant could not be read: not an application that is gone
+			p.redirectError(w, r, f, "server_error", "temporarily unavailable")
+			return
+		}
 		p.message(w, r, http.StatusBadRequest, "Unavailable", "This application is not available", "")
 		return
 	}
@@ -622,6 +619,10 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	}
 	org, err := p.svc.Org(ctx, user.OrgID)
 	if err != nil {
+		if !gone(err) { // the organization could not be read: not one that is gone
+			p.redirectError(w, r, f, "server_error", "temporarily unavailable")
+			return
+		}
 		p.message(w, r, http.StatusBadRequest, "Unavailable", "Your organization is not available", "")
 		return
 	}
@@ -915,42 +916,70 @@ func (p *Provider) FlowWantsMFA(ctx context.Context, next string) bool {
 	return json.Unmarshal(raw, &f) == nil && f.MFA && u.Path == web.OrgPath(f.Org, "/oauth/authorize/resume")
 }
 
+// readFlow reads the sign-in flow id of request r's browser and organization. Its error is ephemeral.ErrNotFound when
+// there is no such flow here (expired, finished, another organization's), errWrongBrowser when it is another
+// browser's, and service.ErrUnavailable when it could not be read: flowFailed answers each.
+func (p *Provider) readFlow(r *http.Request, id string) (*flow, error) {
+	raw, err := p.s.Eph.Get(r.Context(), nsFlow, id)
+	if err != nil {
+		if errors.Is(err, ephemeral.ErrNotFound) {
+			return nil, err
+		}
+		return nil, unavailable(err)
+	}
+	var f flow
+	if json.Unmarshal(raw, &f) != nil || f.Org != web.Org(r).ID {
+		return nil, ephemeral.ErrNotFound // another organization's flow is none of this one's
+	}
+	if !flowBound(r, id, &f) {
+		return nil, errWrongBrowser
+	}
+	return &f, nil
+}
+
+// loadFlow is readFlow with the client that governs the flow: one gone, disabled, or (self-registered) no longer
+// accepted by the tenant of its resources ends the flow (ephemeral.ErrNotFound); one that cannot be read is
+// service.ErrUnavailable.
 func (p *Provider) loadFlow(r *http.Request, id string) (*flow, *model.Client, error) {
 	ctx := r.Context()
-	raw, err := p.s.Eph.Get(ctx, nsFlow, id)
+	f, err := p.readFlow(r, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	var f flow
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, nil, err
-	}
-	if f.Org != web.Org(r).ID {
-		return nil, nil, ephemeral.ErrNotFound
-	}
-	if !flowBound(r, id, &f) {
-		return nil, nil, errWrongBrowser
-	}
 	ce, err := p.appClient(ctx, r, f.Org, f.ClientID)
+	if err != nil && !gone(err) {
+		return nil, nil, unavailable(err)
+	}
 	if err != nil || !ce.c.Enabled {
 		return nil, nil, ephemeral.ErrNotFound
 	}
 	c, _, err := p.forResources(ctx, ce.c, f.Resources)
 	if err != nil {
+		if !gone(err) {
+			return nil, nil, unavailable(err)
+		}
 		return nil, nil, ephemeral.ErrNotFound // the tenant no longer accepts it (or the resource moved)
 	}
-	return &f, c, nil
+	return f, c, nil
+}
+
+// flowFailed answers a page request whose flow could not be used (readFlow, loadFlow).
+func (p *Provider) flowFailed(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, errWrongBrowser):
+		p.wrongBrowser(w, r)
+	case errors.Is(err, service.ErrUnavailable):
+		p.tryAgain(w, r)
+	default:
+		p.expired(w, r)
+	}
 }
 
 func (p *Provider) handleConsentPage(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("flow")
 	f, c, err := p.loadFlow(r, id)
-	if errors.Is(err, errWrongBrowser) {
-		p.wrongBrowser(w, r)
-		return
-	}
 	if err != nil {
-		p.expired(w, r)
+		p.flowFailed(w, r, err)
 		return
 	}
 	u := web.User(r)
@@ -1008,6 +1037,10 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 	f, c, err := p.loadFlow(r, in.Flow)
 	if errors.Is(err, errWrongBrowser) {
 		web.WriteJSON(w, http.StatusForbidden, web.ErrorBody{Error: "This sign-in request was started in another browser. Return to the application and start again."})
+		return
+	}
+	if errors.Is(err, service.ErrUnavailable) { // not an expired request: the same decision works in a moment
+		web.WriteJSON(w, http.StatusServiceUnavailable, web.ErrorBody{Error: "This cannot be done at the moment. Try again in a moment."})
 		return
 	}
 	if err != nil {

@@ -309,17 +309,6 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	if cd.DPoPJKT != "" && cd.DPoPJKT != jkt {
 		return nil, oerr("invalid_grant", "the DPoP proof is not made with the key the authorization request named (dpop_jkt)")
 	}
-	res, err := parseResources(resource)
-	if err != nil {
-		return nil, oerr("invalid_target", err.Error())
-	}
-	// RFC 8707 §2.2: the exchange may name the resources the user authorized, or fewer; never others — and none at
-	// all when the authorization request named none (the user never saw them).
-	if len(res) == 0 {
-		res = cd.Resources
-	} else if !subset(res, cd.Resources) {
-		return nil, oerr("invalid_target", "resource was not part of the authorization request")
-	}
 	ad, oe := narrowAuthDetails(ad, cd.ADTypes)
 	if oe != nil {
 		return nil, oe
@@ -330,7 +319,7 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		}
 		return nil, oerr("invalid_grant", "the resource no longer accepts this application")
 	}
-	tr, gid, oe := p.userGrant(ctx, c, &cd, res, ad, jkt, "")
+	tr, gid, oe := p.userGrant(ctx, c, &cd, resource, ad, jkt, "")
 	switch {
 	case oe != nil && oe.status >= 500:
 		// Nothing was decided (a store that could not be read or written): the code is put back for the client's
@@ -352,9 +341,14 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 // naming its grant type) and issues its tokens for res, checking again that the user, their session and their access
 // to the application are still there. It returns the grant's id. The grant's id is cd.GrantID, so a retry of an
 // exchange that failed on our side makes the same grant, and issues its tokens from the one an earlier attempt made.
-// userGrant makes the refresh grant of an approved authorization (cd) and issues its tokens, for the resources res
-// and the authorization details types ad (nil: those of the grant, which keeps cd's).
-func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, res, ad []string, jkt, via string) (*tokenResponse, string, *oauthError) {
+// userGrant makes the refresh grant of an approved authorization (cd) and issues its tokens, for the resources the
+// request names (resource, narrowed by grantResources) and the authorization details types ad (nil: those of the
+// grant, which keeps cd's).
+func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData, resource, ad []string, jkt, via string) (*tokenResponse, string, *oauthError) {
+	res, oe := grantResources(resource, cd.Resources, c)
+	if oe != nil {
+		return nil, "", oe
+	}
 	// Each of these is a decision: a read that fails (as opposed to one that finds the record gone) makes none, and
 	// says so (503), rather than telling the client the user, session or organization is gone.
 	u, err := p.user(ctx, cd.UserID)
@@ -476,6 +470,25 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		}
 	}
 	return tr, g.ID, nil
+}
+
+// grantResources are the resources a token of an authorization is issued for (RFC 8707 §2.2): those the request names
+// (asked), which must be among those the user authorized, or else all of those (none when the authorization named
+// none: the user never saw them); and never one the client (c, as it is now) is no longer registered for, so a
+// resource taken from a client is not in its tokens from then on, whether issued from a code, a device sign-in or a
+// refresh.
+func grantResources(asked, authorized []string, c *model.Client) ([]string, *oauthError) {
+	res, err := parseResources(asked)
+	if err != nil {
+		return nil, oerr("invalid_target", err.Error())
+	}
+	if len(res) == 0 {
+		return slices.DeleteFunc(slices.Clone(authorized), func(r string) bool { return !slices.Contains(c.Resources, r) }), nil
+	}
+	if !subset(res, authorized) || !subset(res, c.Resources) {
+		return nil, oerr("invalid_target", "resource was not part of the authorization")
+	}
+	return res, nil
 }
 
 // grantLive is the one test of whether a refresh grant still stands for its user, wherever one is used (a refresh, an
@@ -762,19 +775,11 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 			return nil, oerr("invalid_scope", "the requested scope exceeds the original grant")
 		}
 	}
-	res, err := parseResources(resource)
-	if err != nil {
-		return nil, oerr("invalid_target", err.Error())
-	}
-	// RFC 8707 §2.2: a refresh may ask for the resources the user authorized, or fewer, never others; and never one
-	// the client is no longer registered for.
-	if len(res) == 0 {
-		res = slices.DeleteFunc(slices.Clone(g.Resources), func(r string) bool { return !slices.Contains(c.Resources, r) })
-	} else if !subset(res, g.Resources) || !subset(res, c.Resources) {
-		return nil, oerr("invalid_target", "resource was not part of the authorization")
-	}
-	ad, oe := narrowAuthDetails(ad, g.AuthDetailTypes)
+	res, oe := grantResources(resource, g.Resources, c)
 	if oe != nil {
+		return nil, oe
+	}
+	if ad, oe = narrowAuthDetails(ad, g.AuthDetailTypes); oe != nil {
 		return nil, oe
 	}
 	var newRefresh string

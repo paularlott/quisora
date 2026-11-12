@@ -295,7 +295,7 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
 		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID, ConsentGen: d.ConsentGen,
 		AppFence: d.AppFence}
-	tr, _, oe := p.userGrant(ctx, c, &cd, d.Resources, ad, jkt, "device_code")
+	tr, _, oe := p.userGrant(ctx, c, &cd, nil, ad, jkt, "device_code") // the approved resources, grantResources
 	return tr, restore(oe)
 }
 

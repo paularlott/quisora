@@ -468,9 +468,13 @@ func (p *Provider) mint(ctx context.Context, is *issue, withID bool) (*tokenResp
 		return nil, err
 	}
 	if is.tenant == nil && is.client != nil {
-		if t, err := p.clientTenant(ctx, is.client); err == nil {
-			is.tenant = t
+		// A tenant that is gone leaves the token without one (and a user without access); one that cannot be read
+		// issues nothing (503), rather than a token that silently lacks its tenant.
+		t, err := p.clientTenant(ctx, is.client)
+		if err != nil && !gone(err) {
+			return nil, unavailable(err)
 		}
+		is.tenant = t
 	}
 	if is.user != nil && is.app == nil {
 		if is.tenant == nil {
