@@ -68,7 +68,8 @@ Make a client in the console: the organization → **Tenants** → the tenant's 
   as `com.example.app:/callback` for mobile apps).
 - **Grant types**: authorization code (sign users in), refresh token, client credentials, token exchange, device
   sign-in.
-- **Allowed scopes**: the standard ones it may ask users for, and scopes for your own APIs.
+- **Allowed scopes**: the standard ones it may ask users for, and scopes for your own APIs. A scope taken off counts
+  at once: it is left out of the tokens from then on, those of a refresh and of a code issued before the change too.
 - **Resources**: the APIs it may ask tokens for ([resource indicators](sign-in.md#tokens-for-an-api-resource-indicators)).
 
 The client ID is on the client's row; a secret is shown once, when the client is made or its secret rotated. The same

@@ -142,7 +142,7 @@ administrators):
 
 **Account changes** (a passkey, the authenticator app, recovery codes, the primary address, connecting a sign-in
 provider, an API token, signing out other sessions) need a re-authentication too, or a sign-in within 5 minutes that used the account's own second
-factor. A sign-in through a provider trusted for the second factor does not count when the account has one of its own,
+factor, whether made on the account page or through the management API. A sign-in through a provider trusted for the second factor does not count when the account has one of its own,
 and an account whose second factor is a passkey confirms with the passkey, not the password alone. A
 [recovery code](recovery-codes.md#confirming-it-is-you) stands in for a lost authenticator app or passkey here too.
 
