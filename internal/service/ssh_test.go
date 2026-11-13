@@ -3270,3 +3270,33 @@ func TestSSHSuperAdminCertsHiddenBelowThem(t *testing.T) {
 		t.Errorf("super admin revokes their own: %v", err)
 	}
 }
+
+// Turning host certificates off stops publishing the host key, but does not undo a revocation: a host certificate
+// revoked by hand stays on the revocation list (whichever came first), so a client with RevokedHostKeys goes on
+// refusing it. A host key with nothing revoked still gets no section.
+func TestSSHKRLKeepsRevokedHostCertsWithHostCertsOff(t *testing.T) {
+	w := newSSHWorld(t)
+	w.enable(service.SSHSettingsInput{HostCerts: ptr(true), HostPatterns: &[]string{"*.example.com"}})
+	sign := func(name string) *service.SSHIssued {
+		h, err := w.svc.SignHostSSH(w.ctx, actor(w.admin), w.tenant.ID, service.SSHHostRequest{PublicKey: newPub(t), Principals: []string{name}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	before, after, good := sign("a.example.com"), sign("b.example.com"), sign("c.example.com")
+	if err := w.svc.RevokeSSHCert(w.ctx, actor(w.admin), w.org.ID, before.Cert.ID); err != nil {
+		t.Fatal(err)
+	}
+	hostKey := pubKeyOf(t, keysOf(t, w, "host")[0])
+	w.set(service.SSHSettingsInput{HostCerts: ptr(false)})
+	if k := w.krlOf(); !k.Revoked(hostKey, before.Cert.Serial, "") || k.Revoked(hostKey, good.Cert.Serial, "") {
+		t.Error("revoked before host certificates were turned off: not listed, or a good one is")
+	}
+	if err := w.svc.RevokeSSHCert(w.ctx, actor(w.admin), w.org.ID, after.Cert.ID); err != nil {
+		t.Fatal(err)
+	}
+	if k := w.krlOf(); !k.Revoked(hostKey, after.Cert.Serial, "") {
+		t.Error("revoked after host certificates were turned off: not listed")
+	}
+}

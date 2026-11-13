@@ -706,9 +706,8 @@ func (s *Service) sshBuildKRL(ctx context.Context, e *sshKRLEntry, tenantID stri
 		// A certificates section only for a key ca.pub or known_hosts publishes, and goes on publishing for as long as
 		// the list may be kept (quisora ssh fetch refuses a list naming no published key): a removed key is revoked
 		// whole, and the serials of its certificates add nothing; a retired key that expires within sshKRLTTL signed
-		// nothing that is still valid; the host keys of a tenant whose host certificates are off are not published.
-		if !k.Removed.IsZero() || !k.Expires.IsZero() && k.Expires.Before(now.Add(sshKRLTTL)) ||
-			k.Purpose == model.SSHPurposeHost && !t.SSH.HostCerts {
+		// nothing that is still valid.
+		if !k.Removed.IsZero() || !k.Expires.IsZero() && k.Expires.Before(now.Add(sshKRLTTL)) {
 			continue
 		}
 		var serials []uint64
@@ -716,6 +715,12 @@ func (s *Service) sshBuildKRL(ctx context.Context, e *sshKRLEntry, tenantID stri
 			if r.Cert.CAKeyID == k.ID {
 				serials = append(serials, r.Cert.Serial)
 			}
+		}
+		// The host keys of a tenant whose host certificates are off are not published, so they get a section only
+		// for the host certificates revoked by hand: turning the setting off does not undo a revocation, and a client
+		// that sets RevokedHostKeys goes on refusing them.
+		if k.Purpose == model.SSHPurposeHost && !t.SSH.HostCerts && len(serials) == 0 {
+			continue
 		}
 		krl.Add(pub, serials...)
 	}
