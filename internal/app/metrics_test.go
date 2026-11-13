@@ -148,8 +148,12 @@ func TestEphemeralGauges(t *testing.T) {
 	if v := value("quisora_ephemeral_budget_bytes"); v != 3<<20 {
 		t.Errorf("budget %v, want %d", v, 3<<20)
 	}
-	if used, n := value("quisora_ephemeral_bytes"), value("quisora_ephemeral_entries"); used <= 0 || n <= 0 {
-		t.Errorf("used %v bytes in %v entries", used, n)
+	// the entry is a rate-limit counter: counted apart from the sign-in state limits.ephemeral_mb limits
+	if counters, n := value("quisora_ephemeral_counter_bytes"), value("quisora_ephemeral_entries"); counters <= 0 || n <= 0 {
+		t.Errorf("counters %v bytes in %v entries", counters, n)
+	}
+	if used := value("quisora_ephemeral_bytes"); used != 0 {
+		t.Errorf("sign-in state %v bytes, want 0 (only a counter is held)", used)
 	}
 	if !strings.Contains(string(b), "# TYPE quisora_ephemeral_refused_total counter") {
 		t.Error("the refusals counter is not served")

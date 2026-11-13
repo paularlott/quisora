@@ -50,7 +50,8 @@ Every audit event of a change made with a token names it (`token_id`), so a misu
 A token that exists but is refused (a wrong secret, or used after an emergency sign-out, or after its owner was
 disabled or lost the role its scopes need) is audited as `apitoken.refused` in its organization; a request a valid
 token may not make is audited as `api.request.refused`. Both are recorded at most once a minute per token (or
-caller) and reason on each node, with `suppressed` counting the repeats held back since the last one: a refusal can be
+caller) and reason on each node, with `suppressed` counting the repeats held back since the last one (refusals held back because the node was already
+tracking 10,000 refusing keys at once are counted in `quisora_audit_refusals_dropped_total`): a refusal can be
 repeated at will, and must not flood the audit log. Failed bearer authentications (management API and SCIM
 together) are limited to 60 per address and organization (the one the path names) and minute: past that, every bearer
 request from the address for that organization gets `429 Too Many Requests` with `Retry-After` for the rest of the

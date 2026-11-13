@@ -161,12 +161,13 @@ func (a *Actor) IsSuper() bool { return a != nil && a.Role == model.RoleSuperAdm
 
 // Service is the business layer.
 type Service struct {
-	refusals      refusalLimiter // throttles refusal audit events (auditlimit.go)
-	loginRefusals refusalLimiter // throttles the sign-in pages' lockout refusal events (auditlimit.go)
-	Cfg           *config.Config
-	Store         store.Store
-	Hasher        *secure.Hasher
-	Sealer        *secure.Sealer
+	refusals        refusalLimiter // throttles refusal audit events (auditlimit.go)
+	loginRefusals   refusalLimiter // throttles the sign-in pages' lockout refusal events whose keys the refused choose (auditlimit.go)
+	accountRefusals refusalLimiter // and those of keys that name an existing account
+	Cfg             *config.Config
+	Store           store.Store
+	Hasher          *secure.Hasher
+	Sealer          *secure.Sealer
 	// Log receives every audit event (group "audit") as well as the store, and any failure to store one.
 	Log logger.Logger
 	// AuditReader serves the audit pages (nil: this node's store) and AuditWriter takes audit events instead of the

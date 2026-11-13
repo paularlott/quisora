@@ -215,3 +215,59 @@ func TestLocalCountersCapped(t *testing.T) {
 		t.Fatalf("%d bytes, %d of counters, still counted after everything went", l2.Used(), l2.counters.Load())
 	}
 }
+
+// Counters, however many, never take the values' room: with the counters at their cap a new sign-in's state is still
+// kept, and Used (what Budget limits) counts only the values.
+func TestLocalCountersDoNotSqueezeValues(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	l.Budget = 1 << 20 // the counters' cap is minCounterBudget, far above it
+	for i := 0; ; i++ {
+		n, _ := l.Incr(ctx, "lockout", fmt.Sprint(i), 1, time.Minute)
+		if n == Contended {
+			break
+		}
+		if i > 1_000_000 {
+			t.Fatal("the counters' cap never refused")
+		}
+	}
+	if l.Counters() <= l.Budget || l.Counters() > l.CounterLimit() || l.Used() != 0 {
+		t.Fatalf("counters %d (cap %d), values %d", l.Counters(), l.CounterLimit(), l.Used())
+	}
+	held := 0
+	for range 100 {
+		if _, err := l.New(ctx, "flow", make([]byte, 1000), time.Minute); err == nil {
+			held++
+		}
+	}
+	if held != 100 {
+		t.Fatalf("values refused beside full counters: %d of 100 kept", held)
+	}
+}
+
+// A counter's key given a value stops being a counter: its room moves from the counters to the values, checked
+// against the budget like any value.
+func TestLocalCounterKeyGivenAValue(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	l.Incr(ctx, "x", "k", 1, time.Minute)
+	if l.Counters() == 0 || l.Used() != 0 {
+		t.Fatalf("counter: %d counters, %d values", l.Counters(), l.Used())
+	}
+	if err := l.Set(ctx, "x", "k", []byte("v"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if l.Counters() != 0 || l.Used() != int64(len("x/k")+1+itemOverhead) {
+		t.Fatalf("value: %d counters, %d values", l.Counters(), l.Used())
+	}
+	l.Incr(ctx, "y", "k", 1, time.Minute)
+	l.Budget = 1
+	if err := l.Set(ctx, "y", "k", nil, time.Minute); !errors.Is(err, ErrFull) {
+		t.Fatalf("a counter's key given a value past the budget: %v", err)
+	}
+	if l.Counters() == 0 {
+		t.Fatal("the refused Set dropped the counter")
+	}
+}

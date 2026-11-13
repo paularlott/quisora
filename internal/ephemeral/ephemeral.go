@@ -68,23 +68,24 @@ const shards = 64
 
 // Local is an in-memory Store for one node. Prefix is the node's short id embedded in ids. Values (flows, codes,
 // pushed requests, challenges) count against Budget bytes (0: DefaultBudget), keys included; past it Set refuses
-// (ErrFull) until expiries make room. Counters (Incr, the rate limits) count too, but are not refused because values
-// filled the budget: a limit must not fail open, nor refuse everyone because the store is full; reading one (delta 0)
-// creates nothing. Their keys are often chosen by whoever is limited (an address, a login that names no account), so
-// their memory has a cap of its own, Budget again (at least minCounterBudget, so a small Budget never stops the limits
+// (ErrFull) until expiries make room. Counters (Incr, the rate limits) are kept apart: they never count against the
+// values' Budget, so however many there are they cannot refuse a sign-in its flow, and filled values never refuse a
+// counter (a limit must not fail open, nor refuse everyone because the store is full); reading one (delta 0) creates
+// nothing. Their keys are often chosen by whoever is limited (an address, a login that names no account), so their
+// memory has a cap of its own, Budget again (at least minCounterBudget, so a small Budget never stops the limits
 // counting): past it a new counter is not made and Incr reports Contended, so the limit fails closed for that key
-// (counters that exist go on counting), and the node's memory stays bounded (values and counters together at most
-// twice the larger of the two). The cap is not lower, nor split by namespace, because a
-// refused counter refuses whoever it limits: a cap that a flood of keys could reach sooner would make denying
-// everyone sign-in (lockout counters of logins that name no account) cheaper than filling Budget already is. Log,
-// when set, gets a warning at most once a minute while Set refuses, and once a minute while counters are refused.
+// (counters that exist go on counting), and the node's memory stays bounded (Budget for values plus the counters'
+// cap). The cap is not lower, nor split by namespace, because a refused counter refuses whoever it limits: a cap that
+// a flood of keys could reach sooner would make denying everyone sign-in (lockout counters of logins that name no
+// account) cheaper. Log, when set, gets a warning at most once a minute while Set refuses, and once a minute while
+// counters are refused.
 type Local struct {
 	Prefix string
 	Budget int64
 	Log    logger.Logger
-	used   atomic.Int64
+	used   atomic.Int64 // the memory the values take (checked against Budget)
 	logged atomic.Int64 // unix nanos of the last warning that the store is full
-	// counters is the memory counters take, of used.
+	// counters is the memory the counters take (checked against counterBudget), apart from used.
 	counters       atomic.Int64
 	countersLogged atomic.Int64 // unix nanos of the last warning that counters were refused
 	seed           maphash.Seed
@@ -152,10 +153,10 @@ func (v *item) size(k string) int64 { return int64(len(k)+len(v.val)) + itemOver
 
 // release gives back what the entry k, just removed, took.
 func (l *Local) release(k string, v *item) {
-	sz := v.size(k)
-	l.used.Add(-sz)
 	if v.counter {
-		l.counters.Add(-sz)
+		l.counters.Add(-v.size(k))
+	} else {
+		l.used.Add(-v.size(k))
 	}
 }
 
@@ -191,7 +192,7 @@ func (l *Local) Set(_ context.Context, ns, id string, value []byte, ttl time.Dur
 	defer s.mu.Unlock()
 	grow := it.size(k)
 	old, had := s.m[k]
-	if had {
+	if had && !old.counter { // a counter it replaces was never the values'
 		grow -= old.size(k)
 	}
 	if grow > 0 && l.used.Load()+grow > l.budget() {
@@ -199,7 +200,6 @@ func (l *Local) Set(_ context.Context, ns, id string, value []byte, ttl time.Dur
 	}
 	if had && old.counter { // a counter's key given a value: no longer a counter
 		l.release(k, old)
-		grow = it.size(k)
 	}
 	s.m[k] = it
 	l.used.Add(grow)
@@ -212,15 +212,21 @@ func (l *Local) full() error {
 	now, last := time.Now().UnixNano(), l.logged.Load()
 	if l.Log != nil && now-last >= int64(time.Minute) && l.logged.CompareAndSwap(last, now) {
 		l.Log.Warn("this node's short-lived state is full (limits.ephemeral_mb): new sign-ins and other requests that "+
-			"would add to it get 503 until expiries make room", "used_bytes", l.used.Load(), "budget_bytes", l.budget())
+			"would add to it get 503 until expiries make room", "used_bytes", l.Used(), "budget_bytes", l.budget())
 	}
 	return ErrFull
 }
 
-// Used is the memory the values and counters take, by the estimate Budget is checked against.
+// Used is the memory the values take, by the estimate Budget is checked against.
 func (l *Local) Used() int64 { return l.used.Load() }
 
-// Limit is the budget Used is checked against (Budget, or DefaultBudget).
+// Counters is the memory the counters take, by the estimate their cap (CounterLimit) is checked against.
+func (l *Local) Counters() int64 { return l.counters.Load() }
+
+// CounterLimit is the counters' cap: Budget, but at least minCounterBudget.
+func (l *Local) CounterLimit() int64 { return l.counterBudget() }
+
+// Limit is the budget the values are checked against (Budget, or DefaultBudget).
 func (l *Local) Limit() int64 { return l.budget() }
 
 // Len is the number of entries held (values and counters), expired ones the reaper has not removed yet included.
@@ -294,7 +300,6 @@ func (l *Local) Incr(_ context.Context, ns, key string, delta int64, window time
 			l.countersFull(ns)
 			return Contended, nil // fail closed: the caller's limit trips for this key
 		}
-		l.used.Add(sz)
 		l.counters.Add(sz)
 		v = &item{expires: now.Add(window), counter: true}
 		s.m[k] = v

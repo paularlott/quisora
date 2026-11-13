@@ -464,10 +464,14 @@ func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.
 }
 
 // auditLocked records a sign-in refused because its lockout key (an account, a browser of it, or an address under
-// spray) is locked: at most one event per key, reason and sign-in step per minute on each node, the next saying how many were held
-// back (service.AuditLoginRefusal), so the refusals of a locked key, repeated at will, cannot fill the audit log.
-func (m *Module) auditLocked(r *http.Request, org *model.Org, u *model.User, login, reason, key string) {
-	m.s.Svc.AuditLoginRefusal("login|"+org.ID+"|"+key+"|"+reason+"|"+r.URL.Path, func(detail map[string]string) {
+// spray) is locked: at most one event per key, reason and sign-in step (a fixed name, never the request's path, whose
+// organization may be spelled in any case: each spelling would be a key of its own) per minute on each node, the next saying how many were held
+// back (service.AuditLoginRefusal), so the refusals of a locked key, repeated at will, cannot fill the audit log. An
+// account's own lockout ("locked" with u found) is kept apart from the keys a flood can make up (logins that name no
+// account, addresses), so such a flood cannot crowd it out.
+func (m *Module) auditLocked(r *http.Request, step string, org *model.Org, u *model.User, login, reason, key string) {
+	account := u != nil && reason == "locked"
+	m.s.Svc.AuditLoginRefusal(account, "login|"+org.ID+"|"+key+"|"+reason+"|"+step, func(detail map[string]string) {
 		detail["reason"] = reason
 		m.audit(r, "login.failure", org, u, login, detail)
 	})

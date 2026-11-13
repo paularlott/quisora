@@ -158,6 +158,11 @@ var (
 		"Emails that never reached the mail server, by reason: given_up (every retry failed), dropped (kept past the "+
 			"queue's discard horizon, or unreadable) and expired (the code or link in it had expired while it was queued).",
 		"reason")
+	AuditRefusalsDropped = Default.NewCounter("quisora_audit_refusals_dropped_total",
+		"Refusal audit events (apitoken.refused, api.request.refused, SSH refusals, sign-in lockout refusals) not recorded "+
+			"because the node already tracked 10,000 refusing keys at once, by limiter: refusals, login (sign-in keys "+
+			"that name no account, addresses) and login_accounts (existing accounts').",
+		"limiter")
 	EphemeralRefused = Default.NewCounter("quisora_ephemeral_refused_total",
 		"Requests refused for short-lived state, by reason: full (this node's short-lived state at limits.ephemeral_mb: "+
 			"503), counters (a new rate-limit counter past the counters' share of limits.ephemeral_mb: the limit refuses) "+

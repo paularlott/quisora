@@ -455,6 +455,11 @@ func TestLockedRefusalsAuditedOncePerWindow(t *testing.T) {
 		res, out := b.login("acme", "pat", userPassword)
 		wantStatus(t, res, out, 429)
 	}
+	// the organization's name spelled in other cases is the same organization, and the same key
+	for _, o := range []string{"ACME", "Acme", "aCmE", "acME"} {
+		res, out := b.login(o, "pat", userPassword)
+		wantStatus(t, res, out, 429)
+	}
 	locked := 0
 	for _, a := range e.audits(t, "login.failure") {
 		if a.Detail["reason"] == "locked" {
