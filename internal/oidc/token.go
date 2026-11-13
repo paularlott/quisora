@@ -354,6 +354,9 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if oe != nil {
 		return nil, "", oe
 	}
+	// The scopes the user authorized that the client (c, as it is now) may still use: one taken off the application
+	// after the code was issued is in neither the grant nor its tokens, as a refresh narrows them.
+	scopes := slices.DeleteFunc(slices.Clone(cd.Scopes), func(s string) bool { return !slices.Contains(c.Scopes, s) })
 	// Each of these is a decision: a read that fails (as opposed to one that finds the record gone) makes none, and
 	// says so (503), rather than telling the client the user, session or organization is gone.
 	u, err := p.user(ctx, cd.UserID)
@@ -414,7 +417,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		return nil, "", oerr("invalid_grant", "the application changed since the user authorized it: sign in again")
 	}
 	now := time.Now().UTC()
-	g := &model.Grant{ClientID: c.ID, ConsentGen: cd.ConsentGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: cd.Scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Sources: sess.Sources, Resources: cd.Resources,
+	g := &model.Grant{ClientID: c.ID, ConsentGen: cd.ConsentGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Sources: sess.Sources, Resources: cd.Resources,
 		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
@@ -466,7 +469,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if c.BackchannelURI != "" {
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
-	is := &issue{client: c, user: u, org: org, scopes: cd.Scopes, resources: res, sid: cd.SessionID, gid: g.ID,
+	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cd.SessionID, gid: g.ID,
 		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, upstream: cd.Upstream, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
