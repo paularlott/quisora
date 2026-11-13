@@ -41,7 +41,7 @@
   </section>
 
   {{if .IsAdmin}}
-  <section class="glass-card" aria-labelledby="brand-h" x-data="adminBranding" data-api="{{.Data.API}}" x-show="loaded" x-cloak>
+  <section class="glass-card" aria-labelledby="brand-h" x-data="adminBranding" data-api="{{.Data.API}}"{{if and .Data.IsPrimary (not .IsSuper)}} data-shared-locked="1"{{end}} x-show="loaded" x-cloak>
     <h2 class="section-title mb-1" id="brand-h">Branding</h2>
     <p class="muted mb-4">Change how this organization's sign-in pages and console look to its users. If there's no logo, the server's logo and name are used.</p>
     <form class="stack" @submit.prevent="save" novalidate>

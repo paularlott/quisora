@@ -53,6 +53,37 @@ func TestBrandingWho(t *testing.T) {
 	}
 }
 
+// The primary organization's skin and footer are every organization's that has none of its own: only a super admin
+// changes them. Its own administrators still change its logo and colour, and another organization's administrators
+// their own footer and skin.
+func TestBrandingPrimarySharedIsSuperOnly(t *testing.T) {
+	c := newCast(t)
+	for name, in := range map[string]service.BrandingInput{
+		"footer": {Footer: ptr(`<a href="https://example.com/">Sign in again</a>`)},
+		"skin":   {Skin: ptr("default")},
+		"both":   {PrimaryColor: ptr("#1d4ed8"), Footer: ptr("x")},
+	} {
+		if _, err := c.svc.UpdateBranding(c.ctx, actor(c.pAdmin), c.primary.ID, in); !errors.Is(err, service.ErrForbidden) {
+			t.Errorf("primary org's admin, %s: %v", name, err)
+		}
+	}
+	if o, _ := c.svc.GetOrg(c.ctx, nil, c.primary.ID); o.Branding.Footer != "" || o.Branding.Skin != "" || o.Branding.PrimaryColor != "" {
+		t.Fatalf("a refused change was kept: %+v", o.Branding)
+	}
+	if _, err := c.svc.UpdateBranding(c.ctx, actor(c.pAdmin), c.primary.ID,
+		service.BrandingInput{PrimaryColor: ptr("#1d4ed8"), LogoLight: ptr(pngURI(t))}); err != nil {
+		t.Errorf("primary org's admin, logo and colour: %v", err)
+	}
+	if _, err := c.svc.UpdateBranding(c.ctx, actor(c.super), c.primary.ID,
+		service.BrandingInput{Footer: ptr("© Example"), Skin: ptr("default")}); err != nil {
+		t.Errorf("super admin on the primary's footer and skin: %v", err)
+	}
+	if _, err := c.svc.UpdateBranding(c.ctx, actor(c.aAdmin), c.a.ID,
+		service.BrandingInput{Footer: ptr("Org A"), Skin: ptr("default")}); err != nil {
+		t.Errorf("another org's admin on its own footer and skin: %v", err)
+	}
+}
+
 // Logos are PNG, JPEG, WebP or SVG data: URIs whose content is what they say, at most service.MaxLogoBytes; a dark
 // logo needs a light one; the colour is #rrggbb dark enough for white text on it (WCAG AA, 4.5:1).
 func TestBrandingValidation(t *testing.T) {

@@ -50,8 +50,9 @@ func (s *Service) OrgLogo(ctx context.Context, orgID string) (*model.OrgLogo, er
 	return l, mapStore(err)
 }
 
-// UpdateBranding changes organization orgID's logo and primary colour: its admins and the super admins, never a
-// service account (it may give an organization it creates its branding, OrgInput.Branding; changes are a person's).
+// UpdateBranding changes organization orgID's branding: its admins and the super admins, never a service account (it
+// may give an organization it creates its branding, OrgInput.Branding; changes are a person's). The primary
+// organization's skin and footer, which every other organization inherits, only the super admins.
 func (s *Service) UpdateBranding(ctx context.Context, a *Actor, orgID string, in BrandingInput) (*model.Org, error) {
 	if !s.canAdminOrg(a, orgID) || a.ClientID != "" {
 		return nil, ErrForbidden
@@ -59,6 +60,11 @@ func (s *Service) UpdateBranding(ctx context.Context, a *Actor, orgID string, in
 	o, err := s.Orgs.Get(ctx, orgID)
 	if err != nil {
 		return nil, mapStore(err)
+	}
+	// The primary organization's skin and footer are shown on every organization's pages that have none of their own:
+	// changing them is a change to every organization, so it is a super admin's, as its email templates are.
+	if o.Primary && !a.IsSuper() && (in.Skin != nil || in.Footer != nil) {
+		return nil, ErrForbidden
 	}
 	logo, err := s.OrgLogos.Get(ctx, orgID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {

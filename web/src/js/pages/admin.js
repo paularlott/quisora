@@ -1035,6 +1035,8 @@ export default function (Alpine) {
   })
   const brandingMixin = () => mix(skinPreviewMixin(), {
     b: {}, pending: { logo_light: null, logo_dark: null }, skins: [], brandPrimary: false, brandOrgBase: '',
+    // the primary organization's skin and footer, which other organizations inherit, for one who is not a super admin
+    sharedLocked: false,
     // the skins to choose from (GET /api/skins), once; the choice is set again once its option is there
     async loadSkins() {
       if (this.skins.length) return
@@ -1054,6 +1056,7 @@ export default function (Alpine) {
       return opts
     },
     get skinHelp() {
+      if (this.sharedLocked) return "Other organizations use this skin too, so only a super admin can change it."
       return this.brandPrimary ? "Changes how the primary organization's pages look. Organizations that haven't picked a skin use this one too."
         : "Changes how this organization's sign-in pages and console look."
     },
@@ -2367,6 +2370,7 @@ export default function (Alpine) {
     loaded: false, apiBase: '',
     async init() {
       this.apiBase = this.$el.dataset.api
+      this.sharedLocked = !!this.$el.dataset.sharedLocked
       try { this.show(await get(this.apiBase)) } catch { /* the page's own load of the organization reports it */ }
     },
     show(org) {

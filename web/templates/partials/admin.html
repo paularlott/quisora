@@ -619,7 +619,7 @@
 <div class="field">
   <label class="label" for="f-skin">Skin</label>
   <div class="flex flex-wrap items-center gap-3">
-    <select class="select w-auto min-w-60" id="f-skin" name="skin" x-model="form.skin" :aria-invalid="invalid.skin" aria-describedby="h-skin e-skin">
+    <select class="select w-auto min-w-60" id="f-skin" name="skin" x-model="form.skin" :disabled="sharedLocked" :aria-invalid="invalid.skin" aria-describedby="h-skin e-skin">
       <template x-for="o in skinOptions" :key="o.value"><option :value="o.value" x-text="o.label"></option></template>
     </select>
     <button type="button" class="btn btn-secondary btn-sm" @click="previewSkin">{{template "icon" "eye"}} Preview</button>
@@ -629,7 +629,8 @@
 </div>
 <div class="field">
   <label class="label" for="f-footer">Footer</label>
-  <input class="input" id="f-footer" name="footer" type="text" x-model="form.footer" :aria-invalid="invalid.footer" aria-describedby="e-footer h-footer" maxlength="1000" autocomplete="off" spellcheck="false">
+  <input class="input" id="f-footer" name="footer" type="text" x-model="form.footer" :disabled="sharedLocked" :aria-invalid="invalid.footer" aria-describedby="e-footer h-footer" maxlength="1000" autocomplete="off" spellcheck="false">
+  <p class="help" x-show="sharedLocked" x-cloak>Other organizations use this footer too, so only a super admin can change it.</p>
   <p class="help" id="h-footer">Text shown at the bottom of every page. You can use links (&lt;a href="…"&gt;) and &lt;strong&gt;, &lt;em&gt;, &lt;small&gt;, &lt;span&gt; and &lt;br&gt;. Leave it empty to use the primary organization's footer, or the server's if that's empty too.</p>
   <p class="field-error" id="e-footer" x-text="errors.footer"></p>
 </div>{{end}}

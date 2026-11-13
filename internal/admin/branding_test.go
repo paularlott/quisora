@@ -80,6 +80,33 @@ func TestBranding(t *testing.T) {
 	}
 }
 
+// The primary organization's footer and skin are every organization's that has none of its own: its administrators
+// who are not super admins are refused them (403) and see them locked on its overview; its logo and colour stay theirs.
+func TestPrimaryBrandingSharedIsSuperOnly(t *testing.T) {
+	w := newWorld(t)
+	u, err := w.env.Svc.CreateUser(context.Background(), service.System, w.env.Primary.ID, service.UserInput{GivenName: ptr("P"),
+		Username: ptr("padmin"), Email: ptr("padmin@x.example"), Role: ptr(model.RoleAdmin), Password: ptr("correct horse battery")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.users["padmin"] = u
+	api := "/api/orgs/" + w.env.Primary.ID + "/branding"
+	want(t, w.as("padmin").patch(api, map[string]any{"footer": `<a href="https://example.com/">Sign in again</a>`}), 403)
+	want(t, w.as("padmin").patch(api, map[string]any{"skin": "default"}), 403)
+	want(t, w.as("padmin").patch(api, map[string]any{"primary_color": "#1d4ed8"}), 200)
+	want(t, w.as("super").patch(api, map[string]any{"footer": "© Example"}), 200)
+	if f := w.anon().get("/o/acme/login"); !strings.Contains(string(f.Raw), "© Example") {
+		t.Error("acme does not show the primary organization's footer")
+	}
+	page := "/admin/orgs/" + w.env.Primary.Name
+	if !strings.Contains(string(w.as("padmin").get(page).Raw), `data-shared-locked="1"`) {
+		t.Error("the primary organization's admin is not shown its footer and skin locked")
+	}
+	if strings.Contains(string(w.as("super").get(page).Raw), "data-shared-locked") {
+		t.Error("a super admin is shown the primary organization's footer and skin locked")
+	}
+}
+
 // The page that sends a signed-out visitor to their application or sign-in link carries the primary organization's
 // branding, the server's own: for a page that does not exist, and for an organization's page when there is no such
 // organization (rather than a bare 404).

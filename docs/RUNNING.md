@@ -153,7 +153,8 @@ Some settings are only the server's defaults: an organization can set its own in
 for super admins), and the server's applies wherever it has not. They are `limits.password_min_length`,
 `limits.lockout_attempts`, `limits.lockout_minutes`, `limits.grants_per_user`, `tokens.api_token_max_days`,
 `session.privileged_ttl` and `session.privileged_idle`. `ui.footer` is the default footer: an organization's administrators can set its own on its
-overview's branding card, and an organization without one shows the primary organization's, else `ui.footer`. TLS 1.2 connections are offered only the
+overview's branding card, and an organization without one shows the primary organization's, else `ui.footer`. The primary organization's footer and skin,
+which other organizations inherit, are changed by super admins only. TLS 1.2 connections are offered only the
 forward-secret AES-GCM cipher suites (RFC 9325, as FAPI 2.0 requires); TLS 1.3 is unaffected. Behind a proxy that ends
 TLS, the proxy's configuration decides.
 
