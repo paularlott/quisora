@@ -690,8 +690,15 @@ func (m *Module) needReauth(w http.ResponseWriter, r *http.Request, a acct) bool
 		if slices.ContainsFunc(a.sess.AMR, func(v string) bool { return v == "otp" || v == "hwk" || v == "swk" }) {
 			return true
 		}
-		pk, err := m.s.Svc.UsablePasskeys(ctx, a.u, "")
-		if err == nil && !a.u.HasTOTP() && pk == 0 {
+		// Whether the account has a second factor of its own is read from the account as it is now, not from the
+		// request's copy (a per-node cache): one set up since, on this node or another, counts at once.
+		u, err := m.fresh(ctx, a)
+		if err != nil {
+			unavailableResponse(w)
+			return false
+		}
+		pk, err := m.s.Svc.UsablePasskeys(ctx, u, "")
+		if err == nil && !u.HasTOTP() && pk == 0 {
 			return true
 		}
 	}

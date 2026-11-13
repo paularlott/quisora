@@ -99,6 +99,28 @@ func TestRecentSignInCountsAsReauth(t *testing.T) {
 	wantStatus(t, res, out, 201)
 }
 
+// A recent sign-in with the password alone stops counting the moment the account has a second factor of its own, even
+// one set up where this node's session cache has not heard of it (another node): the account is read as it is now,
+// so the session cannot make recovery codes or tokens, ways in that would stand in for the new factor.
+func TestRecentSignInJudgedOnTheAccountAsItIsNow(t *testing.T) {
+	e := newEnv(t, nil)
+	org := e.org(t, "acme", allowAPITokens)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	b := e.signedIn(t, pat)
+	b.fresh()
+	if res, out := b.api("GET", "/api-internal/account", nil); res.StatusCode != 200 { // the account cached on this node
+		t.Fatalf("account: %d %v", res.StatusCode, out["_raw"])
+	}
+	e.giveTOTP(t, pat) // written to the store only, as a change made on another node
+	res, out := b.api("POST", "/api-internal/account/recovery-codes", nil)
+	wantStatus(t, res, out, 403)
+	if str(out, "field") != "reauth" {
+		t.Fatalf("recovery codes: %v", out)
+	}
+	res, out = b.api("POST", "/api-internal/account/tokens", map[string]any{"name": "ci", "scopes": []string{"api"}})
+	wantStatus(t, res, out, 403)
+}
+
 // Re-authentication asks for the account's second factor when it has one: the password alone confirms only an
 // account that signs in with nothing else.
 func TestReauthRequiresSecondFactor(t *testing.T) {
