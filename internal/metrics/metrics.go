@@ -160,7 +160,8 @@ var (
 		"reason")
 	EphemeralRefused = Default.NewCounter("quisora_ephemeral_refused_total",
 		"Requests refused for short-lived state, by reason: full (this node's short-lived state at limits.ephemeral_mb: "+
-			"503) and flows_per_ip (a client address holding limits.flows_per_ip sign-in flows: 429).",
+			"503), counters (a new rate-limit counter past the counters' share of limits.ephemeral_mb: the limit refuses) "+
+			"and flows_per_ip (a client address holding limits.flows_per_ip sign-in flows: 429).",
 		"reason")
 )
 

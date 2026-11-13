@@ -43,7 +43,8 @@ type Store interface {
 	// Incr adds delta to a counter that resets window after its first increment, returning the new value. Only a
 	// positive delta starts a counter: on a counter that does not exist (or has expired) a zero delta (a read) or a
 	// negative one (an attempt given back after the counter was cleared) does nothing and returns 0. A counter too
-	// contended to update reports a value above any limit (Contended) rather than an error: callers fail closed.
+	// contended to update, or a new one past the store's caps on counters (Local), reports a value above any limit
+	// (Contended) rather than an error: callers fail closed.
 	Incr(ctx context.Context, ns, key string, delta int64, window time.Duration) (int64, error)
 }
 
@@ -60,23 +61,34 @@ type item struct {
 	val     []byte
 	n       int64
 	expires time.Time
+	counter bool // made by Incr: counted against the counters' caps as well
 }
 
 const shards = 64
 
 // Local is an in-memory Store for one node. Prefix is the node's short id embedded in ids. Values (flows, codes,
 // pushed requests, challenges) count against Budget bytes (0: DefaultBudget), keys included; past it Set refuses
-// (ErrFull) until expiries make room. Counters (Incr, the rate limits) are small and never refused: a limit must not
-// fail open, nor refuse everyone because the store is full; reading one (delta 0) creates nothing. Log, when set,
-// gets a warning at most once a minute while Set refuses.
+// (ErrFull) until expiries make room. Counters (Incr, the rate limits) count too, but are not refused because values
+// filled the budget: a limit must not fail open, nor refuse everyone because the store is full; reading one (delta 0)
+// creates nothing. Their keys are often chosen by whoever is limited (an address, a login that names no account), so
+// their memory has a cap of its own, Budget again (at least minCounterBudget, so a small Budget never stops the limits
+// counting): past it a new counter is not made and Incr reports Contended, so the limit fails closed for that key
+// (counters that exist go on counting), and the node's memory stays bounded (values and counters together at most
+// twice the larger of the two). The cap is not lower, nor split by namespace, because a
+// refused counter refuses whoever it limits: a cap that a flood of keys could reach sooner would make denying
+// everyone sign-in (lockout counters of logins that name no account) cheaper than filling Budget already is. Log,
+// when set, gets a warning at most once a minute while Set refuses, and once a minute while counters are refused.
 type Local struct {
 	Prefix string
 	Budget int64
 	Log    logger.Logger
 	used   atomic.Int64
 	logged atomic.Int64 // unix nanos of the last warning that the store is full
-	seed   maphash.Seed
-	shard  [shards]struct {
+	// counters is the memory counters take, of used.
+	counters       atomic.Int64
+	countersLogged atomic.Int64 // unix nanos of the last warning that counters were refused
+	seed           maphash.Seed
+	shard          [shards]struct {
 		mu sync.Mutex
 		m  map[string]*item
 	}
@@ -116,7 +128,7 @@ func (l *Local) reap() {
 				for k, v := range s.m {
 					if now.After(v.expires) {
 						delete(s.m, k)
-						l.used.Add(-v.size(k))
+						l.release(k, v)
 					}
 				}
 				s.mu.Unlock()
@@ -138,6 +150,32 @@ const itemOverhead = 96
 
 func (v *item) size(k string) int64 { return int64(len(k)+len(v.val)) + itemOverhead }
 
+// release gives back what the entry k, just removed, took.
+func (l *Local) release(k string, v *item) {
+	sz := v.size(k)
+	l.used.Add(-sz)
+	if v.counter {
+		l.counters.Add(-sz)
+	}
+}
+
+// countersFull counts a counter that was not made because counters reached their cap, and warns of it at most once
+// a minute.
+func (l *Local) countersFull(ns string) {
+	metrics.EphemeralRefused.Inc("counters")
+	now, last := time.Now().UnixNano(), l.countersLogged.Load()
+	if l.Log != nil && now-last >= int64(time.Minute) && l.countersLogged.CompareAndSwap(last, now) {
+		l.Log.Warn("this node's rate-limit counters are at their cap (limits.ephemeral_mb): limits on new "+
+			"keys refuse until expiries make room", "namespace", ns, "counter_bytes", l.counters.Load(), "cap_bytes", l.counterBudget())
+	}
+}
+
+// minCounterBudget is the least memory counters may take, whatever Budget is.
+const minCounterBudget = 16 << 20
+
+// counterBudget is the memory counters may take: Budget, but at least minCounterBudget.
+func (l *Local) counterBudget() int64 { return max(l.budget(), minCounterBudget) }
+
 func (l *Local) budget() int64 {
 	if l.Budget > 0 {
 		return l.Budget
@@ -152,11 +190,16 @@ func (l *Local) Set(_ context.Context, ns, id string, value []byte, ttl time.Dur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	grow := it.size(k)
-	if old, ok := s.m[k]; ok {
+	old, had := s.m[k]
+	if had {
 		grow -= old.size(k)
 	}
 	if grow > 0 && l.used.Load()+grow > l.budget() {
 		return l.full()
+	}
+	if had && old.counter { // a counter's key given a value: no longer a counter
+		l.release(k, old)
+		grow = it.size(k)
 	}
 	s.m[k] = it
 	l.used.Add(grow)
@@ -201,13 +244,13 @@ func (l *Local) get(ns, id string, take bool) ([]byte, error) {
 	if !ok || time.Now().After(v.expires) {
 		if ok {
 			delete(s.m, k)
-			l.used.Add(-v.size(k))
+			l.release(k, v)
 		}
 		return nil, ErrNotFound
 	}
 	if take {
 		delete(s.m, k)
-		l.used.Add(-v.size(k))
+		l.release(k, v)
 	}
 	return v.val, nil
 }
@@ -221,7 +264,7 @@ func (l *Local) Delete(_ context.Context, ns, id string) error {
 	s.mu.Lock()
 	if v, ok := s.m[k]; ok {
 		delete(s.m, k)
-		l.used.Add(-v.size(k))
+		l.release(k, v)
 	}
 	s.mu.Unlock()
 	return nil
@@ -238,14 +281,22 @@ func (l *Local) Incr(_ context.Context, ns, key string, delta int64, window time
 		if delta <= 0 { // a read, or a give-back: nothing to count yet, and nothing to keep
 			if ok {
 				delete(s.m, k)
-				l.used.Add(-v.size(k))
+				l.release(k, v)
 			}
 			return 0, nil
 		}
-		if !ok {
-			l.used.Add((&item{}).size(k))
+		if ok { // expired: made again below, within the caps like any new counter
+			delete(s.m, k)
+			l.release(k, v)
 		}
-		v = &item{expires: now.Add(window)}
+		sz := (&item{}).size(k)
+		if l.counters.Load()+sz > l.counterBudget() {
+			l.countersFull(ns)
+			return Contended, nil // fail closed: the caller's limit trips for this key
+		}
+		l.used.Add(sz)
+		l.counters.Add(sz)
+		v = &item{expires: now.Add(window), counter: true}
 		s.m[k] = v
 	}
 	v.n += delta

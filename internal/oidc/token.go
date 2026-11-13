@@ -418,7 +418,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	}
 	now := time.Now().UTC()
 	g := &model.Grant{ClientID: c.ID, ConsentGen: cd.ConsentGen, UserID: u.ID, OrgID: u.OrgID, Epoch: sess.Epoch, Stamp: sess.Stamp, SessionID: cd.SessionID, Scopes: scopes, AMR: cd.AMR, IdP: cd.IdP, UpstreamAMR: cd.UpstreamAMR, Upstream: cd.Upstream, Sources: sess.Sources, Resources: cd.Resources,
-		AuthDetailTypes: cd.ADTypes, ClaimsUI: cd.ClaimsUI, ClaimsID: cd.ClaimsID, AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
+		AuthDetailTypes: cd.ADTypes, ClaimsUI: allowedClaims(cd.ClaimsUI, c.Scopes), ClaimsID: allowedClaims(cd.ClaimsID, c.Scopes), AuthTime: time.Unix(cd.AuthTime, 0).UTC(),
 		Expires: now.Add(p.cfg.Tokens.Refresh())}
 	if c.Public() {
 		g.DPoPJKT = jkt // a public client's refresh tokens need the same key from now on (RFC 9449 §5)
@@ -470,7 +470,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
 	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cd.SessionID, gid: g.ID,
-		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, upstream: cd.Upstream, nonce: cd.Nonce, app: app, claimsUI: cd.ClaimsUI, claimsID: cd.ClaimsID, jkt: jkt, adTypes: ad}
+		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, upstream: cd.Upstream, nonce: cd.Nonce, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes), claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
 		return nil, "", serverError(err)

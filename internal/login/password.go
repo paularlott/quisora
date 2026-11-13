@@ -98,7 +98,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !open {
-			m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "address locked"})
+			m.auditLocked(r, org, u, login, "address locked", "addr:"+web.RateKeyIP(r))
 			m.lockedResponse(w, org)
 			return
 		}
@@ -112,7 +112,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !open {
-		m.audit(r, "login.failure", org, u, login, map[string]string{"reason": "locked"})
+		m.auditLocked(r, org, u, login, "locked", key)
 		m.lockedResponse(w, org)
 		return
 	}
@@ -301,7 +301,7 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !open {
-		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
+		m.auditLocked(r, org, u, u.Username, "locked", key)
 		m.lockedResponse(w, org)
 		return
 	}
@@ -373,7 +373,7 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !open {
-		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
+		m.auditLocked(r, org, u, u.Username, "locked", key)
 		m.lockedResponse(w, org)
 		return
 	}

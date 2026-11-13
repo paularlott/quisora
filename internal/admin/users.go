@@ -573,6 +573,11 @@ func (m *Module) revokeSessions(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
+	// One's own sessions are ended only after a recent re-authentication, as on the account page: a stolen session
+	// alone must not sign its owner out.
+	if _, ok := m.selfCtx(w, r, a, u, true); !ok {
+		return
+	}
 	if err := m.s.Svc.RevokeSessions(r.Context(), a, u.ID); err != nil {
 		web.WriteError(w, err)
 		return
@@ -1045,9 +1050,13 @@ func (m *Module) listUserSessions(w http.ResponseWriter, r *http.Request) {
 
 // revokeUserSession handles DELETE /users/{id}/sessions/{session}: signs the user out of one session (its
 // applications are sent back-channel logouts). The session making the request is not ended here: sign out instead.
+// One's own other session is ended only after a recent re-authentication, as on the account page.
 func (m *Module) revokeUserSession(w http.ResponseWriter, r *http.Request) {
 	u, a, found := m.connectionsUser(w, r)
 	if !found {
+		return
+	}
+	if _, ok := m.selfCtx(w, r, a, u, true); !ok {
 		return
 	}
 	ctx := r.Context()

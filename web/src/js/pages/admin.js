@@ -912,17 +912,19 @@ function userConnectionsComponents(Alpine) {
       } catch (e) { this.loadError = e.message } finally { this.loading = false }
     },
     async end(ev) {
-      const s = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      const opener = ev.currentTarget
+      const s = this.items.find((i) => i.id === opener.dataset.id)
       if (!s) return
       const yes = await confirmAction(Alpine, { title: 'Sign out this session?', message: `Sign out ${s.device} at ${s.ip || 'an unknown address'}?`,
         detail: 'It ends at once, and the applications it signed in to are told to sign out too. Signing in again starts a new session.', confirmLabel: 'Sign out' })
       if (!yes) return
       try {
-        await del(base(this.$el, '/sessions/' + enc(s.id)))
+        // one's own: the server asks for a recent re-authentication, and withReauth confirms and retries
+        await withReauth(Alpine, () => del(base(this.$el, '/sessions/' + enc(s.id))), opener)
         toast('Session signed out.')
         await this.load()
         focusHeading('sessions-h')
-      } catch (e) { toast(e.message, 'error') }
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
   }))
 
@@ -1470,10 +1472,14 @@ export default function (Alpine) {
       } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
     async revoke(ev) {
+      const opener = ev.currentTarget
       const yes = await confirmAction(Alpine, { title: 'Sign out everywhere?', message: `End every session of ${this.user.title}?`,
         detail: 'They will have to sign in again on every device.', confirmLabel: 'Revoke sessions' })
       if (!yes) return
-      try { await del(`${this.apiBase}/users/${enc(this.userId)}/sessions`); toast('Sessions revoked.') } catch (e) { toast(e.message, 'error') }
+      try {
+        await withReauth(Alpine, () => del(`${this.apiBase}/users/${enc(this.userId)}/sessions`), opener) // one's own: re-authenticate
+        toast('Sessions revoked.')
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     },
     openLockOut(ev) {
       this.resetForm({ reason: '' })

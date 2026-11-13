@@ -35,3 +35,21 @@ func TestRefusalLimiter(t *testing.T) {
 		t.Fatal("expired keys were not pruned to make room")
 	}
 }
+
+// A flood of sign-in lockout refusals, whose keys the refused choose, fills only their own limiter: the other
+// refusal events (a token presented with a wrong secret) are still recorded.
+func TestLoginRefusalsHaveTheirOwnLimiter(t *testing.T) {
+	s := &Service{}
+	recorded := 0
+	for i := range refusalKeys + 100 {
+		s.AuditLoginRefusal("login|org|x:"+strconv.Itoa(i)+"|locked", func(map[string]string) { recorded++ })
+	}
+	if recorded != refusalKeys {
+		t.Fatalf("login refusals recorded: %d", recorded)
+	}
+	api := false
+	s.auditRefusal("token|t1|wrong secret", func(map[string]string) { api = true })
+	if !api {
+		t.Fatal("a token refusal was silenced by the login refusals")
+	}
+}

@@ -295,3 +295,30 @@ func TestRemovingSignInMethodsNeedsStepUp(t *testing.T) {
 	want(t, ad.delete(U+"/passkeys/"+pk.ID), 200)
 	want(t, ad.delete(U+"/providers/"+p.ID), 200)
 }
+
+// Signing out one's own other sessions through the management API needs a recent re-authentication, as on the
+// account page (one or all: a stolen session alone must not sign its owner out); someone else's need none.
+func TestOwnSessionsSignOutNeedsReauth(t *testing.T) {
+	w := newWorld(t)
+	fresh := false
+	w.env.Server.Reauthed = func(*http.Request) bool { return fresh }
+	me := w.as("admin")
+	w.as("admin") // another session of the admin's own
+	S := AU + "/" + w.users["admin"].ID + "/sessions"
+	r := me.get(S)
+	want(t, r, 200)
+	other, _ := r.items()[1].(map[string]any)["id"].(string)
+	wantField(t, me.delete(S+"/"+other), 403, "reauth")
+	wantField(t, me.delete(S), 403, "reauth")
+	if r := me.get(S); r.total() != 2 {
+		t.Fatalf("a session ended without re-authentication: %s", r.Raw)
+	}
+	// someone else's need none
+	w.as("user")
+	U := AU + "/" + w.users["user"].ID + "/sessions"
+	h, _ := first(w.as("manager").get(U))["id"].(string)
+	want(t, me.delete(U+"/"+h), 200)
+	want(t, me.delete(U), 200)
+	fresh = true
+	want(t, me.delete(S+"/"+other), 200)
+}

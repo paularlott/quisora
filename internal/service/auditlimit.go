@@ -10,7 +10,9 @@ import (
 // fast as they like, and an audit event per attempt would turn the audit log, its spool and VictoriaLogs into the
 // target. One event per subject and reason goes through per refusalWindow on each node; the next one that does says
 // how many were held back meanwhile (detail.suppressed). Keys name real tokens or authenticated callers, so their
-// number is bounded by the data; refusalKeys caps it anyway.
+// number is bounded by the data; refusalKeys caps it anyway. The sign-in pages' lockout refusals (AuditLoginRefusal)
+// have a limiter of their own: their keys (a login that names no account, an address) are chosen by whoever is
+// refused, and a flood of them must not fill the other refusals' limiter and silence those.
 const (
 	refusalWindow = time.Minute
 	refusalKeys   = 10_000
@@ -58,7 +60,11 @@ func (l *refusalLimiter) allow(key string, now time.Time) (bool, int) {
 
 // auditRefusal records a refusal event through the limiter: key is the subject (a token, a caller) and the reason.
 func (s *Service) auditRefusal(key string, record func(detail map[string]string)) {
-	ok, held := s.refusals.allow(key, time.Now())
+	limitedRefusal(&s.refusals, key, record)
+}
+
+func limitedRefusal(l *refusalLimiter, key string, record func(detail map[string]string)) {
+	ok, held := l.allow(key, time.Now())
 	if !ok {
 		return
 	}
@@ -67,4 +73,10 @@ func (s *Service) auditRefusal(key string, record func(detail map[string]string)
 		detail["suppressed"] = strconv.Itoa(held)
 	}
 	record(detail)
+}
+
+// AuditLoginRefusal is auditRefusal for the sign-in pages' lockout refusals, which anyone can repeat against an
+// account or from an address for as long as it stays locked, through a limiter of their own.
+func (s *Service) AuditLoginRefusal(key string, record func(detail map[string]string)) {
+	limitedRefusal(&s.loginRefusals, key, record)
 }

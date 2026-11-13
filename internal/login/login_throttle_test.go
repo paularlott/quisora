@@ -435,3 +435,33 @@ func TestCountersFailClosed(t *testing.T) {
 		})
 	}
 }
+
+// The refusals of a locked account are audited once per minute (the first), not once per attempt: anyone can repeat
+// them for as long as the lock lasts, and a row per attempt would make the audit log the target.
+func TestLockedRefusalsAuditedOncePerWindow(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.Limits.LockoutAttempts = 3
+		c.Limits.LockoutMinutes = 15
+		c.Limits.LoginPerIPMin = 0
+		c.Audit.Logins = true
+	})
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	b := e.browser(t)
+	for range 3 {
+		b.login("acme", "pat", "bad")
+	}
+	for range 20 {
+		res, out := b.login("acme", "pat", userPassword)
+		wantStatus(t, res, out, 429)
+	}
+	locked := 0
+	for _, a := range e.audits(t, "login.failure") {
+		if a.Detail["reason"] == "locked" {
+			locked++
+		}
+	}
+	if locked != 1 {
+		t.Fatalf("locked refusals audited: %d, want 1", locked)
+	}
+}

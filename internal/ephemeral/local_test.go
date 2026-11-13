@@ -3,6 +3,7 @@ package ephemeral
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,5 +158,60 @@ func TestLocalFullCountedLoggedOnceAndMeasured(t *testing.T) {
 	l.logged.Add(-int64(time.Minute))
 	if _, err := l.New(ctx, "flow", make([]byte, 4000), time.Minute); !errors.Is(err, ErrFull) || log.n.Load() != 2 {
 		t.Fatalf("%v, %d warnings", err, log.n.Load())
+	}
+}
+
+// Counters whose keys a client chooses cannot grow without bound: past the budget (at least minCounterBudget) a new
+// counter is not made and Incr reports Contended, so the limit refuses; counters already held go on counting, and
+// expiries make room again.
+func TestLocalCountersCapped(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	l.Budget = 1 << 20
+	before := metrics.EphemeralRefused.Value("counters")
+	if n, err := l.Incr(ctx, "lockout", "real-user", 1, time.Minute); err != nil || n != 1 {
+		t.Fatal(n, err)
+	}
+	refused := 0
+	for i := range 200_000 {
+		n, err := l.Incr(ctx, "lockout", fmt.Sprintf("org:nobody-%d@example.com", i), 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == Contended {
+			refused++
+		}
+	}
+	if refused == 0 || l.counters.Load() > minCounterBudget || l.Used() > minCounterBudget {
+		t.Fatalf("refused %d of 200000; %d bytes of counters, %d used", refused, l.counters.Load(), l.Used())
+	}
+	if got := metrics.EphemeralRefused.Value("counters") - before; got != uint64(refused) {
+		t.Fatalf("metric counted %v refusals, %d made", got, refused)
+	}
+	if n, _ := l.Incr(ctx, "lockout", "real-user", 1, time.Minute); n != 2 {
+		t.Fatalf("an existing counter stopped counting: %d", n)
+	}
+	// Short windows expire and give their room back.
+	l2 := NewLocal("n")
+	defer l2.Close()
+	l2.Budget = 1 << 20
+	for i := range 200_000 {
+		l2.Incr(ctx, "rl", fmt.Sprint(i), 1, time.Millisecond)
+	}
+	time.Sleep(5 * time.Millisecond)
+	for i := range 100 {
+		if n, _ := l2.Incr(ctx, "rl", fmt.Sprint(i), 1, time.Minute); n != 1 {
+			t.Fatalf("an expired counter's key: %d", n)
+		}
+	}
+	for i := range 100 {
+		l2.Delete(ctx, "rl", fmt.Sprint(i))
+	}
+	for i := range 200_000 {
+		l2.Delete(ctx, "rl", fmt.Sprint(i))
+	}
+	if l2.Used() != 0 || l2.counters.Load() != 0 {
+		t.Fatalf("%d bytes, %d of counters, still counted after everything went", l2.Used(), l2.counters.Load())
 	}
 }

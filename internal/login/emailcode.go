@@ -203,7 +203,7 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !open {
-		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "locked"})
+		m.auditLocked(r, org, u, u.Username, "locked", key)
 		m.lockedResponse(w, org)
 		return
 	}

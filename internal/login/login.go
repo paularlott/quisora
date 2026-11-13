@@ -463,6 +463,16 @@ func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.
 	m.s.Svc.Audit(context.WithoutCancel(r.Context()), a, orgID, action, target, detail)
 }
 
+// auditLocked records a sign-in refused because its lockout key (an account, a browser of it, or an address under
+// spray) is locked: at most one event per key, reason and sign-in step per minute on each node, the next saying how many were held
+// back (service.AuditLoginRefusal), so the refusals of a locked key, repeated at will, cannot fill the audit log.
+func (m *Module) auditLocked(r *http.Request, org *model.Org, u *model.User, login, reason, key string) {
+	m.s.Svc.AuditLoginRefusal("login|"+org.ID+"|"+key+"|"+reason+"|"+r.URL.Path, func(detail map[string]string) {
+		detail["reason"] = reason
+		m.audit(r, "login.failure", org, u, login, detail)
+	})
+}
+
 // auditUnknown records action as audit does, with outcome "unknown": the change ended with err, whose outcome is not
 // known (it may have been made), and one that was made must not be missing from the audit log.
 func (m *Module) auditUnknown(r *http.Request, action string, org *model.Org, u *model.User, detail map[string]string, err error) {
