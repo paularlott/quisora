@@ -633,6 +633,9 @@ func (rq *request) updateUser(id string, mutate func(cur map[string]any) (map[st
 			if in.Role != nil && *in.Role != u.Role && in.Role.Rank() >= model.RoleAdmin.Rank() {
 				return errNeedsSession("granting an administrator role")
 			}
+			if rq.personal() && u.ID != rq.actor.UserID && service.CurbsAdmin(u, in) {
+				return errNeedsSession("demoting, disabling or ending an administrator's account")
+			}
 			// The change was worked out from this copy (and If-Match checked against it): it applies to this copy
 			// only. A user changed since is stale: retried from fresh data, or 412 with If-Match.
 			in.IfVersion = u.Version
@@ -690,6 +693,11 @@ func (rq *request) patchUser(id string) {
 	})
 }
 
+// personal reports whether the request is made with a personal API token, which, as in the management API, cannot
+// demote, disable, end sooner or delete an administrator (those take a recently re-authenticated console session). A
+// service account can: a directory offboarding an administrator works with its credentials (SERVICE-ACCOUNTS.md).
+func (rq *request) personal() bool { return rq.actor.ClientID == "" }
+
 func (rq *request) deleteUser(id string) {
 	err := rq.retry(id, func() error {
 		u, err := rq.loadUser(id)
@@ -698,6 +706,9 @@ func (rq *request) deleteUser(id string) {
 		}
 		if e := ifMatch(rq.r, versionTag(u.Version)); e != nil {
 			return e
+		}
+		if rq.personal() && u.ID != rq.actor.UserID && u.Role.Rank() >= model.RoleAdmin.Rank() {
+			return errNeedsSession("deleting an administrator")
 		}
 		return rq.m.srv.Svc.DeleteUser(rq.ctx, rq.actor, id)
 	})

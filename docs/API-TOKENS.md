@@ -92,7 +92,10 @@ The token provisions users and groups in its owner's organization (a super admin
 token changes plain users and their group memberships. Creating, renaming, retagging or deleting a group, anything
 done to a manager or administrator, and setting or changing a user's `externalId` (how a provisioning system finds its
 people: a wrong one makes it match the wrong account or create a duplicate) need an administrator's token; a manager's
-replace that sends the `externalId` a user already has goes through. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
+replace that sends the `externalId` a user already has goes through. As in the management API, a personal token
+cannot demote, disable, end sooner or delete another administrator, or make anyone an administrator: those take a
+recent re-authentication in the console. A directory that offboards administrators uses a
+[service account](SERVICE-ACCOUNTS.md) with `manage_admins`. The base URL for a provisioning tool is `/scim/v2/<org>`; the operations and their bodies are
 in the OpenAPI document under the SCIM tag, and the server describes itself at `/scim/v2/<org>/ServiceProviderConfig`
 and `/scim/v2/<org>/Schemas`.
 

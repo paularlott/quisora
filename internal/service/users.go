@@ -740,8 +740,9 @@ func dropUnchanged(u *model.User, in *UserInput) {
 
 // CurbsAdmin reports whether in demotes or disables u, an administrator or super admin, or ends their account sooner. Like granting the role, that
 // takes a recently re-authenticated console session in the management API (a stolen token or an unattended session
-// must not lock the other administrators out). SCIM does not ask for it: a directory offboarding an administrator
-// (disabling or deleting them) must work with its token, and the service's own rules (nobody curbs their own account, only a super admin curbs a super admin) apply.
+// must not lock the other administrators out); a personal API token is refused it, over SCIM too. A service account
+// makes it (a directory offboarding an administrator must work with its credentials), and the service's own rules
+// (nobody curbs their own account, only a super admin curbs a super admin) apply.
 func CurbsAdmin(u *model.User, in UserInput) bool {
 	if !isAdminRank(u) {
 		return false

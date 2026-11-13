@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/service"
 )
 
 func TestSCIMRBAC(t *testing.T) {
@@ -159,8 +160,13 @@ func TestSCIMRBAC(t *testing.T) {
 			t.Errorf("%s: %d %s", name, r.Status, r.Raw)
 		}
 	}
-	// an organization's last administrator is not guarded: super admins administer every organization
-	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, patchBody(op("replace", "active", false))); r.Status != 200 {
+	// an organization's last administrator is not guarded: super admins administer every organization (a personal
+	// token is refused disabling an administrator, as in the management API; a service account makes it)
+	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, e.super, patchBody(op("replace", "active", false))); r.Status != 403 {
+		t.Errorf("a personal token disables an admin: %d %s", r.Status, r.Raw)
+	}
+	sa := e.serviceAccount(e.orgB, service.ScopeSCIM, service.ScopeManageAdmins)
+	if r := e.do("PATCH", "/scim/v2/globex/Users/"+e.users["adm-b"].ID, sa, patchBody(op("replace", "active", false))); r.Status != 200 {
 		t.Errorf("disable an organization's last admin: %d %s", r.Status, r.Raw)
 	}
 	if r := e.do("DELETE", "/scim/v2/acme/Users/"+admUser.ID, e.admA, nil); r.Status != 400 {
@@ -206,11 +212,48 @@ func TestSuperAdminRoleThroughSCIM(t *testing.T) {
 	if p := e.do("PATCH", "/scim/v2/primary/Users/"+id, e.admA, patchBody(op("replace", quisoraURN+":role", "user"))); p.Status != 404 {
 		t.Errorf("other org's admin patching primary: %d", p.Status)
 	}
-	if p := e.do("PATCH", "/scim/v2/primary/Users/"+id, e.super, patchBody(op("replace", quisoraURN+":role", "user"))); p.Status != 200 || p.str(quisoraURN, "role") != "user" {
+	// demoting a super admin is a super admin's, in the console after a re-authentication: never a token's
+	if p := e.do("PATCH", "/scim/v2/primary/Users/"+id, e.super, patchBody(op("replace", quisoraURN+":role", "user"))); p.Status != 403 {
 		t.Errorf("demote: %d %s", p.Status, p.Raw)
 	}
 	// The token's owner cannot disable itself.
 	if p := e.do("PATCH", "/scim/v2/primary/Users/"+e.Admin.ID, e.super, patchBody(op("replace", "active", false))); p.Status != 400 {
 		t.Errorf("self-disable: %d %s", p.Status, p.Raw)
+	}
+}
+
+// A personal API token cannot demote, disable, end sooner or delete another administrator over SCIM, as it cannot in
+// the management API (those take a recently re-authenticated console session); a service account with manage_admins,
+// as a directory offboarding one uses, can. Users below administrator are unaffected.
+func TestSCIMPersonalTokenCannotCurbAnAdmin(t *testing.T) {
+	e := newEnv(t)
+	peer := e.mkUser(e.orgA, "adm-peer", model.RoleAdmin)
+	plain := e.mkUser(e.orgA, "plain", model.RoleUser)
+	tok := e.token(e.users["adm-a"], "scim", "admin")
+	base := "/scim/v2/acme/Users/"
+	for name, body := range map[string]map[string]any{
+		"disable":  patchBody(op("replace", "active", false)),
+		"end-date": patchBody(op("replace", quisoraURN+":validUntil", "2020-01-01T00:00:00Z")),
+		"demote":   patchBody(op("replace", quisoraURN+":role", "user")),
+	} {
+		if r := e.do("PATCH", base+peer.ID, tok, body); r.Status != 403 {
+			t.Errorf("personal token, %s: %d %s", name, r.Status, r.Raw)
+		}
+	}
+	if r := e.do("DELETE", base+peer.ID, tok, nil); r.Status != 403 {
+		t.Errorf("personal token, delete: %d %s", r.Status, r.Raw)
+	}
+	if u, err := e.Svc.Users.Get(e.ctx, peer.ID); err != nil || !u.Active || u.Role != model.RoleAdmin || u.ValidUntil != nil {
+		t.Fatalf("the administrator was changed: %+v %v", u, err)
+	}
+	if r := e.do("PATCH", base+plain.ID, tok, patchBody(op("replace", "active", false))); r.Status != 200 {
+		t.Errorf("personal token disables a user: %d %s", r.Status, r.Raw)
+	}
+	sa := e.serviceAccount(e.orgA, service.ScopeSCIM, service.ScopeManageAdmins)
+	if r := e.do("PATCH", base+peer.ID, sa, patchBody(op("replace", "active", false))); r.Status != 200 {
+		t.Errorf("service account disables an admin: %d %s", r.Status, r.Raw)
+	}
+	if r := e.do("DELETE", base+peer.ID, sa, nil); r.Status != 204 {
+		t.Errorf("service account deletes an admin: %d %s", r.Status, r.Raw)
 	}
 }

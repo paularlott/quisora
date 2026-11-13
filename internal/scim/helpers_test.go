@@ -91,6 +91,27 @@ func (e *env) mkUser(o *model.Org, name string, role model.Role) *model.User {
 
 func (e *env) primary() *model.Org { return e.Env.Primary }
 
+// serviceAccount makes a service account of organization o with scopes and returns a bearer value that signs in as it
+// (through the module's token verifier, as a client_credentials token would).
+func (e *env) serviceAccount(o *model.Org, scopes ...string) string {
+	e.t.Helper()
+	cl, _, err := e.Svc.CreateServiceAccount(e.ctx, service.System, o.ID, service.ServiceAccountInput{Name: ptr("sa-" + o.Name), Scopes: &scopes})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	bearer, prev := "sa-"+cl.ID, e.verify
+	e.verify = func(r *http.Request, scheme, b string) (*service.Actor, error) {
+		if b == bearer {
+			return service.ActorForServiceAccount(cl, cl.Scopes, ""), nil
+		}
+		if prev != nil {
+			return prev(r, scheme, b)
+		}
+		return nil, service.ErrBadToken
+	}
+	return bearer
+}
+
 func (e *env) token(u *model.User, scopes ...string) string {
 	_, plain, err := e.Svc.CreateAPIToken(e.ctx, service.ActorForUser(u, ""), service.APITokenInput{Name: "t", Scopes: scopes})
 	if err != nil {
