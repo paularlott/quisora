@@ -2,8 +2,8 @@
 
 Quisora run against the OpenID Foundation conformance suite (built from source, October 2026) with the harness in
 [conformance/](../conformance/README.md). Static clients, discovery, authorization code flow with PKCE S256. The
-results below are from commit `402e685` (the review rounds through the twenty-second, pre-release compatibility
-removed), run on 12 November 2026, against a freshly seeded node; the counts are the same as at `527d185` and `34f6c44`.
+results below are from commit `1eb6cd2` (the penetration test's fixes of 13 November), run on 13 November 2026,
+against a freshly seeded node; the counts are the same as at `402e685`, `527d185` and `34f6c44`.
 
 The suite's test logic is unmodified. Its OIDC client sends no PKCE, so the seeded confidential clients have
 **Require PKCE** turned off (a per-client setting, on by default; public clients always need PKCE). The only local
@@ -33,7 +33,7 @@ The same three expected warnings as the basic plan.
 ## FAPI 2.0 Security Profile
 
 `fapi2-security-profile-final-test-plan` (the certifiable FAPI 2.0 plan) with OpenID Connect, `private_key_jwt`
-client authentication and DPoP sender-constrained tokens, `plain_fapi`, run on 11 November 2026 on the same build as
+client authentication and DPoP sender-constrained tokens, `plain_fapi`, run on 13 November 2026 on the same build as
 the plans above. The seeded FAPI clients have the
 FAPI 2.0 Security Profile turned on and nothing else changed from their defaults. It runs twice: with ES256 client
 keys, and with PS256 (RSA) client keys, which the module refusing RS256 client assertions needs.
