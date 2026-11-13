@@ -41,6 +41,9 @@ not their names: a rename reveals nothing), and never re-marked: what a user did
 stays visible to the admins who saw it then. An event names a user in its actor, target and detail; only the first two
 are judged, so a super admin named only in an event's detail (a group membership change) is still shown by id.
 
+A tenant's SSH certificates follow it too: for those below a super admin, the tenant's certificate list, its count
+and its search leave out the super admin's certificates, and revoking one answers not found.
+
 **Profile pictures are public to whoever has their URL.** A user's picture is served without authentication at
 `/o/<org id>/pictures/<id>`, because applications show it in an `<img>` on their own pages; the id is 128 random bits,
 new for every picture and unrelated to the user's id, and is the only thing that keeps the picture from others (anyone

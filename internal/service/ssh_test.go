@@ -3214,3 +3214,59 @@ func TestSSHGuestCertificateStandsOnItsSource(t *testing.T) {
 		t.Errorf("its source deleted: %q", got)
 	}
 }
+
+// A super admin's certificates are not there for those below them (as the super admin is not): the primary
+// organization's administrators neither list nor count nor revoke them; another user's they do; super admins see all.
+func TestSSHSuperAdminCertsHiddenBelowThem(t *testing.T) {
+	e := newEnv(t)
+	ten := e.tenant(e.primary.ID, "prod")
+	open := ten.Settings
+	open.MembersOnly = false
+	ten, err := e.svc.UpdateTenant(e.ctx, service.System, ten.ID, service.TenantInput{Settings: &open})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &sshWorld{env: e, org: e.primary, tenant: ten, admin: e.user(e.primary.ID, "padmin", model.RoleAdmin)}
+	w.enable(service.SSHSettingsInput{AllowPrivileged: ptr(true)})
+	su := w.mustSign(e.super).Cert
+	plain := w.mustSign(e.user(e.primary.ID, "pat", model.RoleUser)).Cert
+
+	ids := func(a *service.Actor, f service.SSHCertFilter) ([]string, int) {
+		t.Helper()
+		views, n, err := w.svc.ListSSHCertsCounted(w.ctx, a, w.tenant.ID, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, v := range views {
+			out = append(out, v.ID)
+		}
+		return out, n
+	}
+	admin := actor(w.admin)
+	for _, f := range []service.SSHCertFilter{{Status: "all"}, {Status: service.SSHCertActive}, {UserID: e.super.ID},
+		{Search: e.super.Username}} {
+		got, n := ids(admin, f)
+		if slices.Contains(got, su.ID) || n != len(got) {
+			t.Errorf("admin, %+v: %v (%d)", f, got, n)
+		}
+	}
+	if got, n := ids(admin, service.SSHCertFilter{Status: "all"}); !slices.Equal(got, []string{plain.ID}) || n != 1 {
+		t.Errorf("admin lists %v (%d), want only the user's", got, n)
+	}
+	if got, n := ids(actor(e.super), service.SSHCertFilter{Status: "all"}); len(got) != 2 || n != 2 {
+		t.Errorf("super admin lists %v (%d)", got, n)
+	}
+	if err := w.svc.RevokeSSHCert(w.ctx, admin, e.primary.ID, su.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("admin revokes the super admin's: %v", err)
+	}
+	if c, _ := w.svc.SSHCerts.Get(w.ctx, su.ID); c.Revoked {
+		t.Fatal("the super admin's certificate was revoked")
+	}
+	if err := w.svc.RevokeSSHCert(w.ctx, admin, e.primary.ID, plain.ID); err != nil {
+		t.Errorf("admin revokes the user's: %v", err)
+	}
+	if err := w.svc.RevokeSSHCert(w.ctx, actor(e.super), e.primary.ID, su.ID); err != nil {
+		t.Errorf("super admin revokes their own: %v", err)
+	}
+}

@@ -755,7 +755,8 @@ func (s *Service) InvalidateSSHKRLIn(orgID string) {
 }
 
 // RevokeSSHCert revokes a certificate of organization orgID by hand: an administrator of the organization (or a service
-// account with the ssh scope) may revoke any, and a user their own (the account page). It lands on the revocation list
+// account with the ssh scope) may revoke any but a super admin's, which only a super admin sees (ErrNotFound), and a
+// user their own (the account page). It lands on the revocation list
 // within 30 seconds. Revoking one already revoked changes nothing.
 func (s *Service) RevokeSSHCert(ctx context.Context, a *Actor, orgID, certID string) error {
 	for attempt := 0; ; attempt++ {
@@ -766,6 +767,15 @@ func (s *Service) RevokeSSHCert(ctx context.Context, a *Actor, orgID, certID str
 		own := c.UserID != "" && c.UserID == a.UserID && a.ClientID == "" && a.OrgID == orgID
 		if !own && !s.sshAdmin(a, orgID, ScopeSSH) {
 			return ErrForbidden
+		}
+		if !own && c.UserID != "" { // a super admin's certificate is not there for those below them (Visibility)
+			hidden, err := s.hiddenSuperAdmins(ctx, a, orgID)
+			if err != nil {
+				return err
+			}
+			if hidden[c.UserID] {
+				return ErrNotFound
+			}
 		}
 		if c.Revoked {
 			return nil
@@ -949,7 +959,7 @@ func (s *Service) ListSSHCerts(ctx context.Context, a *Actor, tenantID string, f
 
 // ListSSHCertsCounted lists the certificates of a tenant that match f, newest first, each with whether it is active,
 // expired or revoked and why, from f.Offset at most f.Limit of them, and says how many match in all (as the other
-// listings count: every match, not those returned).
+// listings count: every match, not those returned). A super admin's are left out for an actor below them.
 func (s *Service) ListSSHCertsCounted(ctx context.Context, a *Actor, tenantID string, f SSHCertFilter) ([]*SSHCertView, int, error) {
 	t, err := s.tenantForSSH(ctx, a, tenantID)
 	if err != nil {
@@ -966,6 +976,14 @@ func (s *Service) ListSSHCertsCounted(ctx context.Context, a *Actor, tenantID st
 	certs, err := s.sshCertsMatching(ctx, t, f)
 	if err != nil {
 		return nil, 0, err
+	}
+	// a super admin's certificates are not listed, nor counted, for those below them (Visibility)
+	hidden, err := s.hiddenSuperAdmins(ctx, a, t.OrgID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(hidden) > 0 {
+		certs = slices.DeleteFunc(certs, func(c *model.SSHCert) bool { return hidden[c.UserID] })
 	}
 	slices.SortFunc(certs, func(x, y *model.SSHCert) int {
 		if c := y.Created.Compare(x.Created); c != 0 {
