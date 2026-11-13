@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/paularlott/cli v0.10.3
-	github.com/paularlott/gossip v0.31.0
+	github.com/paularlott/gossip v0.31.1
 	github.com/paularlott/logger v0.4.0
 	github.com/paularlott/mcp v0.36.0
 	github.com/shamaton/msgpack/v3 v3.2.7
