@@ -50,7 +50,8 @@ type Server struct {
 	Mux      *http.ServeMux
 	Health   Health
 	Bearer   BearerFunc // resolves bearer tokens for the management API (set by the app)
-	// Reauthed reports whether the request's session signed in or re-authenticated recently (set by the login module,
+	// Reauthed reports whether the request's session re-authenticated recently, or signed in recently with the
+	// account's own second factor (or the account has none), as the account page decides (set by the login module,
 	// which owns re-authentication); false without a session (API tokens). Changes to your own account made from the
 	// admin pages ask for it, as the account page does.
 	Reauthed func(r *http.Request) bool

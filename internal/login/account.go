@@ -707,24 +707,41 @@ func (m *Module) needReauth(w http.ResponseWriter, r *http.Request, a acct) bool
 	if m.reauthed(ctx, a) {
 		return true
 	}
-	if time.Since(a.sess.AuthTime) < reauthTTL {
-		if slices.ContainsFunc(a.sess.AMR, func(v string) bool { return v == "otp" || v == "hwk" || v == "swk" }) {
-			return true
-		}
-		// Whether the account has a second factor of its own is read from the account as it is now, not from the
-		// request's copy (a per-node cache): one set up since, on this node or another, counts at once.
-		u, err := m.fresh(ctx, a)
-		if err != nil {
-			unavailableResponse(w)
-			return false
-		}
-		pk, err := m.s.Svc.UsablePasskeys(ctx, u, "")
-		if err == nil && !u.HasTOTP() && pk == 0 {
-			return true
-		}
+	ok, err := m.freshSignIn(ctx, a)
+	if err != nil {
+		unavailableResponse(w)
+		return false
+	}
+	if ok {
+		return true
 	}
 	writeErr(w, http.StatusForbidden, "Confirm it is you with your password or a passkey first.", "reauth")
 	return false
+}
+
+// freshSignIn reports whether the session's sign-in, within reauthTTL, stands as a re-authentication: when it used
+// the account's own second factor (an authenticator code or a passkey), or the account has none (nothing else to
+// re-enter). A sign-in that skipped the account's own factor (a password alone, a provider trusted for the second
+// factor) does not count for an account that has one. Whether it has one is read from the account as it is now, not
+// from the request's copy (a per-node cache): one set up since, on this node or another, counts at once. The account
+// page (needReauth) and the management API's changes (web.Server.Reauthed) both decide by it. An error is a read that
+// failed: no verdict.
+func (m *Module) freshSignIn(ctx context.Context, a acct) (bool, error) {
+	if time.Since(a.sess.AuthTime) >= reauthTTL {
+		return false, nil
+	}
+	if slices.ContainsFunc(a.sess.AMR, func(v string) bool { return v == "otp" || v == "hwk" || v == "swk" }) {
+		return true, nil
+	}
+	u, err := m.s.Svc.Users.Get(ctx, a.sess.UserID)
+	if err != nil {
+		return false, err
+	}
+	pk, err := m.s.Svc.UsablePasskeys(ctx, u, "")
+	if err != nil {
+		return false, err
+	}
+	return !u.HasTOTP() && pk == 0, nil
 }
 
 func (m *Module) reauthStatus(w http.ResponseWriter, r *http.Request, a acct) {

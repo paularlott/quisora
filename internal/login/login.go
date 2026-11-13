@@ -128,7 +128,12 @@ func (m *Module) Register(s *web.Server) {
 		if sess == nil {
 			return false
 		}
-		return m.reauthed(r.Context(), acct{sess: sess}) || time.Since(sess.AuthTime) < reauthTTL
+		a := acct{sess: sess}
+		if m.reauthed(r.Context(), a) {
+			return true
+		}
+		ok, err := m.freshSignIn(r.Context(), a) // as the account page decides (needReauth)
+		return err == nil && ok
 	}
 	mux := s.Mux
 	// inOrg registers an organization's page or endpoint: the path names the organization (s.InOrg), and with it the
