@@ -73,7 +73,9 @@ pictures it held are deleted. A server that wants none for any organization star
 - CA key rotation is not atomic across nodes: two nodes acting in the same instant can each make a key, and both are
   published. After a rotation, check the tenant's CA keys and remove an extra one.
 - An emailed one-time code counts as a second factor. Where that is too weak for servers, limit the tenant's sign-in methods
-  (to passkeys, say).
+  (to passkeys, say). The change applies to sign-ins from then on: an access token the SSH client already holds signs
+  certificates until it expires (`tokens.access_ttl`, 10 minutes by default; the client has no refresh token), so sign
+  the tenant's users out too if that window matters.
 - A username principal is a login name, and managers can create and rename users and add people to groups: always match
   certificates to accounts with `AuthorizedPrincipalsFile`, and do not map privileged accounts by username.
 - Certificates already issued outlast a Quisora outage, but no new one is signed during it.
