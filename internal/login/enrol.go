@@ -210,8 +210,8 @@ func (m *Module) enrolPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	_, u, _, ok := m.enrolTicket(w, r, in.Ticket)
-	if !ok {
+	t, u, _, ok := m.enrolTicket(w, r, in.Ticket)
+	if !ok || asGuest(w, t.Sources) { // a guest's second factor here is an authenticator app (asGuest)
 		return
 	}
 	id, opts, err := m.Passkeys.BeginRegistration(r.Context(), u, map[string]string{passkey.PurposeKey: purposeEnrol})
@@ -239,7 +239,7 @@ func (m *Module) enrolPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, u, org, ok := m.enrolTicket(w, r, in.Ticket)
-	if !ok {
+	if !ok || asGuest(w, t.Sources) {
 		return
 	}
 	ctx := r.Context()

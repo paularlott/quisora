@@ -513,6 +513,24 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 	web.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "signed_out": n})
 }
 
+// msgGuestFirstFactor refuses a guest's sign-in a first factor of this organization (asGuest).
+const msgGuestFirstFactor = "You signed in through another organization, so you cannot add a password, passkey or " +
+	"sign-in provider here. Keep signing in through that organization."
+
+// asGuest refuses, to a sign-in made as a guest (through an organization provider: its sources), adding a first factor
+// of this organization: a password, a passkey or another sign-in provider. That sign-in stands on the person's
+// account at the source organization and ends with it (service.SourcesHold); a first factor added from it would sign
+// in on its own, standing on nothing, and outlive the person's removal there. An authenticator app, a second factor
+// only, it may add. An account with a first factor of its own here adds more by signing in with it. It reports
+// whether it refused (and has answered).
+func asGuest(w http.ResponseWriter, sources []model.GuestSource) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	writeErr(w, http.StatusForbidden, msgGuestFirstFactor, "guest")
+	return true
+}
+
 // setFirstPassword adds a password to an account that has none, when its organization signs people in with
 // passwords. It adds a way into the account, so it needs a recent re-authentication with what the account already
 // signs in with (needReauth: its passkey or authenticator code, or signing in again through its provider), as adding
@@ -520,6 +538,9 @@ func (m *Module) changePassword(w http.ResponseWriter, r *http.Request, a acct) 
 // the other sessions stay.
 func (m *Module) setFirstPassword(w http.ResponseWriter, r *http.Request, a acct, u *model.User, password string) {
 	ctx := r.Context()
+	if asGuest(w, a.sess.Sources) {
+		return
+	}
 	if !m.passwordsAllowed(ctx, u) {
 		writeErr(w, http.StatusConflict, "Your organization does not sign people in with passwords.", "")
 		return
@@ -1037,7 +1058,7 @@ func (m *Module) deletePasskey(w http.ResponseWriter, r *http.Request, a acct) {
 }
 
 func (m *Module) registerPasskeyBegin(w http.ResponseWriter, r *http.Request, a acct) {
-	if !m.passkeysOK(w) || !m.needReauth(w, r, a) {
+	if !m.passkeysOK(w) || asGuest(w, a.sess.Sources) || !m.needReauth(w, r, a) {
 		return
 	}
 	u, err := m.fresh(r.Context(), a)
@@ -1077,7 +1098,7 @@ type registerFinishReq struct {
 }
 
 func (m *Module) registerPasskeyFinish(w http.ResponseWriter, r *http.Request, a acct) {
-	if !m.passkeysOK(w) || !m.needReauth(w, r, a) {
+	if !m.passkeysOK(w) || asGuest(w, a.sess.Sources) || !m.needReauth(w, r, a) {
 		return
 	}
 	var in registerFinishReq

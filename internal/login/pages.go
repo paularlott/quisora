@@ -114,7 +114,7 @@ func (m *Module) loginPage(w http.ResponseWriter, r *http.Request) {
 			}
 			if d.Step == "enrol" {
 				d.Methods = "totp"
-				if m.Passkeys != nil {
+				if m.Passkeys != nil && len(t.Sources) == 0 { // a guest's sign-in adds no first factor (asGuest)
 					d.Methods += " passkey"
 				}
 			}

@@ -52,7 +52,7 @@ func (m *Module) listProviders(w http.ResponseWriter, r *http.Request, a acct) {
 // connectProvider handles POST /o/{org}/api-internal/account/providers/{id}/connect: answers {url}, the provider's address to send
 // the browser to; the callback attaches the identity (connectFinish).
 func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct) {
-	if !m.needReauth(w, r, a) {
+	if asGuest(w, a.sess.Sources) || !m.needReauth(w, r, a) {
 		return
 	}
 	ctx := r.Context()

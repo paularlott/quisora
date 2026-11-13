@@ -220,7 +220,7 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 	}
 	if t.Step == "enrol" {
 		resp.Methods = []string{"totp"}
-		if m.Passkeys != nil {
+		if m.Passkeys != nil && len(t.Sources) == 0 { // a guest's sign-in adds no first factor (asGuest)
 			resp.Methods = append(resp.Methods, "passkey")
 		}
 	}

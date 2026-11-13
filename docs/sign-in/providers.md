@@ -302,6 +302,11 @@ missed has stopped working already. The guest account itself stays: the person c
 lets them. A guest of B that is itself the source of guests in a third organization stands on the whole chain, back to
 S (four organizations deep at most: a sign-in further away is refused).
 
+A guest's sign-in cannot add a way into B of its own: setting a password, adding a passkey or connecting another
+sign-in provider from it is refused, because that would sign in without S and outlive the person's removal there. Its
+second factor in B is an authenticator app. An administrator of B who sends the guest an invitation makes the account
+B's own instead: accepting it ends the link to S, and from then on S's removal of the person does not reach it.
+
 A guest can make personal API tokens in B like any user of B (as B's settings allow). Such a token stands on the
 person at S the way that person's own tokens at S do: it stops working when they are disabled, locked out, past their
 end date, deleted, or their password or sign-in is reset at S, and works on (to its own expiry) when they only sign out

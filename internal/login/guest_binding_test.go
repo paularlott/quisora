@@ -429,3 +429,72 @@ func TestGuestAPITokenStandsOnItsSource(t *testing.T) {
 		t.Error("pat disabled at home, the guest's token still works")
 	}
 }
+
+// A guest's sign-in cannot add a first factor of the guest organization: a password, a passkey or another sign-in
+// provider would sign in on its own, standing on nothing at the source organization, and outlive the person's removal
+// there. An authenticator app, a second factor only, it may add; nothing is written by the refusals.
+func TestGuestSignInAddsNoFirstFactor(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
+	pat := g.person(t, g.Primary, "pat", "pat@example.com")
+	guest := g.person(t, g.acme, "pat-guest", "pat@example.com")
+	pb, _ := g.continueAs(t, pat)
+	_, page := pb.get("/account")
+	m := metaRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("the guest's account page: %.300s", page)
+	}
+	pb.csrf = m[1]
+	for name, call := range map[string]func() (*http.Response, map[string]any){
+		"password": func() (*http.Response, map[string]any) {
+			return pb.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "a perfectly fine password"})
+		},
+		"passkey begin":  func() (*http.Response, map[string]any) { return pb.api("POST", "/api-internal/account/passkeys/register/begin", nil) },
+		"passkey finish": func() (*http.Response, map[string]any) { return pb.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{}) },
+		"connect":        func() (*http.Response, map[string]any) { return pb.api("POST", "/api-internal/account/providers/"+g.p.ID+"/connect", nil) },
+	} {
+		res, out := call()
+		if res.StatusCode != http.StatusForbidden || str(out, "field") != "guest" {
+			t.Errorf("%s: %d %v", name, res.StatusCode, out["_raw"])
+		}
+	}
+	if u, _ := g.Svc.Users.Get(context.Background(), guest.ID); u.PasswordHash != "" {
+		t.Fatal("the guest has a password")
+	}
+	if res, out := pb.api("POST", "/api-internal/account/totp/begin", nil); res.StatusCode != http.StatusOK {
+		t.Errorf("an authenticator app: %d %v", res.StatusCode, out["_raw"])
+	}
+}
+
+// Where the guest organization asks a second factor, a guest's sign-in sets up an authenticator app, not a passkey:
+// the page offers the app alone, and a passkey's registration from that sign-in is refused.
+func TestGuestEnrolsNoPasskey(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
+	pat := g.person(t, g.Primary, "pat", "pat@example.com")
+	g.person(t, g.acme, "pat-guest", "pat@example.com")
+	g.setSettings(t, g.acme, func(s *model.OrgSettings) { s.RequireMFA = true })
+	pb, done := g.continueAs(t, pat)
+	if !strings.Contains(done, "step=1") {
+		t.Fatalf("no second-factor step after the guest's sign-in: %q", done)
+	}
+	_, page := pb.get("/login?step=1")
+	if !strings.Contains(page, `data-step="enrol"`) || !strings.Contains(page, `data-methods="totp"`) {
+		t.Fatalf("the enrolment step offers: %.400s", page[max(0, strings.Index(page, "data-step")-10):])
+	}
+	if m := metaRe.FindStringSubmatch(page); m != nil {
+		pb.csrf = m[1]
+	}
+	var ticket string
+	u, _ := url.Parse(g.URL)
+	for _, c := range pb.c.Jar.Cookies(u) {
+		if c.Name == "__Host-quisora_step" {
+			ticket = c.Value
+		}
+	}
+	res, out := pb.post("/api-internal/login/enrol/passkey/begin", map[string]any{"ticket": ticket})
+	if res.StatusCode != http.StatusForbidden || str(out, "field") != "guest" {
+		t.Fatalf("a passkey from the guest's sign-in: %d %v", res.StatusCode, out["_raw"])
+	}
+	if res, out := pb.post("/api-internal/login/enrol/totp/begin", map[string]any{"ticket": ticket}); res.StatusCode != http.StatusOK {
+		t.Fatalf("an authenticator app from the guest's sign-in: %d %v", res.StatusCode, out["_raw"])
+	}
+}
