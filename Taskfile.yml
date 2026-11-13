@@ -88,15 +88,17 @@ tasks:
       - git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null # tagged already
 
   release:
-    desc: "Release the version in internal/build/version.go: tag it (task tag, skipped when the tag exists), build every platform (task all), and create the GitHub release v<version> with the binaries and their SHA-256 checksums (needs gh)"
+    desc: "Release the version in internal/build/version.go: build every platform (task all), notarize the macOS binaries (task notarize-macos), tag it (task tag, skipped when the tag exists), and create the GitHub release v<version> with the binaries and their SHA-256 checksums (needs gh)"
     preconditions:
       - sh: test -z "$(git status --porcelain)"
         msg: "the working tree has uncommitted changes: commit them first, so the release is the tagged code"
       - sh: '! git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null || test "$(git rev-list -n 1 v{{.VERSION}})" = "$(git rev-parse HEAD)"'
         msg: "v{{.VERSION}} already tags another commit: raise Version in internal/build/version.go"
     cmds:
-      - task: tag
+      # Build and notarize before the tag is pushed, so a rejection stops here.
       - task: all
+      - task: notarize-macos
+      - task: tag
       - cd {{.OUTPUT_DIR}} && rm -f SHA256SUMS && shasum -a 256 {{.PROJECT_NAME}}-* > SHA256SUMS
       - gh release create v{{.VERSION}} {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-* {{.OUTPUT_DIR}}/SHA256SUMS -t "Quisora {{.VERSION}}" --generate-notes
 
@@ -125,6 +127,93 @@ tasks:
           CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
           go build -tags onepassword {{.BUILD_FLAGS}}
           -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
+      - |
+        # Developer ID signature for release (MACOS_SIGN_IDENTITY in .env, see
+        # .env.example): the hardened runtime and a secure timestamp are
+        # required for notarization. Skipped without an identity (or off
+        # macOS), leaving Go's ad-hoc signature.
+        if [ -n "$MACOS_SIGN_IDENTITY" ] && command -v codesign >/dev/null 2>&1; then
+          for f in {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-darwin-* {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-darwin-*; do
+            name=$(basename "$f")
+            id="com.paularlott.${name%-darwin-*}"
+            case $name in
+              # The 1Password SDK runs on wazero, which compiles WebAssembly at
+              # runtime: the hardened runtime needs the entitlement to allow it.
+              *-1password-*)
+                codesign --force --timestamp --options runtime --identifier "$id" \
+                  --entitlements scripts/macos/onepassword.entitlements \
+                  --sign "$MACOS_SIGN_IDENTITY" "$f" || exit 1 ;;
+              *)
+                codesign --force --timestamp --options runtime --identifier "$id" \
+                  --sign "$MACOS_SIGN_IDENTITY" "$f" || exit 1 ;;
+            esac
+          done
+        fi
+
+  notarize-macos:
+    desc: Notarize the Developer ID signed macOS binaries in bin/ (NOTARY_* in .env)
+    cmds:
+      - |
+        if [ -z "$NOTARY_KEY" ] || [ -z "$NOTARY_KEY_ID" ] || [ -z "$NOTARY_ISSUER" ]; then
+          echo "NOTARY_KEY, NOTARY_KEY_ID and NOTARY_ISSUER must be set: see .env.example" >&2
+          exit 1
+        fi
+        key=$NOTARY_KEY
+        case $key in "~/"*) key="$HOME/${key#\~/}" ;; esac
+        if [ ! -f "$key" ]; then
+          echo "Notary API key not found: $key" >&2
+          exit 1
+        fi
+        notary() {
+          xcrun notarytool "$@" --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
+        }
+
+        stage=$(mktemp -d "${TMPDIR:-/tmp}/{{.PROJECT_NAME}}-notarize.XXXXXX") || exit 1
+        trap 'rm -rf "$stage"' EXIT
+        mkdir "$stage/submit" || exit 1
+
+        # Check each macOS binary carries a Developer ID signature before
+        # anything is sent to Apple.
+        set -- {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-darwin-* {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-darwin-*
+        for f in "$@"; do
+          if ! codesign -dvv "$f" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+            echo "$f is not Developer ID signed: set MACOS_SIGN_IDENTITY in .env and rebuild (task all)" >&2
+            exit 1
+          fi
+          cp "$f" "$stage/submit/" || exit 1
+        done
+
+        # One submission covers every binary: notarization is recorded per
+        # binary (by code hash), so the release binaries need no change. Bare
+        # binaries cannot be stapled; Gatekeeper finds the ticket online.
+        ditto -c -k --keepParent "$stage/submit" "$stage/submit.zip" || exit 1
+        result=$(notary submit "$stage/submit.zip" --wait --output-format json) || true
+        echo "$result"
+        status=$(echo "$result" | jq -r '.status // empty')
+        if [ "$status" != "Accepted" ]; then
+          id=$(echo "$result" | jq -r '.id // empty')
+          echo "Notarization failed (status: ${status:-unknown})" >&2
+          if [ -n "$id" ]; then notary log "$id" >&2; fi
+          exit 1
+        fi
+
+        # Confirm Apple serves the ticket for each binary as shipped.
+        for f in "$@"; do
+          ok=0
+          # A freshly accepted ticket can take a few seconds to be served.
+          for attempt in 1 2 3 4 5 6; do
+            if codesign --verify --strict --check-notarization "$f" 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "$f is not showing as notarized" >&2
+            exit 1
+          fi
+          echo "notarized: $(basename "$f")"
+        done
 
   run:
     desc: Run a local server (BadgerDB, self-signed certificate) on https://localhost:8443
