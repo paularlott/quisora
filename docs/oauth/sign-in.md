@@ -95,7 +95,8 @@ curl -s "$ISSUER/oauth/token" \
 - **ID token**: who signed in, for the application itself (with `openid`). Check its signature against
   the organization's `/oauth/jwks`, `iss` (the organization's issuer), `aud` (your client ID), `exp` and `nonce`. `amr` says how the user signed in (`pwd`, `hwk`
   or `swk` for a passkey with `user` when it verified the user, `otp`, `mfa` when two factors were used, `fed` for an
-  upstream provider, followed by the provider's own `amr` values when it sent any, but never its `mfa`:
+  upstream provider, followed by the provider's own `amr` values when it sent any, but never its `mfa`, and none of
+  them when together they would show a second factor Quisora did not verify or trust, such as `pwd` with `otp`:
   [providers](../sign-in/providers.md)) and `acr` whether Quisora verified or trusts a second factor. `mfa` in `amr`
   and `urn:quisora:acr:mfa` say the same thing.
   `fed` in `amr` says the user signed in through an upstream provider; the `idp` scope says which one and which

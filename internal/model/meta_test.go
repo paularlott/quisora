@@ -192,7 +192,8 @@ func TestCleanAMR(t *testing.T) {
 }
 
 // Tokens carry Quisora's own references first, then the provider's that are not among them, but never the
-// provider's "mfa": a token says mfa only when Quisora's own references do.
+// provider's "mfa": a token shows a second factor only when Quisora's own references do, however the provider
+// spells one (its references are then left out).
 func TestTokenAMR(t *testing.T) {
 	for _, c := range []struct{ amr, upstream, want []string }{
 		{[]string{"fed"}, []string{"pwd", "mfa"}, []string{"fed", "pwd"}},
@@ -200,6 +201,12 @@ func TestTokenAMR(t *testing.T) {
 		{[]string{"fed", "otp", "mfa"}, []string{"pwd", "mfa"}, []string{"fed", "otp", "mfa", "pwd"}},
 		{[]string{"pwd"}, nil, []string{"pwd"}},
 		{nil, nil, nil},
+		{[]string{"fed"}, []string{"pwd", "otp"}, []string{"fed"}},
+		{[]string{"fed"}, []string{"swk", "user"}, []string{"fed"}},
+		{[]string{"fed"}, []string{"hwk", "user", "mfa"}, []string{"fed"}},
+		{[]string{"pwd"}, []string{"otp"}, []string{"pwd"}},
+		{[]string{"fed"}, []string{"otp"}, []string{"fed", "otp"}},                             // one factor, said so
+		{[]string{"fed", "mfa"}, []string{"pwd", "otp"}, []string{"fed", "mfa", "pwd", "otp"}}, // a trusted provider
 	} {
 		if got := TokenAMR(c.amr, c.upstream); !slices.Equal(got, c.want) {
 			t.Errorf("TokenAMR(%v, %v) = %v, want %v", c.amr, c.upstream, got, c.want)
@@ -209,5 +216,12 @@ func TestTokenAMR(t *testing.T) {
 	_ = TokenAMR(amr, []string{"pwd"})
 	if len(amr) != 1 {
 		t.Error("TokenAMR changed its argument")
+	}
+	for _, own := range [][]string{{"fed"}, {"pwd"}, {"swk"}, {"hwk"}, {"otp"}, {"user"}, nil} {
+		for _, up := range [][]string{{"pwd", "otp"}, {"swk", "user"}, {"hwk", "user"}, {"mfa"}, {"otp"}, {"user"}, {"pwd"}} {
+			if got := TokenAMR(own, up); MFA(got) {
+				t.Errorf("TokenAMR(%v, %v) = %v shows a second factor Quisora's own do not", own, up, got)
+			}
+		}
 	}
 }

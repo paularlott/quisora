@@ -104,6 +104,14 @@ func TestUpstreamAMRIsPassedOn(t *testing.T) {
 	// a provider that says nothing (GitHub, Google) leaves Quisora's own
 	r = signIn([]string{"fed"}, nil)
 	check("no upstream amr", r.str("id_token"), []string{"fed"}, acrBasic)
+
+	// a provider that spells its second factor out (password and code, a passkey that verified its user): no second
+	// factor in the tokens either, so the provider's references are left out
+	for _, up := range [][]string{{"pwd", "otp"}, {"swk", "user"}} {
+		r = signIn([]string{"fed"}, up)
+		check("provider's "+strings.Join(up, "+")+", ID token", r.str("id_token"), []string{"fed"}, acrBasic)
+		check("provider's "+strings.Join(up, "+")+", access token", r.str("access_token"), []string{"fed"}, acrBasic)
+	}
 }
 
 // The SSH sign endpoint asks for a second factor of the token's sign-in as Quisora saw it (the grant's amr), never

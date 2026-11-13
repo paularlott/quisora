@@ -131,13 +131,16 @@ claim (`microsoft`, `google`, …), and which account there, its ID at the provi
 
 What the provider says about how the person signed in to it (its ID token's `amr`, such as Microsoft's
 `["pwd","mfa"]`) is passed on, except its `mfa`: the tokens' `amr` is Quisora's own values and then the provider's,
-and says `mfa` only when Quisora's own values do, because Quisora asked for a second factor or trusts the provider's.
+and shows a second factor only when Quisora's own values do, because Quisora asked for one or trusts the provider's.
+When the provider's values would show one some other way (`pwd` with `otp`, or a passkey with `user`), they are left
+out and the tokens carry Quisora's own values alone.
 
 | Microsoft's `amr` | Provider trusted? | Quisora's second factor | Tokens' `amr` | `acr` |
 |---|---|---|---|---|
 | `["pwd","mfa"]` | no | asked (required) | `["fed","otp","mfa","pwd"]` | mfa |
 | `["pwd","mfa"]` | no | not required | `["fed","pwd"]` | basic |
 | `["pwd","mfa"]` | yes | not asked | `["fed","mfa","pwd"]` | mfa |
+| `["pwd","otp"]` | no | not required | `["fed"]` | basic |
 | `["pwd"]` | yes | asked, as untrusted | `["fed","otp","mfa","pwd"]` | mfa |
 | none | yes | not asked | `["fed","mfa"]` | mfa |
 

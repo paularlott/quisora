@@ -20,8 +20,9 @@ import (
 // password and an authenticator code continues to acme through the organization provider. The primary organization's
 // ID token says how ("pwd","otp","mfa"); acme keeps that apart from its own ("fed": not trusted for the second factor),
 // so a tenant of acme that requires a second factor still asks for acme's own, and the tokens acme issues to one of
-// its applications carry both, but not the provider's "mfa" (acme neither asked for a second factor nor trusts the
-// provider's), with acr from acme's own alone and idp naming the provider's type.
+// its applications carry acme's own alone: the provider's references show a second factor ("pwd" with "otp", and
+// "mfa"), and acme neither asked for one nor trusts the provider's (model.TokenAMR). acr is from acme's own and idp
+// names the provider's type.
 func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
 	ctx := context.Background()
@@ -108,7 +109,7 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 	for name, jwt := range map[string]string{"ID token": tok.IDToken, "access token": tok.AccessToken} {
 		c := payload(t, jwt)
 		amr, _ := json.Marshal(c["amr"])
-		if string(amr) != `["fed","pwd","otp"]` || c["acr"] != "urn:quisora:acr:basic" || c["idp"] != model.ProviderOrganization {
+		if string(amr) != `["fed"]` || c["acr"] != "urn:quisora:acr:basic" || c["idp"] != model.ProviderOrganization {
 			t.Errorf("%s: amr %s acr %v idp %v", name, amr, c["acr"], c["idp"])
 		}
 	}
