@@ -18,7 +18,7 @@ test('tenant: self-registered apps setting, resources and the apps card', async 
     created: '2026-10-20T10:00:00Z', last_used: '2026-10-20T11:00:00Z', users: 2 }
   let listed = [app]
   let revoked = ''
-  await page.route(`**${API}/self-registered`, (route) => route.fulfill({ status: 200, contentType: 'application/json',
+  await page.route((u) => u.pathname === `${API}/self-registered`, (route) => route.fulfill({ // a page of them: ?offset=…&limit=… status: 200, contentType: 'application/json',
     body: JSON.stringify({ items: listed, total: listed.length }) }))
   await page.route(`**${API}/self-registered/*`, (route) => {
     if (route.request().method() !== 'DELETE') return route.fallback()

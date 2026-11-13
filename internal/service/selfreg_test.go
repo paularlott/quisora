@@ -87,7 +87,7 @@ func TestSelfRegisteredLifecycle(t *testing.T) {
 		t.Error("InTenant mutated the stored client")
 	}
 	// the organization's applications, used or not
-	if l, _ := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID); len(l) != 1 || l[0].Users != 0 {
+	if l, _, _ := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID, store.ListQuery{}); len(l) != 1 || l[0].Users != 0 {
 		t.Errorf("registered app not listed: %v", l)
 	}
 	c.svc.NoteSelfRegisteredUse(c.ctx, app, ten)
@@ -104,7 +104,7 @@ func TestSelfRegisteredLifecycle(t *testing.T) {
 	if _, err := c.svc.Clients.Get(c.ctx, "ghost"); err == nil {
 		t.Error("unknown client stored")
 	}
-	l, err := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID)
+	l, _, err := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID, store.ListQuery{})
 	if err != nil || len(l) != 2 || l[0].Name != "alpha meta" || !l[0].Metadata || l[0].ClientID != mid || l[1].Users != 1 {
 		t.Fatalf("listing %+v %v", l, err)
 	}
@@ -124,7 +124,7 @@ func TestSelfRegisteredLifecycle(t *testing.T) {
 	}
 
 	// authorization: another organization's administrator sees and ends nothing here
-	if _, err := c.svc.SelfRegisteredApps(c.ctx, actor(c.bAdmin), c.a.ID); !errors.Is(err, service.ErrForbidden) {
+	if _, _, err := c.svc.SelfRegisteredApps(c.ctx, actor(c.bAdmin), c.a.ID, store.ListQuery{}); !errors.Is(err, service.ErrForbidden) {
 		t.Errorf("foreign list: %v", err)
 	}
 	if err := c.svc.RevokeSelfRegisteredApp(c.ctx, actor(c.bAdmin), c.a.ID, app.ID); !errors.Is(err, service.ErrForbidden) {
@@ -184,7 +184,7 @@ func TestMetadataApplicationPerOrganization(t *testing.T) {
 			t.Fatalf("record of %s: %+v %v", x.org.Name, got, err)
 		}
 	}
-	if l, _ := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID); len(l) != 1 || l[0].ClientID != mid {
+	if l, _, _ := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID, store.ListQuery{}); len(l) != 1 || l[0].ClientID != mid {
 		t.Errorf("organization a's list: %+v", l)
 	}
 	// ending it in a leaves b's
@@ -286,9 +286,10 @@ func TestSelfRegRedirect(t *testing.T) {
 	}
 }
 
-// The cap on applications nobody has used is each organization's own: one organization at its cap does not stop
-// another's registrations. The purge removes every organization's, however many there are (it reads them a page at a
-// time).
+// The cap on applications nobody has used is each organization's own, and at it a registration makes room by
+// removing one unused application rather than being refused: the count stays at the cap, an application in use is
+// never removed, and another organization is untouched. The purge removes every organization's, however many there
+// are (it reads them a page at a time).
 func TestSelfRegistrationCapIsPerOrganizationAndPurgePages(t *testing.T) {
 	c := newCast(t)
 	c.acceptSelfRegistered(c.a.ID)
@@ -301,8 +302,40 @@ func TestSelfRegistrationCapIsPerOrganizationAndPurgePages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := c.svc.RegisterClient(c.ctx, c.a.ID, in); !errors.Is(err, service.ErrLimit) {
-		t.Fatalf("registering at the cap: %v", err)
+	// one of them in use: never the one removed
+	used, err := c.svc.Clients.Get(c.ctx, "dyn-fill-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	used.LastUsed = time.Now()
+	if err := c.svc.Clients.Update(c.ctx, used); err != nil {
+		t.Fatal(err)
+	}
+	unused := func(orgID string) int {
+		_, n, err := c.svc.Clients.IDs(c.ctx, store.ListQuery{Scope: orgID, Limit: 1,
+			Filters: []store.Filter{{Field: "unused_self_registered", Value: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err := c.svc.Clients.Create(c.ctx, &model.Client{Meta: model.Meta{ID: "dyn-fill-x"}, OrgID: c.a.ID,
+		Name: "fill", SelfRegistered: true, AuthMethod: model.AuthMethodNone, Enabled: true}); err != nil {
+		t.Fatal(err)
+	} // back at the cap of unused ones
+	for range 3 {
+		if _, err := c.svc.RegisterClient(c.ctx, c.a.ID, in); err != nil {
+			t.Fatalf("registering at the cap: %v", err)
+		}
+		if n := unused(c.a.ID); n != service.MaxSelfRegistered {
+			t.Fatalf("unused after registering at the cap: %d, want %d", n, service.MaxSelfRegistered)
+		}
+	}
+	if _, err := c.svc.Clients.Get(c.ctx, "dyn-fill-0"); err != nil {
+		t.Errorf("the application in use was removed: %v", err)
+	}
+	if len(c.audited(c.a.ID, "client.self_registered.evict")) != 3 {
+		t.Error("the removals were not audited")
 	}
 	if _, err := c.svc.RegisterClient(c.ctx, c.b.ID, in); err != nil {
 		t.Fatalf("another organization's registration: %v", err)
@@ -356,5 +389,31 @@ func TestRegistrationNeedsATenantThatAcceptsIt(t *testing.T) {
 	}
 	if _, err := c.svc.RegisterClient(c.ctx, c.b.ID, in); !errors.Is(err, service.ErrForbidden) {
 		t.Fatalf("another organization's tenant opened this one: %v", err)
+	}
+}
+
+// The administrators' list of self-registered applications is read a page at a time, by name, with the total: an
+// organization may hold thousands nobody has used, and only the page's grants are counted.
+func TestSelfRegisteredAppsArePaged(t *testing.T) {
+	c := newCast(t)
+	for i, name := range []string{"Charlie", "Alpha", "Bravo"} {
+		if err := c.svc.Clients.Create(c.ctx, &model.Client{Meta: model.Meta{ID: fmt.Sprintf("dyn-page-%d", i)}, OrgID: c.a.ID,
+			Name: name, SelfRegistered: true, AuthMethod: model.AuthMethodNone, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func(l []service.SelfRegApp) (out []string) {
+		for _, a := range l {
+			out = append(out, a.Name)
+		}
+		return out
+	}
+	l, n, err := c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID, store.ListQuery{Limit: 2})
+	if err != nil || n != 3 || strings.Join(names(l), ",") != "Alpha,Bravo" {
+		t.Fatalf("first page: %v %d %v", names(l), n, err)
+	}
+	l, n, err = c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID, store.ListQuery{Limit: 2, Offset: 2})
+	if err != nil || n != 3 || strings.Join(names(l), ",") != "Charlie" {
+		t.Fatalf("second page: %v %d %v", names(l), n, err)
 	}
 }

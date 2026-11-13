@@ -28,9 +28,9 @@ import (
 // no longer used after selfRegIdleTTL.
 
 const (
-	// MaxSelfRegistered caps an organization's self-registered applications nobody has used yet: registration is
-	// refused beyond it until unused ones expire (used ones do not count), so one organization's flood does not
-	// stop another's registrations.
+	// MaxSelfRegistered caps an organization's self-registered applications nobody has used yet (used ones do not
+	// count): at it, a registration makes room by removing one of them picked at random (RegisterClient), so a flood
+	// neither grows storage nor stops the next registration, and is one organization's alone.
 	MaxSelfRegistered = 10000
 	// selfRegUnusedTTL is how long a self-registered application never used to sign anyone in is kept.
 	selfRegUnusedTTL = 24 * time.Hour
@@ -156,6 +156,36 @@ func (s *Service) unusedSelfRegistered(ctx context.Context, orgID string) (int, 
 	return n, mapStore(err)
 }
 
+// evictUnusedSelfRegistered removes one of organization orgID's self-registered applications nobody has used, picked
+// at random (the first by id after a random one; ids are random): refusing registrations at the cap instead would let
+// anyone hold an organization there, nobody else able to register. An application in use is never removed, and one
+// just registered is rarely: its first sign-in comes within minutes, while turning the cap over at the organization's
+// registration rate takes hours. One never used holds no grants, so it goes as the purge removes it.
+func (s *Service) evictUnusedSelfRegistered(ctx context.Context, orgID string) error {
+	q := store.ListQuery{Scope: orgID, Limit: 1, After: model.DynamicClientPrefix + secure.RandomToken(16),
+		Filters: []store.Filter{{Field: "unused_self_registered", Value: true}}}
+	ids, _, err := s.Clients.IDs(ctx, q)
+	if err == nil && len(ids) == 0 { // past the last: the first
+		q.After = ""
+		ids, _, err = s.Clients.IDs(ctx, q)
+	}
+	if err != nil {
+		return mapStore(err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	c, err := s.Clients.Get(ctx, ids[0])
+	if err != nil || !c.LastUsed.IsZero() { // gone, or used since: the cap is a bound, not an exact count
+		return nil
+	}
+	if err := s.audited(ctx, System, orgID, "client.self_registered.evict", c.Name, map[string]string{"client_id": c.ID},
+		func() error { return s.Clients.Delete(ctx, c.ID) }); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return mapStore(err)
+	}
+	return nil
+}
+
 // acceptsSelfRegistered reports whether a tenant of organization orgID lets self-registered applications sign in
 // for resources it owns (TenantSettings.SelfRegistration, TenantForResources): where none does, a registration could
 // never be used, and is refused rather than stored.
@@ -180,7 +210,8 @@ func (s *Service) acceptsSelfRegistered(ctx context.Context, orgID string) (bool
 
 // RegisterClient registers an application of organization orgID by dynamic client registration (RFC 7591). The caller
 // limits it per address and organization; here it is checked, refused (ErrForbidden) unless a tenant of the
-// organization accepts self-registered applications, and capped (MaxSelfRegistered).
+// organization accepts self-registered applications, and capped (MaxSelfRegistered): at the cap, one unused
+// registration picked at random makes room (evictUnusedSelfRegistered).
 func (s *Service) RegisterClient(ctx context.Context, orgID string, in RegistrationInput) (*model.Client, error) {
 	if ok, err := s.acceptsSelfRegistered(ctx, orgID); err != nil {
 		return nil, err
@@ -194,7 +225,9 @@ func (s *Service) RegisterClient(ctx context.Context, orgID string, in Registrat
 	if n, err := s.unusedSelfRegistered(ctx, orgID); err != nil {
 		return nil, err
 	} else if n >= MaxSelfRegistered {
-		return nil, ErrLimit
+		if err := s.evictUnusedSelfRegistered(ctx, orgID); err != nil {
+			return nil, err
+		}
 	}
 	c.ID, c.OrgID = model.DynamicClientPrefix+secure.RandomToken(16), orgID
 	if err := s.audited(ctx, System, orgID, "client.self_register", c.Name, map[string]string{"client_id": c.ID,
@@ -308,15 +341,20 @@ type SelfRegApp struct {
 	Users        int       `json:"users"` // users of the organization it holds live grants for
 }
 
-// SelfRegisteredApps lists the self-registered applications of organization orgID, with how many of its users they
-// hold access for.
-func (s *Service) SelfRegisteredApps(ctx context.Context, a *Actor, orgID string) ([]SelfRegApp, error) {
+// SelfRegisteredApps lists a page of the self-registered applications of organization orgID (q's offset, limit,
+// search and sort; by name unless it asks otherwise), each with how many of its users it holds access for, and says
+// how many there are. Only the page is read and counted: an organization may hold up to MaxSelfRegistered unused ones.
+func (s *Service) SelfRegisteredApps(ctx context.Context, a *Actor, orgID string, q store.ListQuery) ([]SelfRegApp, int, error) {
 	if !s.canAdminOrg(a, orgID) {
-		return nil, ErrForbidden
+		return nil, 0, ErrForbidden
 	}
-	l, _, err := s.Clients.List(ctx, store.ListQuery{Scope: orgID, Filters: []store.Filter{{Field: "self_registered", Value: true}}})
+	q.Scope, q.Filters, q.After = orgID, []store.Filter{{Field: "self_registered", Value: true}}, ""
+	if q.Sort == "" {
+		q.Sort = "name"
+	}
+	l, total, err := s.Clients.List(ctx, q)
 	if err != nil {
-		return nil, mapStore(err)
+		return nil, 0, mapStore(err)
 	}
 	out := []SelfRegApp{}
 	for _, c := range l {
@@ -324,8 +362,7 @@ func (s *Service) SelfRegisteredApps(ctx context.Context, a *Actor, orgID string
 		out = append(out, SelfRegApp{ClientID: c.ClientID(), Name: c.Name, Metadata: c.IsMetadataClient(),
 			RedirectURIs: c.RedirectURIs, Created: c.Created, LastUsed: c.LastUsed, Users: len(users)})
 	}
-	slices.SortFunc(out, func(x, y SelfRegApp) int { return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name)) })
-	return out, nil
+	return out, total, nil
 }
 
 // selfRegUsers returns the users the application (its record id) holds live grants for: all of its organization's,

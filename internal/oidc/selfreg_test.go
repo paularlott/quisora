@@ -219,7 +219,7 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 	rt = r2.str("refresh_token")
 
 	// the organization's administrators see it, with one user
-	apps, err := h.env.Svc.SelfRegisteredApps(ctx, h.admin, h.env.Primary.ID)
+	apps, _, err := h.env.Svc.SelfRegisteredApps(ctx, h.admin, h.env.Primary.ID, store.ListQuery{})
 	if err != nil || len(apps) != 1 || apps[0].ClientID != cl.ID || apps[0].Users != 1 || apps[0].Name != "Claude" {
 		t.Fatalf("apps %+v %v", apps, err)
 	}
@@ -258,7 +258,7 @@ func TestSelfRegisteredSignIn(t *testing.T) {
 	if r := h.post(h.orgBase+"/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r3.str("refresh_token")}, "client_id": {cl.ID}}, "", ""); r.status != 400 {
 		t.Errorf("refresh after revoke: %d", r.status)
 	}
-	if apps, _ := h.env.Svc.SelfRegisteredApps(ctx, h.admin, h.env.Primary.ID); len(apps) != 0 {
+	if apps, _, _ := h.env.Svc.SelfRegisteredApps(ctx, h.admin, h.env.Primary.ID, store.ListQuery{}); len(apps) != 0 {
 		t.Errorf("revoked app still listed: %+v", apps)
 	}
 }

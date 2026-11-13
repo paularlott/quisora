@@ -231,12 +231,12 @@ func (m *Module) listSelfRegistered(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	items, err := m.s.Svc.SelfRegisteredApps(r.Context(), a, org.ID)
+	items, total, err := m.s.Svc.SelfRegisteredApps(r.Context(), a, org.ID, listQuery(r)) // a page: ?offset, limit, q, sort, desc
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	writeList(w, items, len(items))
+	writeList(w, items, total)
 }
 
 // revokeSelfRegistered handles DELETE /orgs/{org}/self-registered/{client...}: {client} is the client_id the

@@ -11,6 +11,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -248,7 +249,7 @@ func TestMetadataApplicationInTwoOrganizations(t *testing.T) {
 		t.Error("a record under the document's URL")
 	}
 	for _, org := range []*model.Org{h.env.Primary, org2} {
-		if l, _ := h.env.Svc.SelfRegisteredApps(ctx, h.admin, org.ID); len(l) != 1 || l[0].ClientID != app.ID {
+		if l, _, _ := h.env.Svc.SelfRegisteredApps(ctx, h.admin, org.ID, store.ListQuery{}); len(l) != 1 || l[0].ClientID != app.ID {
 			t.Errorf("%s lists %+v", org.Name, l)
 		}
 	}

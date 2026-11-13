@@ -204,10 +204,6 @@ func (p *Provider) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, &oauthError{status: http.StatusForbidden, code: "access_denied",
 			desc: "this organization does not accept self-registered applications"})
 		return
-	case errors.Is(err, service.ErrLimit):
-		w.Header().Set("Retry-After", "3600")
-		writeOAuthError(w, &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable", desc: "registration is not possible now"})
-		return
 	case err != nil:
 		writeOAuthError(w, serverError(err))
 		return

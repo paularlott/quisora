@@ -77,8 +77,9 @@ in with PKCE, naming the MCP server as `resource`.
 - **Abuse limits**: 10 registration requests per address and minute, 100 per address and organization a day, 60
   registrations made per organization and minute from every address together (refused requests do not count toward
   it, so bad requests from a few addresses cannot block others) (`429 slow_down` past any of them), at most 10,000 registrations
-  per organization nobody has used yet (apps people use never count; past it `503 temporarily_unavailable`), and a
-  registration never used to sign anyone in is removed after a day. An app nobody has signed in with yet is given no
+  per organization nobody has used yet (apps people use never count; at the cap, a new registration removes one of
+  the unused ones picked at random, so a flood cannot stop others registering), and a registration never used to sign
+  anyone in is removed after a day. An app nobody has signed in with yet is given no
   CORS origin (its https redirect URIs count once it has been used), so a browser app's first request through
   pushed authorization (`/oauth/par`, which it calls from script) is refused by the browser until its first
   authorization: such an app starts its first sign-in with a plain authorization request (a redirect, which needs no

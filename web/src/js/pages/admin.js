@@ -1653,35 +1653,22 @@ export default function (Alpine) {
 
   // ---- One tenant: its sign-in rules and its clients ---------------------------------------------------------------
   // The self-registered apps card of the tenant page: the apps users of this tenant authorized, each revocable.
-  Alpine.data('tenantSelfReg', () => ({
-    items: [], loading: true, loadError: '', url: '',
-    init() {
-      this.url = this.$el.dataset.api // read once: in a click handler $el is the button
-      const live = liveRunner(() => this.load())
-      subscribe(['client', 'grant', 'tenant'], () => live.trigger())
-      return this.load()
+  Alpine.data('tenantSelfReg', () => mix(tableMixin(), {
+    init() { return this.initTable() }, // a page at a time: an organization may hold thousands nobody has used
+    transform(a) {
+      return { ...a, id: a.client_id, kindText: a.metadata_document ? 'Metadata document' : 'Registered itself',
+        hostText: [...new Set((a.redirect_uris || []).map((u) => { try { return new URL(u).host } catch { return u } }))].join(', '),
+        usersText: a.users === 1 ? '1 user' : a.users + ' users', lastText: relTime(a.last_used, 'Never'), revokeLabel: 'Revoke ' + a.name }
     },
-    async load() {
-      try {
-        const r = await get(this.url)
-        this.items = r.items.map((a) => ({ ...a, kindText: a.metadata_document ? 'Metadata document' : 'Registered itself',
-          hostText: [...new Set((a.redirect_uris || []).map((u) => { try { return new URL(u).host } catch { return u } }))].join(', '),
-          usersText: a.users === 1 ? '1 user' : a.users + ' users', lastText: relTime(a.last_used, 'Never'), revokeLabel: 'Revoke ' + a.name }))
-        this.loadError = ''
-      } catch (e) { this.loadError = e.message } finally { this.loading = false }
-    },
-    get hasItems() { return this.items.length > 0 },
-    get isEmpty() { return !this.loading && this.items.length === 0 && this.loadError === '' },
     get hasLoadError() { return this.loadError !== '' },
     async revoke(ev) {
-      const opener = ev.currentTarget
-      const a = this.items.find((i) => i.client_id === opener.dataset.id)
+      const a = this.rowFromEvent(ev)
       if (!a) return
       const yes = await confirmAction(Alpine, { title: 'Revoke app?', message: `Revoke ${a.name} for everyone in this organization?`,
         detail: 'Every user\u2019s access to it ends now. It can come back only by asking each user again.', confirmLabel: 'Revoke', danger: true })
       if (!yes) return
       try {
-        await del(this.url + '/' + enc(a.client_id))
+        await del(this.apiUrl + '/' + enc(a.client_id))
         toast(`${a.name} revoked.`)
         await this.load()
       } catch (e) { toast(e.message, 'error') }
@@ -2079,7 +2066,7 @@ export default function (Alpine) {
     'account.recovery_codes.create', 'account.session.revoke', 'account.session.revoke_others', 'account.totp.disable',
     'account.totp.enable', 'account.totp.replace', 'apitoken.create', 'apitoken.delete', 'apitoken.regenerate',
     'apitoken.update', 'backup.download', 'backup.restore', 'client.create', 'client.delete', 'client.secret.rotate',
-    'client.self_register', 'client.self_registered.revoke', 'client.update', 'cluster.force_start', 'cluster.reload',
+    'client.self_register', 'client.self_registered.evict', 'client.self_registered.revoke', 'client.update', 'cluster.force_start', 'cluster.reload',
     'cluster.reload.failure', 'config.reload', 'config.reload.failure', 'group.create', 'group.delete', 'group.member.add',
     'group.member.remove', 'group.update', 'identity.link.email', 'identity.link.refused', 'identity.refresh.refused', 'identity.unlink', 'invite.accept',
     'keys.create', 'keys.remove', 'keys.rotate', 'login.email_code.sent', 'login.failure', 'login.limited', 'login.lockout',

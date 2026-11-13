@@ -55,11 +55,11 @@
       </div>
     </section>
 
-    <section class="glass-card" aria-labelledby="selfreg-h" x-data="tenantSelfReg" data-api="{{.Data.API}}/self-registered" x-show="tenant.settings.self_registration || hasItems">
+    <section class="glass-card" aria-labelledby="selfreg-h" x-data="tenantSelfReg" data-api="{{.Data.API}}/self-registered" data-sort="name" data-noun="self-registered apps" data-live="client grant tenant" x-show="tenant.settings.self_registration || hasItems">
       <h2 class="section-title mb-1" id="selfreg-h" tabindex="-1">Self-registered apps</h2>
       <p class="muted mb-4">Apps that registered themselves in this organization and that its users allowed, for the resources of its tenants. Revoking one ends every user's access to it.</p>
       <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
-      <p class="muted" x-show="isEmpty" x-cloak>No self-registered app has been allowed yet.</p>
+      <p class="muted" x-show="showEmpty" x-cloak>No self-registered app has been allowed yet.</p>
       <div class="table-wrap" role="region" aria-label="Self-registered apps of this organization" tabindex="0" x-show="hasItems" x-cloak>
         <table class="table">
           <caption class="sr-only">Self-registered apps of this organization</caption>
@@ -75,6 +75,7 @@
           </tbody>
         </table>
       </div>
+      {{template "pager-for" "selfreg-page-size"}}
     </section>
 
     <section class="glass-card" aria-labelledby="ssh-h">
