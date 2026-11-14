@@ -3,6 +3,7 @@ package login
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"time"
 )
 
@@ -56,7 +57,9 @@ func (m *Module) PutEnrolTicket(userID string) (string, error) {
 	if err := m.bind(ctx, t, u); err != nil {
 		return "", err
 	}
-	return m.putTicket(ctx, t, enrolTTL)
+	r, _ := http.NewRequest(http.MethodPost, "/", nil)
+	r.RemoteAddr = "192.0.2.250:1"
+	return m.putTicket(r, t, enrolTTL, 0)
 }
 
 // ReadReauthStored stores raw as a session's re-authentication mark and reads it back as the account page does.
@@ -87,3 +90,13 @@ func (m *Module) AgeEmailCode(ticketID string) {
 
 // EmailCodesPerHour is emailCodesPerHour, for the tests.
 const EmailCodesPerHour = emailCodesPerHour
+
+// SpendUpstreamFailures counts n failed token exchanges of provider id at organization orgID, from every address
+// together (upstreamReserve).
+func (m *Module) SpendUpstreamFailures(orgID, id string, n int64) {
+	_, _ = m.s.Eph.Incr(context.Background(), nsRate, "upstream-fail|"+orgID+"|"+id, n, time.Minute)
+}
+
+// The limits on failed token exchanges (upstreamReserve), for the tests.
+const UpstreamFailPerProviderMin, UpstreamFailPerIPMin, UpstreamFailPerNetMin = upstreamFailPerProviderMin,
+	upstreamFailPerIPMin, upstreamFailPerNetMin

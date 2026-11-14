@@ -50,7 +50,7 @@ func TestExampleParses(t *testing.T) {
 	}
 	if c.Server.PublicURL != "https://id.example.com" || c.UI.DefaultTheme != "system" || c.Tokens.AccessTTL != 600 ||
 		c.Tokens.APITokenMaxDays != 365 || // personal API tokens: a year at most unless the operator says otherwise
-		c.Limits.FlowsPerIP != Default().Limits.FlowsPerIP {
+		c.Limits.FlowsPerIP != Default().Limits.FlowsPerIP || c.Limits.HeldKB != Default().Limits.HeldKB {
 		t.Fatalf("unexpected values: %+v", c.Server)
 	}
 }

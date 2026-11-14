@@ -224,6 +224,9 @@ type state struct {
 	Tenant     string `json:"t,omitempty"`
 	Nonce      string `json:"c"`
 	Verifier   string `json:"v"`
+	// Held is the charge for the state against what its requester may hold (ephemeral.Charge: the address that
+	// began the sign-in, or the user connecting a provider), given back when the state is taken.
+	Held *ephemeral.Held `json:"h,omitempty"`
 }
 
 func s256(v string) string {
@@ -263,9 +266,17 @@ func (s *Service) begin(ctx context.Context, org *model.Org, p *model.Provider, 
 		}
 	}
 	st.ProviderID, st.OrgID, st.Nonce, st.Verifier = p.ID, org.ID, secure.RandomToken(24), secure.RandomToken(32)
-	b, _ := json.Marshal(st)
-	id, err := s.Eph.New(ctx, Namespace, b, StateTTL)
+	// Anyone can begin a sign-in, as often as the request limits allow, and the state carries the path it is to end
+	// at, which the request chose: it is charged to whoever ctx names as its requester (ephemeral.Budget.With: the
+	// caller says who), and refused (ephemeral.ErrHeld) once they hold as much as they may. Encoded without HTML
+	// escaping, which would keep each & of that path as six bytes.
+	var err error
+	if st.Held, err = ephemeral.Charge(ctx, Namespace, len(ephemeral.JSON(st)), StateTTL); err != nil {
+		return "", "", err
+	}
+	id, err := s.Eph.New(ctx, Namespace, ephemeral.JSON(st), StateTTL)
 	if err != nil {
+		st.Held.Refund(ctx, s.Eph)
 		return "", "", err
 	}
 	q := url.Values{
@@ -328,6 +339,9 @@ func (s *Service) Finish(ctx context.Context, orgID, providerID, stateID, browse
 		return nil, ErrState
 	}
 	var st state
+	if json.Unmarshal(b, &st) == nil {
+		st.Held.Refund(ctx, s.Eph) // taken: its requester holds it no longer
+	}
 	if json.Unmarshal(b, &st) != nil || subtle.ConstantTimeCompare([]byte(stateID), []byte(browserState)) != 1 ||
 		st.ProviderID != providerID || st.OrgID != orgID {
 		return nil, ErrState
@@ -419,6 +433,9 @@ func (s *Service) CancelTenant(ctx context.Context, orgID, providerID, stateID, 
 		return nil, "", "", false
 	}
 	var st state
+	if json.Unmarshal(b, &st) == nil {
+		st.Held.Refund(ctx, s.Eph) // taken: its requester holds it no longer
+	}
 	if json.Unmarshal(b, &st) != nil || subtle.ConstantTimeCompare([]byte(stateID), []byte(browserState)) != 1 ||
 		st.ProviderID != providerID || st.OrgID != orgID {
 		return nil, "", "", false

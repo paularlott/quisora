@@ -11,8 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/ephemeral"
 )
 
 // GET /metrics answers only with metrics.token (and not at all without one), and reports the request, audit and
@@ -110,12 +112,12 @@ func TestMetricsDocumented(t *testing.T) {
 	}
 }
 
-// The gauges of the node's short-lived state report its budget (limits.ephemeral_mb), the memory it takes and its
-// entries, and the refusals counter is served before anything was refused.
+// The gauges of the node's short-lived state report its budget (limits.ephemeral_mb), the counters' and caches' caps,
+// the memory each takes and its entries, and the refusals counter is served before anything was refused.
 func TestEphemeralGauges(t *testing.T) {
 	a, hc, base := startAppWith(t, "sqlite", func(c *config.Config) {
 		c.Metrics.Token = "scrape-secret"
-		c.Limits.EphemeralMB = 3
+		c.Limits.EphemeralMB, c.Limits.HeldKB = 3, 0 // (held_kb may be at most 1/128 of it: off, here)
 	})
 	primary, err := a.Svc.PrimaryOrg(context.Background())
 	if err != nil {
@@ -124,6 +126,10 @@ func TestEphemeralGauges(t *testing.T) {
 	// an authorization request, even one naming no application, is counted against its address: an entry is kept
 	if r, err := hc.Get(base + "/o/" + primary.ID + "/oauth/authorize?client_id=none"); err == nil {
 		r.Body.Close()
+	}
+	// and a cache entry, as a metadata document read is kept: counted apart from both
+	if err := a.Node.LocalEphemeral().Set(context.Background(), ephemeral.CachePrefix+"test", "k", make([]byte, 1000), time.Minute); err != nil {
+		t.Fatal(err)
 	}
 	req, _ := http.NewRequest("GET", base+"/metrics", nil)
 	req.Header.Set("Authorization", "Bearer scrape-secret")
@@ -148,12 +154,23 @@ func TestEphemeralGauges(t *testing.T) {
 	if v := value("quisora_ephemeral_budget_bytes"); v != 3<<20 {
 		t.Errorf("budget %v, want %d", v, 3<<20)
 	}
+	// the counters' cap is limits.ephemeral_mb as well, but never below 16 MiB
+	if v := value("quisora_ephemeral_counter_limit_bytes"); v != 16<<20 {
+		t.Errorf("counters' cap %v, want %d", v, 16<<20)
+	}
 	// the entry is a rate-limit counter: counted apart from the sign-in state limits.ephemeral_mb limits
 	if counters, n := value("quisora_ephemeral_counter_bytes"), value("quisora_ephemeral_entries"); counters <= 0 || n <= 0 {
 		t.Errorf("counters %v bytes in %v entries", counters, n)
 	}
 	if used := value("quisora_ephemeral_bytes"); used != 0 {
 		t.Errorf("sign-in state %v bytes, want 0 (only a counter is held)", used)
+	}
+	// the caches' cap is a sixteenth of limits.ephemeral_mb, but never below 4 MiB
+	if v := value("quisora_ephemeral_cache_limit_bytes"); v != 4<<20 {
+		t.Errorf("caches' cap %v, want %d", v, 4<<20)
+	}
+	if v := value("quisora_ephemeral_cache_bytes"); v < 1000 || v > 2000 {
+		t.Errorf("caches %v bytes, want the one entry's", v)
 	}
 	if !strings.Contains(string(b), "# TYPE quisora_ephemeral_refused_total counter") {
 		t.Error("the refusals counter is not served")

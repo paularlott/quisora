@@ -244,7 +244,7 @@ func (s *Service) sshRefuse(ctx context.Context, req SSHUserRequest, t *model.Te
 	if a == nil {
 		a = ActorForUser(req.User, "")
 	}
-	s.auditRefusal("ssh|"+req.User.ID+"|"+t.ID+"|"+reason, func(detail map[string]string) {
+	s.auditRefusal(t.OrgID, "ssh|"+req.User.ID+"|"+t.ID+"|"+reason, func(detail map[string]string) {
 		detail["reason"], detail["tenant"], detail["via"] = reason, t.Name, req.Via
 		s.AuditUser(ctx, a, req.User, "ssh.cert.refused", detail)
 	})
@@ -425,7 +425,7 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 // sshHostRefuse records a refused request for a host certificate (ssh.host.refused, throttled per caller and reason)
 // and returns err.
 func (s *Service) sshHostRefuse(ctx context.Context, a *Actor, t *model.Tenant, reason string, err error) error {
-	s.auditRefusal("sshhost|"+a.UserID+"|"+a.ClientID+"|"+t.ID+"|"+reason, func(detail map[string]string) {
+	s.auditRefusal(t.OrgID, "sshhost|"+a.UserID+"|"+a.ClientID+"|"+t.ID+"|"+reason, func(detail map[string]string) {
 		detail["reason"] = reason
 		s.Audit(ctx, a, t.OrgID, "ssh.host.refused", t.Name, detail)
 	})

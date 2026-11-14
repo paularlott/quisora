@@ -156,7 +156,7 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 		if err != nil {
 			return err
 		}
-		if !strings.EqualFold(v, u.Email) {
+		if !model.SameAddress(v, u.Email) { // another form of the address may be another mailbox: unproven
 			u.EmailVerified = false
 		}
 		u.Email = v
@@ -169,8 +169,9 @@ func (s *Service) apply(ctx context.Context, u *model.User, in UserInput) error 
 			return err
 		}
 	}
-	// The primary address can never also be linked (a linked address that becomes the primary is promoted).
-	u.LinkedEmails = slices.DeleteFunc(u.LinkedEmails, func(l model.LinkedEmail) bool { return strings.EqualFold(l.Address, u.Email) })
+	// The primary address can never also be linked (a linked address that becomes the primary is promoted), in any
+	// form that claims the same key.
+	u.LinkedEmails = slices.DeleteFunc(u.LinkedEmails, func(l model.LinkedEmail) bool { return model.SameKey(l.Address, u.Email) })
 	if u.Username == "" {
 		u.Username = u.Email // the username is optional; it defaults to the email address
 	}
@@ -924,14 +925,14 @@ func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in Use
 			return Invalid("password", "change your own password from your account page")
 		}
 	}
-	if !self && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
+	if !self && in.Email != nil && !model.SameAddress(strings.TrimSpace(*in.Email), u.Email) {
 		// Password resets go to the primary address: whoever sets a manager's or administrator's could reset their
 		// password, so for an established privileged account that is a sign-in reset (super admins only).
 		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
 			return err
 		}
 	}
-	if self && a != System && in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), u.Email) {
+	if self && a != System && in.Email != nil && !model.SameAddress(strings.TrimSpace(*in.Email), u.Email) {
 		// The primary address is what password sign-in, resets and every application's email claim use: someone
 		// else sets it (a manager or administrator, or SCIM), whatever the user's own role; the user can only make one
 		// of their verified addresses primary.
@@ -949,7 +950,7 @@ func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in Use
 			return err
 		}
 	}
-	if !self && in.Verified != nil && *in.Verified && !u.EmailVerified && (in.Email == nil || strings.EqualFold(strings.TrimSpace(*in.Email), u.Email)) {
+	if !self && in.Verified != nil && *in.Verified && !u.EmailVerified && (in.Email == nil || model.SameAddress(strings.TrimSpace(*in.Email), u.Email)) {
 		// A verified address links sign-ins from providers to the account, as changing it does (just above).
 		if err := s.mayResetSignIn(ctx, a, u, "email_verified"); err != nil {
 			return err
@@ -1407,14 +1408,17 @@ func (s *Service) carryOver(ctx context.Context, userID, keep string, now uint64
 }
 
 // FindUserByEmail finds a user of org by PRIMARY email address, case-insensitively (public sign-in lookup; no
-// actor). Neither the username nor a linked address is ever used to sign in with a password or to reset one.
+// actor). Neither the username nor a linked address is ever used to sign in with a password or to reset one. The
+// address is matched by its unique key on both sides (model.SameKey): the key found the account, and the same rule
+// says whether it was the primary address that matched, so a primary address stored in another form (full-width,
+// from a directory) is found by the form people type, as its key promised.
 func (s *Service) FindUserByEmail(ctx context.Context, orgID, email string) (*model.User, error) {
 	email = strings.TrimSpace(email)
 	u, err := s.Users.GetByUnique(ctx, model.UserEmailKey(orgID, email))
 	if err != nil {
 		return nil, mapStore(err)
 	}
-	if !strings.EqualFold(u.Email, email) {
+	if !model.SameKey(u.Email, email) {
 		return nil, ErrNotFound
 	}
 	return u, nil

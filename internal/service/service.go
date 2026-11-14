@@ -4,6 +4,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,6 +14,7 @@ import (
 	"os/user"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -162,8 +165,11 @@ func (a *Actor) IsSuper() bool { return a != nil && a.Role == model.RoleSuperAdm
 // Service is the business layer.
 type Service struct {
 	refusals        refusalLimiter // throttles refusal audit events (auditlimit.go)
-	loginRefusals   refusalLimiter // throttles the sign-in pages' lockout refusal events whose keys the refused choose (auditlimit.go)
-	accountRefusals refusalLimiter // and those of keys that name an existing account
+	deviceStarts    refusalLimiter // throttles the audit events of public clients' device sign-ins started
+	loginRefusals   loginLimiters  // throttles the sign-in pages' lockout refusal events that name no account, by address (auditlimit.go)
+	accountRefusals loginLimiters  // and those of existing accounts
+	loginFailures   loginLimiters  // throttles the sign-in pages' wrong-credential events of logins that name no account, by address
+	accountFailures loginLimiters  // and those of existing accounts
 	Cfg             *config.Config
 	Store           store.Store
 	Hasher          *secure.Hasher
@@ -325,7 +331,7 @@ func RequestFrom(ctx context.Context) *RequestInfo {
 // repeat a refused request as fast as it likes.
 func (s *Service) AuditRefused(ctx context.Context, a *Actor, method, path, reason string) {
 	who := a.UserID + "|" + a.TokenID + "|" + a.ClientID + "|" + a.App
-	s.auditRefusal("api|"+who+"|"+reason, func(detail map[string]string) {
+	s.auditRefusal(a.OrgID, "api|"+who+"|"+reason, func(detail map[string]string) {
 		detail["reason"] = reason
 		s.Audit(ctx, a, a.OrgID, "api.request.refused", method+" "+path, detail)
 	})
@@ -451,6 +457,9 @@ func (s *Service) auditEvent(ctx context.Context, a *Actor, c change) (*model.Au
 		maps.Copy(d, s.Origin)
 		e.Detail, detail = d, d
 	}
+	if d := clipDetail(detail); d != nil {
+		e.Detail, detail = d, d
+	}
 	// The structured log gets every event too: the trail survives a store failure, and a log pipeline sees it
 	// without VictoriaLogs. A request that ends (the client went away) does not lose its audit record.
 	kv := []any{"action", e.Action, "outcome", e.Outcome, "org", orgID, "actor", e.Actor, "actor_id", e.ActorID,
@@ -479,6 +488,82 @@ func clip(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+// An audit event's detail values are clipped at maxAuditDetailValue bytes each, and maxAuditDetail all together (keys
+// included): many hold what the request sent (a login, an application's name or redirect URIs, a provider's error),
+// some events anyone can cause, and each is kept for the audit retention (90 days by default), in the store, the
+// structured log and VictoriaLogs. The caps are far above what any event of this server records (the inputs are
+// bounded where they are taken; this is the bound for the ones that are not), so in practice only a value made to be
+// long is clipped, and it is never clipped silently: a clipped value ends in "…", and the event's "clipped" detail
+// (which no caller sets: the writer removes one a caller set, whether or not it clips anything) names each clipped key with its full length and the start of the
+// SHA-256 of its full value, so an investigator sees that something was cut, and can match it against the value
+// itself (the store's record, a proxy's log). A value that ends in "…" proves nothing by itself, since a request may
+// send one: only the "clipped" detail says the writer cut it. Over the total cap, the longest values are the ones
+// clipped, to one length for all of them (the longest that keeps the total within the cap): a short value is never
+// cut to make room for a long one, so a request cannot pad one detail to push another (an address, a reason) out of
+// the record. A key itself is never clipped (the code chooses keys, not the request).
+const (
+	maxAuditDetailValue = 4 << 10
+	maxAuditDetail      = 16 << 10
+	// auditClippedKey is the detail that names the clipped values (clipDetail).
+	auditClippedKey = "clipped"
+	// auditClippedRoom is what the total cap keeps for auditClippedKey's value.
+	auditClippedRoom = 1 << 10
+)
+
+// clipDetail returns detail with its values clipped to the audit caps (maxAuditDetailValue, maxAuditDetail) and the
+// clipped ones named in auditClippedKey, or nil when nothing needs clipping and detail has no auditClippedKey of its
+// own (one a caller set, from whatever the request sent, is removed: only the writer says what it clipped). detail
+// itself is not changed: callers share it.
+func clipDetail(detail map[string]string) map[string]string {
+	total, long := 0, false
+	for k, v := range detail {
+		total += len(k) + len(v)
+		long = long || len(v) > maxAuditDetailValue
+	}
+	if total <= maxAuditDetail && !long {
+		if _, set := detail[auditClippedKey]; set {
+			out := maps.Clone(detail)
+			delete(out, auditClippedKey)
+			return out
+		}
+		return nil
+	}
+	keys := slices.DeleteFunc(slices.Collect(maps.Keys(detail)), func(k string) bool { return k == auditClippedKey })
+	// The length every value is clipped to: maxAuditDetailValue, or less when the values at most that long would
+	// still pass the total cap, the longest that fits (the values shorter than it whole, the others at it).
+	room := maxAuditDetail - len(auditClippedKey) - auditClippedRoom
+	lens := make([]int, 0, len(keys))
+	for _, k := range keys {
+		room -= len(k)
+		lens = append(lens, min(len(detail[k]), maxAuditDetailValue))
+	}
+	slices.Sort(lens)
+	level := maxAuditDetailValue
+	for i, n := range lens {
+		if rest := len(lens) - i; n*rest > room { // the rest cannot all have n: they share what is left
+			level = max(room/rest, 0)
+			break
+		}
+		room -= n
+	}
+	slices.Sort(keys)
+	out := make(map[string]string, len(detail)+1)
+	var clipped []string
+	for _, k := range keys {
+		v := detail[k]
+		if len(v) > level {
+			sum := sha256.Sum256([]byte(v))
+			clipped = append(clipped, k+" ("+strconv.Itoa(len(v))+" bytes, sha256 "+hex.EncodeToString(sum[:8])+")")
+			v = clip(v, max(level-len("…"), 0)) + "…"
+		}
+		out[k] = v
+	}
+	if len(clipped) > 0 {
+		out[auditClippedKey] = clip(strings.Join(clipped, "; "), auditClippedRoom)
+	}
+	return out
 }
 
 type selfServiceKey struct{}

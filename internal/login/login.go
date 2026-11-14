@@ -40,6 +40,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	netmail "net/mail"
 	"net/url"
@@ -47,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/mail"
@@ -200,7 +202,9 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool { return web.Dec
 // by name), or in the console, /admin. Another organization's pages are not the place for this sign-in to lead, and a
 // path with dot segments could climb out of either.
 func safeNext(org *model.Org, next string) string {
-	if next == "" || len(next) > 2048 || next[0] != '/' || strings.HasPrefix(next, "//") {
+	// It is kept with the sign-in it belongs to (a ticket, a provider's state, a passkey challenge), so it must be
+	// text that takes there what it takes here: bytes that are not UTF-8 would each be kept as six.
+	if next == "" || len(next) > 2048 || next[0] != '/' || strings.HasPrefix(next, "//") || !utf8.ValidString(next) {
 		return ""
 	}
 	for i := 0; i < len(next); i++ {
@@ -464,17 +468,60 @@ func (m *Module) audit(r *http.Request, action string, org *model.Org, u *model.
 }
 
 // auditLocked records a sign-in refused because its lockout key (an account, a browser of it, or an address under
-// spray) is locked: at most one event per key, reason and sign-in step (a fixed name, never the request's path, whose
-// organization may be spelled in any case: each spelling would be a key of its own) per minute on each node, the next saying how many were held
-// back (service.AuditLoginRefusal), so the refusals of a locked key, repeated at will, cannot fill the audit log. An
-// account's own lockout ("locked" with u found) is kept apart from the keys a flood can make up (logins that name no
-// account, addresses), so such a flood cannot crowd it out.
+// spray) is locked, through service.AuditLoginRefusal, so the refusals of a locked key, repeated at will, cannot fill
+// the audit log, and every address that is refused is still named in it. An account's own lockout ("locked" with u
+// found) is recorded at most once per account key, sign-in step (a fixed name, never the request's path, whose
+// organization may be spelled in any case: each spelling would be a key of its own) and client address per minute
+// on each node, the next saying how many were held back, and at most service.LoginRowsPerAddress a minute per
+// address in the organization; it is kept apart from the refusals that name no account (a login that names none,
+// an address under spray), which are recorded in the same way with an allowance of their own
+// (service.LoginRowsPerAddressUnknown), so such a flood cannot crowd it out.
 func (m *Module) auditLocked(r *http.Request, step string, org *model.Org, u *model.User, login, reason, key string) {
 	account := u != nil && reason == "locked"
-	m.s.Svc.AuditLoginRefusal(account, "login|"+org.ID+"|"+key+"|"+reason+"|"+step, func(detail map[string]string) {
+	m.s.Svc.AuditLoginRefusal(account, org.ID, web.RateKeyIP(r), key, reason+"|"+step, func(detail map[string]string) {
 		detail["reason"] = reason
 		m.audit(r, "login.failure", org, u, login, detail)
 	})
+}
+
+// auditFailure records a sign-in that failed (login.failure, with detail) through service.AuditLoginFailure, so
+// failures repeated at will (wrong passwords and codes, limits.lockout_attempts = 0 never locking; callbacks with a
+// made-up state or code; passkeys nobody holds) cannot fill the audit log, and every address that sends one is still
+// named in it. step is a fixed name of the step that failed, never anything of the request. key is the lockout key of
+// a password step (lockKeyFor: the account, its known browsers, or a login that names no account, by its case-folded
+// hash), else "": the account when u is known, and otherwise none, the step's one key at the organization. At most
+// one event per key, step and client address (web.RateKeyIP) per minute on each node, the next saying how many were
+// held back. The address is part of the key so that whoever fails cannot hide behind another address that failed
+// first; nothing else the request can vary for the same account is (the organization by its id, the step a fixed
+// name, as auditLocked's: never the request's path, the login as typed, a state, a provider or credential id it
+// names, each of which would make keys of its own). What one address can have recorded across keys is bounded in
+// turn: service.LoginRowsPerAddress events a minute in the organization for real accounts, and
+// service.LoginRowsPerAddressUnknown for keys that name none (made up by whoever sends them: the events are a sample
+// of what the address tries), then one that says so; an organization has at most
+// service.LoginAddressRowsPerOrg events naming addresses a minute in each kind. An event that cannot name its address
+// (its allowance spent, the organization's cap reached, the limiter full) is still recorded once a minute per account
+// and step (per step, for keys that name none), naming the address that came first. A real account's failures (u known) are kept apart from those
+// that name none, so a flood of made-up logins, states or credentials cannot crowd them out; and those of its known
+// browsers apart from a stranger's, so its owner's own mistakes are still seen while a stranger is held back. A wrong
+// second factor has a key apart from the wrong passwords': it says the password was right.
+func (m *Module) auditFailure(r *http.Request, step string, org *model.Org, u *model.User, login, key string, detail map[string]string) {
+	if key == "" && u != nil {
+		key = u.ID
+	}
+	m.s.Svc.AuditLoginFailure(u != nil, org.ID, web.RateKeyIP(r), key, step, func(d map[string]string) {
+		maps.Copy(d, detail)
+		m.audit(r, "login.failure", org, u, login, d)
+	})
+}
+
+// failureStep is the sign-in step whose credential reason (failed) says was wrong: the password's, or the second
+// factor's own (totp, recovery_code, email_code).
+func failureStep(reason string) string {
+	switch reason {
+	case "bad password", "unknown user", "inactive":
+		return "password"
+	}
+	return reason
 }
 
 // auditUnknown records action as audit does, with outcome "unknown": the change ended with err, whose outcome is not
@@ -540,6 +587,12 @@ type ticket struct {
 	// starts again with the account's current credentials. (The role is not bound: each step judges it afresh.)
 	Gen   uint64             `json:"g"`
 	Stamp model.SignOutStamp `json:"st"`
+	// Expires is when the ticket ends (unix nanos), set as it is made: a step that stores it again (enrolTOTPBegin)
+	// keeps it until then and no longer, since its address was charged for that long (secondFactor).
+	Expires int64 `json:"x,omitempty"`
+	// Held is the charge for the ticket against what the address it was made for may hold (putTicket), given back
+	// when the ticket is used (useTicket). Nil when that budget was off.
+	Held *ephemeral.Held `json:"h,omitempty"`
 }
 
 // bind records on t the account state its first factor was verified against (see ticket.Gen).
@@ -628,9 +681,55 @@ func (m *Module) step(w http.ResponseWriter, r *http.Request, id string, steps .
 	return t, u, org, true
 }
 
-func (m *Module) putTicket(ctx context.Context, t *ticket, ttl time.Duration) (string, error) {
-	b, _ := json.Marshal(t)
-	return m.s.Eph.New(ctx, nsTicket, b, ttl)
+// putTicket stores the ticket of a sign-in's next step for ttl, charged to the address the sign-in comes from
+// (limits.held_kb, with extra bytes for what the step keeps beside it): whoever holds an account's first factor can
+// have as many made as the request limits allow, each carrying the path the sign-in is to end at, so what they hold
+// together is bounded as a flow's is (ephemeral.ErrHeld past it: 429). Given back when the ticket is used
+// (useTicket): an address many people share (an office, a provider's address translation) is then bounded by the
+// sign-ins it has under way at once, not by how many second factors it finished in twenty minutes. One that is
+// abandoned stays charged until its window turns, and that is the trade the budget makes for such an address: the
+// people behind it share one budget, so whoever among them starts sign-ins and leaves them (a few thousand, at the
+// rate the request limits allow) uses it up for the others for up to twenty minutes. Raise limits.held_kb where
+// many people sign in from one address.
+func (m *Module) putTicket(r *http.Request, t *ticket, ttl time.Duration, extra int) (string, error) {
+	ctx := r.Context()
+	t.Expires = time.Now().Add(ttl).UnixNano()
+	held, err := m.s.Held.Charge(ctx, web.HolderIP(r), nsTicket, len(ephemeral.JSON(t))+extra, ttl)
+	if err != nil {
+		return "", err
+	}
+	t.Held = held
+	id, err := m.s.Eph.New(ctx, nsTicket, ephemeral.JSON(t), ttl)
+	if err != nil {
+		held.Refund(ctx, m.s.Eph)
+	}
+	return id, err
+}
+
+// ticketEnded gives back what the ticket with stored value b, just taken, was charged to its address (putTicket).
+func (m *Module) ticketEnded(ctx context.Context, b []byte) {
+	var t ticket
+	if json.Unmarshal(b, &t) == nil {
+		t.Held.Refund(ctx, m.s.Eph)
+	}
+}
+
+// heldByIP returns the request's context naming its client address as the one what the request stores is kept for
+// (a provider's sign-in state, a passkey challenge: ephemeral.Charge), for requests nobody has signed in for;
+// heldByUser names the signed-in user instead.
+func (m *Module) heldByIP(r *http.Request) context.Context {
+	return m.s.Held.With(r.Context(), web.HolderIP(r))
+}
+
+func (m *Module) heldByUser(r *http.Request, userID string) context.Context {
+	return m.s.Held.With(r.Context(), web.HolderUser(userID))
+}
+
+// tooManyHeld answers a request refused because its requester already has this server hold as much short-lived
+// state as it may (ephemeral.ErrHeld): 429, counted by the budget, never audited or logged per request.
+func tooManyHeld(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "60")
+	writeErr(w, http.StatusTooManyRequests, "Too many sign-ins are in progress from your network. Finish one, or wait a few minutes, then try again.", "")
 }
 
 // ticketFailed answers a step whose ticket could not be loaded: a dead one (errTicketGone) is 401, as the person has
@@ -666,11 +765,15 @@ func (m *Module) getTicket(ctx context.Context, id string, steps ...string) (*ti
 }
 
 // useTicket consumes the ticket; only one concurrent caller wins, the others get errTicketGone. A store that cannot
-// answer is its own error (the caller answers "unavailable"), not "expired".
+// answer is its own error (the caller answers "unavailable"), not "expired". The caller that wins gives the
+// ticket's charge back to its address (putTicket).
 func (m *Module) useTicket(ctx context.Context, id string) error {
-	_, err := m.s.Eph.Take(ctx, nsTicket, id)
+	b, err := m.s.Eph.Take(ctx, nsTicket, id)
 	if errors.Is(err, ephemeral.ErrNotFound) {
 		return errTicketGone // used already (a step replayed or raced) or expired
+	}
+	if err == nil {
+		m.ticketEnded(ctx, b)
 	}
 	return err
 }
@@ -684,7 +787,9 @@ func (m *Module) attempt(ctx context.Context, id string) (within bool, err error
 		return false, err
 	}
 	if n > ticketAttempts {
-		_ = m.s.Eph.Delete(ctx, nsTicket, id)
+		if b, err := m.s.Eph.Take(ctx, nsTicket, id); err == nil {
+			m.ticketEnded(ctx, b)
+		}
 		return false, nil
 	}
 	return true, nil
@@ -759,6 +864,10 @@ func noteSession(ctx context.Context, sess *model.Session) {
 }
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
+	if errors.Is(err, ephemeral.ErrHeld) {
+		tooManyHeld(w)
+		return
+	}
 	if errors.Is(err, ephemeral.ErrFull) {
 		// this node's short-lived state is full: the store counts and logs that (once a minute), so this does not
 		w.Header().Set("Retry-After", "5")

@@ -69,7 +69,8 @@ func (m *Module) passkeyBegin(w http.ResponseWriter, r *http.Request) {
 		extra["next"] = safeNext(org, in.Next)
 		extra[passkey.PurposeKey] = purposeLogin
 	}
-	id, opts, err := m.Passkeys.BeginLogin(ctx, user, extra)
+	// Nobody has signed in yet (a ticket is a first factor at most): the challenge is kept for the address.
+	id, opts, err := m.Passkeys.BeginLogin(m.heldByIP(r), user, extra)
 	if err != nil {
 		if errors.Is(err, passkey.ErrUnknownCredential) {
 			writeErr(w, http.StatusUnprocessableEntity, "No passkey is registered for this account.", "")
@@ -124,20 +125,27 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 			unavailableResponse(w)
 			return
 		}
-		var org *model.Org
+		// The organization whose page was used, unless the passkey is an account's (its own organization): never
+		// none, so the event is in an organization's audit log.
+		org := web.Org(r)
 		var u *model.User
 		if res != nil {
 			u = res.User
-			org, _ = m.s.Svc.Orgs.Get(ctx, u.OrgID)
+			if o, err := m.s.Svc.Orgs.Get(ctx, u.OrgID); err == nil {
+				org = o
+			}
 		}
-		m.audit(r, "login.failure", org, u, "", map[string]string{"reason": reason})
+		m.auditFailure(r, "passkey "+reason, org, u, "", "", map[string]string{"reason": reason}) // reason: one of a few fixed names
 		writeErr(w, http.StatusUnauthorized, msgBadPasskey, "")
 		return
 	}
 	u := res.User
 	org, err := m.s.Svc.Orgs.Get(ctx, u.OrgID)
 	if err != nil || org.ID != web.Org(r).ID {
-		m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "passkey for another organization"})
+		if org == nil { // the account's organization cannot be read: the event is the page's organization's
+			org = web.Org(r)
+		}
+		m.auditFailure(r, "passkey other organization", org, u, u.Username, "", map[string]string{"reason": "passkey for another organization"})
 		writeErr(w, http.StatusUnauthorized, msgBadPasskey, "")
 		return
 	}
@@ -167,7 +175,7 @@ func (m *Module) passkeyFinish(w http.ResponseWriter, r *http.Request) {
 		next, provider, upstream, account, sources = t.Next, t.Provider, t.UpstreamAMR, t.Upstream, t.Sources
 	} else {
 		if res.Extra["org"] != org.ID { // a ceremony begun at another organization's page
-			m.audit(r, "login.failure", org, u, u.Username, map[string]string{"reason": "passkey for another organization"})
+			m.auditFailure(r, "passkey other organization", org, u, u.Username, "", map[string]string{"reason": "passkey for another organization"})
 			writeErr(w, http.StatusUnauthorized, msgBadPasskey, "")
 			return
 		}

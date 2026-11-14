@@ -581,24 +581,55 @@ func TestPrivateKeyJWTRemoteKeyFetchFailures(t *testing.T) {
 			t.Errorf("%s: %d %v", path, r.status, r.m)
 		}
 	}
-	// a cache grown past its bound is emptied before the next entry
+}
+
+// Past its bound the client JWKS cache drops the entries asked for longest ago, one at a time, not every client's:
+// clients churning through jwks_uris (registering them by the thousand) make a client in use fetch its keys again
+// no sooner than they would have anyway.
+func TestRemoteKeysCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	t.Parallel()
+	k := newAssertionKeys(t)[0]
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.URL.Path]++
+		mu.Unlock()
+		_, _ = w.Write([]byte(k.jwks))
+	})
+	fetches := func(path string) int { mu.Lock(); defer mu.Unlock(); return hits[path] }
+	h := setup(t, nil)
+	inUse, _ := h.newClient(func(in *service.ClientInput) {
+		in.AuthMethod = ptr(model.AuthMethodPrivateJWT)
+		in.JWKSURI = ptr(srv.URL + "/in-use")
+	})
+	if r := h.ccWithAssertion(inUse, h.assertion(k, h.assertionClaims(inUse, nil))); r.status != 200 {
+		t.Fatalf("%d %v", r.status, r.m)
+	}
+	// Others' entries, older than the one in use, fill the cache past its bound.
 	h.p.jwksMu.Lock()
-	for i := range 5001 {
-		h.p.remoteKey[fmt.Sprintf("https://filler.example/%d", i)] = &remoteJWKS{}
+	for i := range remoteKeyMax {
+		h.p.remoteKey[fmt.Sprintf("https://filler.example/%d", i)] = &remoteJWKS{used: time.Now().Add(-time.Hour)}
 	}
 	h.p.jwksMu.Unlock()
-	cl, _ := h.newClient(func(in *service.ClientInput) {
+	newcomer, _ := h.newClient(func(in *service.ClientInput) {
 		in.AuthMethod = ptr(model.AuthMethodPrivateJWT)
-		in.JWKSURI = ptr(srv.URL + "/ok")
+		in.JWKSURI = ptr(srv.URL + "/new")
 	})
-	if r := h.ccWithAssertion(cl, h.assertion(k, h.assertionClaims(cl, nil))); r.status != 200 {
+	if r := h.ccWithAssertion(newcomer, h.assertion(k, h.assertionClaims(newcomer, nil))); r.status != 200 {
 		t.Fatalf("%d %v", r.status, r.m)
 	}
 	h.p.jwksMu.Lock()
-	n := len(h.p.remoteKey)
+	n, kept := len(h.p.remoteKey), h.p.remoteKey[srv.URL+"/in-use"] != nil
 	h.p.jwksMu.Unlock()
-	if n > 10 {
-		t.Fatalf("cache not emptied: %d", n)
+	if n > remoteKeyMax || n < remoteKeyMax-1 {
+		t.Fatalf("cache holds %d entries, want one entry dropped to stay within %d", n, remoteKeyMax)
+	}
+	if !kept {
+		t.Fatal("the entry in use was dropped")
+	}
+	if r := h.ccWithAssertion(inUse, h.assertion(k, h.assertionClaims(inUse, nil))); r.status != 200 || fetches("/in-use") != 1 {
+		t.Fatalf("client in use after others' churn: %d, %d fetches of its keys, want 1", r.status, fetches("/in-use"))
 	}
 }
 

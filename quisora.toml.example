@@ -113,6 +113,7 @@ tokens = false                            # also record every refresh and client
 # any counter, except password_workers and ephemeral_mb, which need a restart (docs/RUNNING.md#limits-and-denied-addresses).
 [limits]
 max_in_flight = 4096                     # concurrent requests per node before 503
+max_in_flight_per_ip = 0                 # of those, one address (an IPv6 /64) may have this many before 429 (0 = a sixteenth of max_in_flight)
 login_per_ip_min = 300                    # sign-in attempts per organization and IP per minute (per account for a browser that has signed in to it before)
 lockout_attempts = 10                     # failed passwords before an account is locked
 lockout_minutes = 15
@@ -120,8 +121,10 @@ org_failures_per_minute = 100             # failed passwords per organization pe
 password_workers = 0                      # concurrent password hashes (0 = number of CPUs); waiting sign-ins are served by organization in turn
 password_min_length = 15                  # shortest password accepted (8 to 64; NIST SP 800-63B: 15 where a password may be the only factor)
 ephemeral_mb = 1024                       # memory per node for short-lived sign-in state (flows, codes, pushed requests); past it they get 503
-flows_per_ip = 50                         # sign-ins in progress one IP address (an IPv6 /64) may hold at once; past it 429 (0 = no limit)
+flows_per_ip = 50                         # sign-ins in progress one IP address (an IPv6 /64; its /48 16x, its /32 64x) may hold at once; past it 429 (0 = no limit)
+held_kb = 2048                            # short-lived sign-in state one IP address (an IPv6 /64; its /48 16x, its /32 64x) or signed-in user may hold at once, KiB, at least 64 and at most 8 per MiB of ephemeral_mb; past it 429 (0 = no limit)
 grants_per_user = 1000                    # refresh grants one user may hold (10 to 100000); past it the least recently used are ended; an organization may set its own
+sessions_per_user = 100                   # browser sessions one user may hold (1 to 10000); past it the least recently used end (a sign-in is never refused)
 
 [log]
 level = "info"                            # trace, debug, info, warn, error

@@ -107,6 +107,11 @@ func TestLogoutConfirmationWithoutHint(t *testing.T) {
 	if long := body(resp); resp.StatusCode != 200 || !strings.Contains(long, `action="`+h.orgBase+`/oauth/logout/confirm"`) {
 		t.Fatalf("confirmation with a long state: %d", resp.StatusCode)
 	}
+	// A session has one sign-out waiting at a time: the page asked for last is the one that confirms.
+	resp = h.get(c, h.orgBase+"/oauth/logout?"+url.Values{"client_id": {cl.ID}, "post_logout_redirect_uri": {"https://rp.example/bye"}, "state": {"s"}}.Encode())
+	if page = body(resp); resp.StatusCode != 200 {
+		t.Fatalf("expected confirmation page: %d", resp.StatusCode)
+	}
 	id, pageCSRF := regexpValue(page, "id"), regexpValue(page, "csrf")
 	if pageCSRF != csrf {
 		t.Fatalf("the page's form carries %q, not the session's token", pageCSRF)

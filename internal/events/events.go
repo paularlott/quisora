@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -180,6 +181,11 @@ func concerns(rec *store.Record) (user string, hidden bool) {
 	case rec.Kind == model.KindAudit:
 		sa, _ := rec.Fields["super_admin"].(bool)
 		return "", rec.Deleted || sa
+	case rec.Kind == model.KindAccess: // "tenantID:subjectID" (model.AccessID); the subject is a user or a group
+		if i := strings.LastIndex(rec.ID, ":"); i >= 0 {
+			return rec.ID[i+1:], false
+		}
+		return "", true
 	case userScoped[rec.Kind]:
 		return rec.Scope, rec.Scope == ""
 	}
@@ -230,6 +236,9 @@ func (h *Hub) Publish(rec *store.Record) {
 	if rec.Deleted {
 		ev.Op = "delete"
 	}
+	// An access entry whose subject the hub cannot tell as a user is a group's (or a deleted user's): it is sent to the
+	// tenant's administrators without its id, which names the subject.
+	anonymous := rec.Kind == model.KindAccess && !known
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
@@ -237,7 +246,7 @@ func (h *Hub) Publish(rec *store.Record) {
 			continue
 		}
 		e := ev
-		if ev.org == "" || (ev.org != s.orgID && !s.super) {
+		if ev.org == "" || (ev.org != s.orgID && !s.super) || (anonymous && !s.super) {
 			e.ID, e.User = "", "" // unknown or foreign scope: say only that something of this kind changed
 		}
 		select {
@@ -248,15 +257,28 @@ func (h *Hub) Publish(rec *store.Record) {
 	}
 }
 
+// adminOnly are the streamed kinds only the organization's administrators may read (the service's list and get calls
+// check CanAdminOrg): its tenants and their access entries, applications (clients, service accounts and
+// self-registered ones alike), upstream providers, SSH CA keys and certificates, and the audit log. A manager, who
+// watches the stream for the users and groups they manage, is told neither that one of these changed nor its id.
+var adminOnly = map[model.Kind]bool{
+	model.KindTenant: true, model.KindAccess: true, model.KindClient: true, model.KindProvider: true,
+	model.KindSSHKey: true, model.KindSSHCert: true, model.KindAudit: true,
+}
+
 // sees reports whether s may be told of a change of a record of kind k about user (in: what the hub knows of them;
 // hide: the record is hidden below super admin whoever it is about). It mirrors what the management API shows s:
-//   - the user's record, their group memberships and (for administrators) their SSH certificates: whoever the service
-//     lets s see at all (Visibility: not Hidden; a manager sees an administrator as a directory entry);
+//   - the user's record, their group memberships and (for administrators) their SSH certificates and access to
+//     tenants: whoever the service lets s see at all (Visibility: not Hidden; a manager sees an administrator as a
+//     directory entry; nobody below super admin sees a super admin, nor their access to a tenant);
 //   - their sessions, passkeys, API tokens, provider links, grants and consents: those of users s may manage
 //     (CanManageUser: a manager manages plain users, an administrator everyone but super admins);
-//   - SSH certificates at all, and the audit log: administrators of the organization (service accounts need the ssh
-//     scope for certificates);
-//   - anything about a user the hub cannot tell is dropped (fail closed). Super admins see everything.
+//   - the adminOnly kinds at all: administrators of the organization (service accounts need the ssh scope for SSH
+//     keys and certificates);
+//   - anything about a user the hub cannot tell is dropped (fail closed), but an access entry, whose subject may be a
+//     group: that is sent without its id (Publish). Super admins see everything.
+//
+// It costs a few comparisons per subscriber: what it needs of the user was looked up once for the event (Hub.info).
 func (s *subscriber) sees(k model.Kind, user string, hide bool, in userInfo, known bool) bool {
 	if s.super {
 		return true
@@ -264,11 +286,14 @@ func (s *subscriber) sees(k model.Kind, user string, hide bool, in userInfo, kno
 	if hide || s.actor == nil {
 		return false
 	}
+	if adminOnly[k] && !rules.CanAdminOrg(s.actor, s.orgID) {
+		return false
+	}
 	switch k {
 	case model.KindAudit:
-		return rules.CanAdminOrg(s.actor, s.orgID)
-	case model.KindSSHCert:
-		if !rules.CanAdminOrg(s.actor, s.orgID) || (s.actor.ClientID != "" && !s.actor.HasScope(service.ScopeSSH)) {
+		return true
+	case model.KindSSHKey, model.KindSSHCert:
+		if s.actor.ClientID != "" && !s.actor.HasScope(service.ScopeSSH) {
 			return false
 		}
 	}
@@ -276,7 +301,7 @@ func (s *subscriber) sees(k model.Kind, user string, hide bool, in userInfo, kno
 		return true
 	}
 	if !known {
-		return false
+		return k == model.KindAccess
 	}
 	u := &model.User{Meta: model.Meta{ID: user}, OrgID: in.org, Role: in.role}
 	if in.role == model.RoleSuperAdmin || rules.Visibility(s.actor, u) == service.Hidden {
@@ -364,7 +389,7 @@ func (m *Module) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := &subscriber{ch: make(chan Event, bufferSize), orgID: orgID, super: a.IsSuper(), actor: a, who: viewer(a)}
-	m.serve(w, r, sub, func() bool { return m.stillAllowed(r, orgID, sub.super) })
+	m.serve(w, r, sub, func() bool { return m.stillAllowed(r, orgID, sub.actor) })
 }
 
 // serve streams sub's events until the client goes, or allowed (checked every recheckEvery, and before an event) says the viewer may no
@@ -451,9 +476,16 @@ func viewer(a *service.Actor) string {
 }
 
 // stillAllowed checks again, for an open stream, what opening it checked: the session (or token) is still valid,
-// its user still enabled, and still allowed to watch the organization at the same level. A stream outliving a
-// sign-out, a disabled account, a demotion or a revoked token ends.
-func (m *Module) stillAllowed(r *http.Request, orgID string, super bool) bool {
+// its user still enabled, and still allowed to watch the organization. A stream outliving a sign-out, a disabled
+// account or a revoked token ends.
+//
+// So does one whose viewer now sees the organization differently: what sees sends is judged against the actor the
+// stream was opened with (opened), so when the viewer as they are now (the session's user or the token read again)
+// differs from it in anything sees reads (sameView), the stream ends and the client opens a new one, judged afresh.
+// An administrator demoted to manager stops being sent the administrator-only kinds and other administrators'
+// records, a token that lost the ssh scope stops being sent SSH changes, and a manager promoted to administrator
+// starts being sent them, all within recheckEvery (or before the next event).
+func (m *Module) stillAllowed(r *http.Request, orgID string, opened *service.Actor) bool {
 	ctx := r.Context()
 	var a *service.Actor
 	if tok, ok := web.BearerToken(r); ok {
@@ -476,10 +508,32 @@ func (m *Module) stillAllowed(r *http.Request, orgID string, super bool) bool {
 		}
 		a = service.ActorForUser(u, web.ClientIP(r))
 	}
-	if a.IsSuper() != super || (!a.IsSuper() && a.OrgID != orgID) {
+	if !sameView(a, opened) || (!a.IsSuper() && a.OrgID != orgID) {
 		return false
 	}
 	return m.s.Svc.CanManageUsers(a, orgID)
+}
+
+// sameView reports whether actors a and b are judged alike by everything sees decides with (the subscriber's super
+// flag, CanAdminOrg, HasScope, Visibility and CanManageUser): the same user, organization, role and client, and the
+// same scope limits (whether scoped at all, and the scopes held, in any order). The name, address, token id,
+// application and guest sources, which none of those read, may differ. A field those rules come to read must be
+// compared here too.
+func sameView(a, b *service.Actor) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.UserID != b.UserID || a.OrgID != b.OrgID || a.Role != b.Role || a.ClientID != b.ClientID ||
+		a.Unscoped != b.Unscoped {
+		return false
+	}
+	if a.Unscoped {
+		return true // scopes are ignored for an unscoped actor (HasScope)
+	}
+	as, bs := slices.Clone(a.Scopes), slices.Clone(b.Scopes)
+	slices.Sort(as)
+	slices.Sort(bs)
+	return slices.Equal(slices.Compact(as), slices.Compact(bs))
 }
 
 // lagged reports (and clears) whether events were dropped for sub.

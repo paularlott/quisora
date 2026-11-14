@@ -25,14 +25,16 @@ func linkedAddrs(u *model.User) []string {
 }
 
 // addsVerifiedLinked reports whether setLinked(u, list) would add a verified address u does not have verified yet
-// (an address that does not parse is left to setLinked to refuse).
+// (an address that does not parse is left to setLinked to refuse). An address that claims the key of a verified one
+// (model.SameKey) but is written another way (model.SameAddress: a full-width form of it) is one: setLinked stores
+// the form named, verified, and that form may be another mailbox.
 func addsVerifiedLinked(u *model.User, list []string) bool {
 	for _, raw := range list {
 		a, err := normEmail(raw)
-		if err != nil || strings.EqualFold(a, u.Email) {
+		if err != nil || model.SameKey(a, u.Email) {
 			continue
 		}
-		if cur, ok := u.LinkedEmail(a); !ok || !cur.Verified {
+		if cur, ok := u.LinkedEmail(a); !ok || !cur.Verified || !model.SameAddress(cur.Address, a) {
 			return true
 		}
 	}
@@ -52,12 +54,12 @@ func setLinked(u *model.User, list []string) error {
 		if err != nil {
 			return err
 		}
-		if strings.EqualFold(a, u.Email) {
+		if model.SameKey(a, u.Email) {
 			continue
 		}
 		dup := false
 		for _, o := range out {
-			dup = dup || strings.EqualFold(o.Address, a)
+			dup = dup || model.SameKey(o.Address, a)
 		}
 		if dup {
 			continue
@@ -74,7 +76,7 @@ func setLinked(u *model.User, list []string) error {
 		}
 		named := false
 		for _, o := range out {
-			named = named || strings.EqualFold(o.Address, cur.Address)
+			named = named || model.SameKey(o.Address, cur.Address)
 		}
 		if !named {
 			out = append(out, cur) // the user's own pending address: kept, still unverified
@@ -184,7 +186,7 @@ func (s *Service) AddLinkedEmail(ctx context.Context, a *Actor, userID, address 
 				return err
 			}
 		}
-		if strings.EqualFold(u.Email, addr) {
+		if model.SameKey(u.Email, addr) {
 			return &conflictErr{Invalid("email", "is already the primary email address")}
 		}
 		if _, ok := u.LinkedEmail(addr); ok {
@@ -216,11 +218,11 @@ func (s *Service) RemoveLinkedEmail(ctx context.Context, a *Actor, userID, addre
 		} else if self && !u.Role.Privileged() {
 			return ErrForbidden
 		}
-		if strings.EqualFold(u.Email, address) {
+		if model.SameKey(u.Email, address) {
 			return Invalid("email", "is the primary address; make another address primary before removing it")
 		}
 		for i, l := range u.LinkedEmails {
-			if strings.EqualFold(l.Address, address) {
+			if model.SameKey(l.Address, address) {
 				u.LinkedEmails = append(u.LinkedEmails[:i:i], u.LinkedEmails[i+1:]...)
 				return nil
 			}
@@ -264,7 +266,7 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 		detail["previous"] = u.Email
 		out := make([]model.LinkedEmail, 0, len(u.LinkedEmails))
 		for _, x := range u.LinkedEmails {
-			if !strings.EqualFold(x.Address, address) {
+			if !model.SameKey(x.Address, address) {
 				out = append(out, x)
 			}
 		}
@@ -281,12 +283,16 @@ func (s *Service) MakePrimary(ctx context.Context, a *Actor, userID, address str
 
 // IssueEmailLink issues a verification link (valid VerifyTTL) for one address of the user (the primary or a linked
 // address); the caller mails it to that address. Links for the same address issued earlier stay valid until used.
+// A link proves the address in the form it was mailed to, and VerifyEmailAddress compares strictly: it is issued only
+// for an address written as the account stores it (in any ASCII case: model.SameAddress), never for another form
+// that claims the same key (model.SameKey), which may be another mailbox and would verify nothing.
 func (s *Service) IssueEmailLink(ctx context.Context, u *model.User, address string) (string, error) {
 	l, ok := u.LinkedEmail(address)
+	ok = ok && model.SameAddress(l.Address, address)
 	switch {
 	case ok && l.Verified:
 		return "", &conflictErr{Invalid("email", "is already verified")}
-	case !ok && !strings.EqualFold(u.Email, address):
+	case !ok && !model.SameAddress(u.Email, address):
 		return "", ErrNotFound
 	case !ok && u.EmailVerified:
 		return "", &conflictErr{Invalid("email", "is already verified")}
@@ -299,6 +305,12 @@ func (s *Service) IssueEmailLink(ctx context.Context, u *model.User, address str
 // link: a manager's call, for someone whose address they know to be right. A verified address links sign-ins from
 // providers to the account and reaches every application as email_verified, so it is never done for your own
 // account, and for an established manager or administrator only by a super admin (as changing their address).
+//
+// The caller vouches for the address as they name it, so it must be written as the account stores it (in any case:
+// model.SameAddress), as IssueEmailLink and VerifyEmailAddress require of a mailed link: another form that claims the
+// same key (model.SameKey: a full-width ｖictim@corp.com stored, victim@corp.com named) may be another mailbox, and
+// marking the stored form verified would make it link sign-ins from providers to this account by an address nobody
+// vouched for (ErrNotFound). The audit event names the address as stored.
 func (s *Service) MarkEmailVerified(ctx context.Context, a *Actor, userID, address string) (*model.User, error) {
 	u, err := s.Users.Get(ctx, userID)
 	if err != nil {
@@ -308,26 +320,27 @@ func (s *Service) MarkEmailVerified(ctx context.Context, a *Actor, userID, addre
 		return nil, Invalid("email", "your own email address is verified by the link mailed to it")
 	}
 	address = strings.TrimSpace(address)
-	u, err = s.modifyUserAudited(ctx, a, u, "user.email.verify", map[string]string{"email": address, "method": "manual"}, func(u *model.User) error {
+	detail := map[string]string{"email": address, "method": "manual"}
+	u, err = s.modifyUserAudited(ctx, a, u, "user.email.verify", detail, func(u *model.User) error {
 		if _, err := s.emailActor(ctx, a, u); err != nil {
 			return err
 		}
 		if err := s.mayResetSignIn(ctx, a, u, "email"); err != nil {
 			return err
 		}
-		if strings.EqualFold(u.Email, address) {
+		if model.SameAddress(u.Email, address) {
 			if u.EmailVerified {
 				return &conflictErr{Invalid("email", "is already verified")}
 			}
-			u.EmailVerified = true
+			u.EmailVerified, detail["email"] = true, u.Email
 			return nil
 		}
 		for i := range u.LinkedEmails {
-			if strings.EqualFold(u.LinkedEmails[i].Address, address) {
+			if model.SameAddress(u.LinkedEmails[i].Address, address) {
 				if u.LinkedEmails[i].Verified {
 					return &conflictErr{Invalid("email", "is already verified")}
 				}
-				u.LinkedEmails[i].Verified = true
+				u.LinkedEmails[i].Verified, detail["email"] = true, u.LinkedEmails[i].Address
 				return nil
 			}
 		}
@@ -345,7 +358,10 @@ func (s *Service) CanMarkEmailVerified(ctx context.Context, a *Actor, u *model.U
 }
 
 // VerifyEmailAddress marks one address of the user verified, as proven by a redeemed LinkVerify link. A link whose
-// address is no longer on the account (removed, or replaced by another primary) verifies nothing.
+// address is no longer on the account (removed, or replaced by another primary) verifies nothing. The link proves
+// only the address it was mailed to, so it is compared in any ASCII case (model.SameAddress) but not as a key
+// (model.SameKey): a full-width form of it, which an administrator or a directory may have put on the account since,
+// may be another mailbox, and is not verified by mail sent to this one.
 func (s *Service) VerifyEmailAddress(ctx context.Context, userID, address string) error {
 	cur, err := s.Users.Get(ctx, userID)
 	if err != nil {
@@ -354,12 +370,12 @@ func (s *Service) VerifyEmailAddress(ctx context.Context, userID, address string
 	changed := false
 	_, err = s.modifyUser(ctx, userID, func(u *model.User) error {
 		changed = false
-		if strings.EqualFold(u.Email, address) {
+		if model.SameAddress(u.Email, address) {
 			changed, u.EmailVerified = !u.EmailVerified, true
 			return nil
 		}
 		for i := range u.LinkedEmails {
-			if strings.EqualFold(u.LinkedEmails[i].Address, address) {
+			if model.SameAddress(u.LinkedEmails[i].Address, address) {
 				changed, u.LinkedEmails[i].Verified = !u.LinkedEmails[i].Verified, true
 				return nil
 			}

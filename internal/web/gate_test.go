@@ -59,7 +59,7 @@ func TestServeGate(t *testing.T) {
 func TestShedExemptions(t *testing.T) {
 	release := make(chan struct{})
 	busy := make(chan struct{})
-	h := shed(func() int { return 1 }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := shed(func() (int, int) { return 1, 1 }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/slow" {
 			close(busy)
 			<-release

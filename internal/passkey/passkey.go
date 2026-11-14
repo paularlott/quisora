@@ -163,14 +163,29 @@ type ceremony struct {
 	// so a response to a challenge issued against the account as it was does not register or sign in against the
 	// account as it is. A discoverable sign-in names no user and has nothing to bind to until it is finished.
 	Gen uint64 `json:"g,omitempty"`
+	// Held is the charge for the challenge against what its requester may hold (ephemeral.Charge: the address of a
+	// sign-in, the user of an account page), given back when the challenge is taken.
+	Held *ephemeral.Held `json:"h,omitempty"`
 }
 
+// save stores the ceremony's challenge. Anyone can ask for a sign-in challenge, as often as the request limits
+// allow, and it carries what the caller passes through (the path a sign-in is to end at): it is charged to whoever
+// ctx names as its requester (ephemeral.Budget.With: the caller says who), and refused (ephemeral.ErrHeld) once
+// they hold as much as they may. Encoded without HTML escaping, which would keep each & of that path as six bytes.
 func (s *Service) save(ctx context.Context, c *ceremony) (string, error) {
-	b, err := json.Marshal(c)
-	if err != nil {
+	b := ephemeral.JSON(c)
+	if b == nil {
+		return "", errors.New("passkey: the ceremony could not be encoded")
+	}
+	var err error
+	if c.Held, err = ephemeral.Charge(ctx, Namespace, len(b), ChallengeTTL); err != nil {
 		return "", err
 	}
-	return s.eph.New(ctx, Namespace, b, ChallengeTTL)
+	id, err := s.eph.New(ctx, Namespace, ephemeral.JSON(c), ChallengeTTL)
+	if err != nil {
+		c.Held.Refund(ctx, s.eph)
+	}
+	return id, err
 }
 
 // take consumes the challenge: it is gone after this call whatever happens next.
@@ -180,7 +195,11 @@ func (s *Service) take(ctx context.Context, id, kind string) (*ceremony, error) 
 		return nil, ErrChallenge
 	}
 	var c ceremony
-	if err := json.Unmarshal(b, &c); err != nil || c.Kind != kind {
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, ErrChallenge
+	}
+	c.Held.Refund(ctx, s.eph) // taken: its requester holds it no longer
+	if c.Kind != kind {
 		return nil, ErrChallenge
 	}
 	return &c, nil

@@ -66,7 +66,9 @@ type Options[T any] struct {
 	Max     int // most items of this node held; Add refuses more (ErrFull)
 	// MaxPerKey is the most items of this node held of one Key (0: no limit besides Max; with no Key, all items have
 	// one key). It keeps one key, an organization whose application never answers, from filling the queue with its
-	// items so that Add refuses (ErrFull) the others'.
+	// items so that Add refuses (ErrFull) the others'. With it, a key also holds no more than the room the queue has
+	// left (fairShare): MaxPerKey alone would let a few keys at it fill the queue between them (four, at a quarter),
+	// and refuse every other key's items.
 	MaxPerKey int
 	Deliver   func(ctx context.Context, item T) error
 	// Failed is told of each failed delivery (attempt counts them): retry is the delay before the next attempt, or 0
@@ -86,7 +88,10 @@ type Options[T any] struct {
 	// Key and PerKey share the workers fairly: no more than PerKey deliveries of items with the same Key at once
 	// (PerKey 0 or no Key: no limit), the rest of that key's due items waiting for one of its deliveries to end while
 	// the workers serve the other keys, so a key whose deliveries are slow (an application that never answers) cannot
-	// hold every worker and delay the other keys.
+	// hold every worker and delay the other keys. A free worker goes to a due item of a key with no delivery under way
+	// first, earliest due first, and only then to one of a key with fewer than PerKey: with a few keys at PerKey
+	// holding every worker, the next free one serves a key that has none rather than the backlog of the key it came
+	// from, so another key's items wait for a worker, not behind those backlogs.
 	Key    func(item T) string
 	PerKey int
 }
@@ -237,7 +242,7 @@ func (q *Queue[T]) Add(it T, after time.Duration, attempts int) error {
 	q.sealing.RLock()
 	defer q.sealing.RUnlock()
 	q.mu.Lock()
-	if len(q.index)+q.adding >= q.o.Max || q.o.MaxPerKey > 0 && q.held[key] >= q.o.MaxPerKey {
+	if len(q.index)+q.adding >= q.o.Max || q.o.MaxPerKey > 0 && !q.fairShare(key) {
 		q.mu.Unlock()
 		return ErrFull
 	}
@@ -293,6 +298,17 @@ func (q *Queue[T]) enter(e *entry) {
 	q.index[e.id] = e
 	q.held[e.key]++
 	q.wait(e)
+}
+
+// fairShare reports whether key may hold one more item (under mu): below MaxPerKey, and below the room the queue has
+// left for every other key. So a key takes at most half of what is free when it starts, and the keys that fill up
+// leave each new one half of what they left: however many keys are busy, the queue is never full for a key that holds
+// nothing while the others have room left between them, and it takes many keys at once (about log2 of Max, past the
+// few at MaxPerKey), not a few at MaxPerKey, to refuse a new one. Nothing a key holds is ever taken back: a key that
+// filled its share early keeps it until its items are delivered.
+func (q *Queue[T]) fairShare(key string) bool {
+	held := q.held[key]
+	return held < q.o.MaxPerKey && held < q.o.Max-(len(q.index)+q.adding)
 }
 
 // release gives back a place of key (under mu).
@@ -449,25 +465,41 @@ func (q *Queue[T]) dispatch(ctx context.Context) time.Time {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	now := time.Now()
-	for i := 0; i < len(q.waiting) && q.running < max(q.o.Workers, 1) && ctx.Err() == nil; {
-		e := q.waiting[i]
+	fair := q.o.Key != nil && q.o.PerKey > 0
+	// Two passes over the due items, earliest due first: the keys with no delivery under way, then the others below
+	// PerKey (see Options.PerKey). A key at PerKey waits for one of its deliveries to end.
+	for pass := 0; pass < 2; pass++ {
+		if pass == 0 && (!fair || q.o.PerKey == 1) {
+			continue // the second pass alone does the same
+		}
+		for i := 0; i < len(q.waiting) && q.running < max(q.o.Workers, 1) && ctx.Err() == nil; {
+			e := q.waiting[i]
+			if e.next.After(now) {
+				break
+			}
+			if fair && (q.busy[e.key] >= q.o.PerKey || pass == 0 && q.busy[e.key] > 0) {
+				i++
+				continue
+			}
+			q.waiting = slices.Delete(q.waiting, i, i+1)
+			e.locked = false // (Reseal puts only a waiting item back)
+			q.running++
+			q.busy[e.key]++
+			q.deliveries.Add(1)
+			go func() {
+				defer q.deliveries.Done()
+				q.settle(e, q.attempt(ctx, e))
+				q.wake()
+			}()
+		}
+	}
+	if q.running >= max(q.o.Workers, 1) || ctx.Err() != nil {
+		return time.Time{} // a delivery's end wakes the scheduler
+	}
+	for _, e := range q.waiting { // the first not due yet: what is due now is its key's, at PerKey
 		if e.next.After(now) {
 			return e.next
 		}
-		if q.o.Key != nil && q.o.PerKey > 0 && q.busy[e.key] >= q.o.PerKey {
-			i++ // its key's to deliver once one of its deliveries ends
-			continue
-		}
-		q.waiting = slices.Delete(q.waiting, i, i+1)
-		e.locked = false // (Reseal puts only a waiting item back)
-		q.running++
-		q.busy[e.key]++
-		q.deliveries.Add(1)
-		go func() {
-			defer q.deliveries.Done()
-			q.settle(e, q.attempt(ctx, e))
-			q.wake()
-		}()
 	}
 	return time.Time{}
 }

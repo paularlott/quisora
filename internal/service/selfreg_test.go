@@ -1,13 +1,17 @@
 package service_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
 )
@@ -25,6 +29,8 @@ func TestSelfRegistrationMetadata(t *testing.T) {
 		"too many":      {RedirectURIs: []string{"https://1/", "https://2/", "https://3/", "https://4/", "https://5/", "https://6/", "https://7/", "https://8/", "https://9/", "https://10/", "https://11/"}},
 		"http remote":   {RedirectURIs: []string{"http://evil.example.com/cb"}}, // the rest of the redirect rules: TestSelfRegRedirect
 		"too long":      {RedirectURIs: []string{"https://a.example.com/" + strings.Repeat("a", 2000)}},
+		"long":          {RedirectURIs: []string{"https://a.example.com/" + strings.Repeat("a", service.MaxSelfRedirectLen)}},
+		"long together": {RedirectURIs: longRedirects(5)},
 	}
 	for name, in := range bad {
 		_, err := c.svc.RegisterClient(c.ctx, c.a.ID, in)
@@ -55,6 +61,10 @@ func TestSelfRegistrationMetadata(t *testing.T) {
 
 	// metadata documents
 	id := "https://app.example.com/client.json"
+	long, _ := json.Marshal(map[string]any{"client_id": id, "redirect_uris": longRedirects(5)})
+	if _, err := service.ParseMetadata(c.a.ID, id, long); err == nil {
+		t.Error("a metadata document's redirect URIs too long together accepted")
+	}
 	doc := `{"client_id":"` + id + `","client_name":"Doc App","redirect_uris":["https://app.example.com/cb"]}`
 	app, err := service.ParseMetadata(c.a.ID, id, []byte(doc))
 	if err != nil || app.ID != model.ClientRecordID(c.a.ID, id) || app.ClientID() != id || app.OrgID != c.a.ID ||
@@ -348,6 +358,138 @@ func TestSelfRegistrationCapIsPerOrganizationAndPurgePages(t *testing.T) {
 	}
 }
 
+// unusedRegistration stores an unused self-registered application of organization orgID registered age ago.
+func (e *env) unusedRegistration(orgID string, age time.Duration) *model.Client {
+	e.t.Helper()
+	cl := &model.Client{Meta: model.Meta{ID: model.DynamicClientPrefix + secure.RandomToken(16), Created: time.Now().Add(-age)},
+		OrgID: orgID, Name: "unused", SelfRegistered: true, AuthMethod: model.AuthMethodNone, Enabled: true}
+	if err := e.svc.Clients.Create(e.ctx, cl); err != nil {
+		e.t.Fatal(err)
+	}
+	return cl
+}
+
+// Making room at the cap spares a registration made within the hour (waiting for its first sign-in) while older unused
+// ones are there to go; with none older, one still goes, so the age rule never refuses a registration.
+func TestEvictionSparesFreshRegistrations(t *testing.T) {
+	c := newCast(t)
+	// a quarter fresh, as a flood at the organization's registration rate leaves a full organization's at most (a third)
+	var old, fresh []*model.Client
+	for range 60 {
+		old = append(old, c.unusedRegistration(c.a.ID, 2*time.Hour))
+	}
+	for range 20 {
+		fresh = append(fresh, c.unusedRegistration(c.a.ID, time.Minute))
+	}
+	kept := func(l []*model.Client) int {
+		n := 0
+		for _, cl := range l {
+			if _, err := c.svc.Clients.Get(c.ctx, cl.ID); err == nil {
+				n++
+			}
+		}
+		return n
+	}
+	for range 30 {
+		if err := c.svc.EvictUnusedSelfRegistered(c.ctx, c.a.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := kept(fresh); n != len(fresh) {
+		t.Fatalf("%d of %d registrations a minute old removed while older ones were there", len(fresh)-n, len(fresh))
+	}
+	if n := kept(old); n != len(old)-30 {
+		t.Fatalf("%d of the older registrations kept, want %d", n, len(old)-30)
+	}
+	for _, cl := range old {
+		_ = c.svc.Clients.Delete(c.ctx, cl.ID)
+	}
+	if err := c.svc.EvictUnusedSelfRegistered(c.ctx, c.a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := kept(fresh); n != len(fresh)-1 {
+		t.Errorf("with only fresh registrations, %d of %d removed, want 1", len(fresh)-n, len(fresh))
+	}
+}
+
+// An application removed to make room takes every grant to it along, as revoking it does: one recorded as unused may
+// still hold one (made around the moment it was picked).
+func TestEvictionEndsGrants(t *testing.T) {
+	c := newCast(t)
+	cl := c.unusedRegistration(c.a.ID, 2*time.Hour)
+	g := &model.Grant{UserID: c.aUser.ID, OrgID: c.a.ID, ClientID: cl.ID, Expires: time.Now().Add(time.Hour)}
+	if err := c.svc.Grants.Create(c.ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.EvictUnusedSelfRegistered(c.ctx, c.a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.Clients.Get(c.ctx, cl.ID); err == nil {
+		t.Fatal("not evicted")
+	}
+	if _, err := c.svc.Grants.Get(c.ctx, g.ID); err == nil {
+		t.Error("a grant to the evicted application outlived it")
+	}
+}
+
+// A first use that cannot be recorded is an error (the caller then issues nothing), and an application gone is
+// ErrNotFound: the "in use" mark that keeps an application from eviction is never missing silently.
+func TestNoteSelfRegisteredUseReportsFailures(t *testing.T) {
+	c := newCast(t)
+	ten := c.acceptSelfRegistered(c.a.ID)
+	cl := c.unusedRegistration(c.a.ID, time.Minute)
+	if err := c.svc.NoteSelfRegisteredUse(c.ctx, cl, ten); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := c.svc.Clients.Get(c.ctx, cl.ID); got.LastUsed.IsZero() {
+		t.Fatal("use not recorded")
+	}
+	gone := &model.Client{Meta: model.Meta{ID: model.DynamicClientPrefix + "gone"}, OrgID: c.a.ID, SelfRegistered: true}
+	if err := c.svc.NoteSelfRegisteredUse(c.ctx, gone, ten); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("an application gone: %v", err)
+	}
+}
+
+// A refreshed metadata document keeps the application's consent generation, and moves it on when the redirect URIs
+// change (not when only their order, or anything else, does): a code issued for the application as it was is not
+// redeemed.
+func TestMetadataRefreshMovesConsentGenerationOnNewRedirects(t *testing.T) {
+	c := newCast(t)
+	ten, _ := c.svc.CreateTenant(c.ctx, service.System, c.a.ID, service.TenantInput{Name: ptr("mcp")})
+	mid := "https://meta.example.com/c.json"
+	doc := func(name string, redirects ...string) *model.Client {
+		m, err := service.ParseMetadata(c.a.ID, mid, []byte(`{"client_id":"`+mid+`","client_name":"`+name+
+			`","redirect_uris":["`+strings.Join(redirects, `","`)+`"]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if err := c.svc.NoteSelfRegisteredUse(c.ctx, doc("v1", "https://meta.example.com/cb", "http://127.0.0.1/cb"), ten); err != nil {
+		t.Fatal(err)
+	}
+	gen := func(fresh *model.Client) int64 {
+		t.Helper()
+		got, err := c.svc.RefreshMetadataClient(c.ctx, fresh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored, _ := c.svc.Clients.Get(c.ctx, got.ID); stored.RememberGen != got.RememberGen {
+			t.Fatalf("stored generation %d, returned %d", stored.RememberGen, got.RememberGen)
+		}
+		return got.RememberGen
+	}
+	if g := gen(doc("v2", "http://127.0.0.1/cb", "https://meta.example.com/cb")); g != 0 {
+		t.Errorf("the same redirect URIs in another order: generation %d, want 0", g)
+	}
+	if g := gen(doc("v3", "https://elsewhere.example.net/cb")); g != 1 {
+		t.Errorf("new redirect URIs: generation %d, want 1", g)
+	}
+	if g := gen(doc("v4", "https://elsewhere.example.net/cb")); g != 1 {
+		t.Errorf("a refresh with nothing new: generation %d, want it kept at 1", g)
+	}
+}
+
 // acceptSelfRegistered gives organization orgID a tenant that accepts self-registered applications, without which
 // the organization refuses registrations.
 func (e *env) acceptSelfRegistered(orgID string) *model.Tenant {
@@ -415,5 +557,44 @@ func TestSelfRegisteredAppsArePaged(t *testing.T) {
 	l, n, err = c.svc.SelfRegisteredApps(c.ctx, actor(c.aAdmin), c.a.ID, store.ListQuery{Limit: 2, Offset: 2})
 	if err != nil || n != 3 || strings.Join(names(l), ",") != "Charlie" {
 		t.Fatalf("second page: %v %d %v", names(l), n, err)
+	}
+}
+
+// longRedirects is n distinct redirect URIs of 500 characters each.
+func longRedirects(n int) []string {
+	var l []string
+	for i := range n {
+		l = append(l, "https://a.example.com/"+strconv.Itoa(i)+strings.Repeat("a", 500-len("https://a.example.com/")-len(strconv.Itoa(i))))
+	}
+	return l
+}
+
+// What a sign-in keeps of a metadata document is the application it describes and nothing else: the same application
+// comes of it again, whatever else the document carried, at its own size (no HTML escaping), and never more than a
+// document may be.
+func TestMetadataSummary(t *testing.T) {
+	const id = "https://app.example.com/meta.json"
+	doc := `{"client_id":"` + id + `","client_name":"A <b>&</b> app","redirect_uris":["https://app.example.com/cb?a=1&b=2","http://127.0.0.1/cb"],` +
+		`"scope":"openid email nonsense","padding":"` + strings.Repeat("<", 4000) + `"}`
+	c, err := service.ParseMetadata("org1", id, []byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := service.MetadataSummary(c)
+	if sum == nil || len(sum) > 300 || strings.Contains(string(sum), "padding") || strings.Contains(string(sum), "u0026") {
+		t.Fatalf("summary of %d bytes: %s", len(sum), sum)
+	}
+	again, err := service.ParseMetadata("org1", id, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != c.ID || again.Name != c.Name || !slices.Equal(again.RedirectURIs, c.RedirectURIs) || !slices.Equal(again.Scopes, c.Scopes) ||
+		again.MetadataURL != id || !again.SelfRegistered {
+		t.Fatalf("the summary describes %+v, the document %+v", again, c)
+	}
+	// redirect URIs of bytes that are not UTF-8 take three bytes each once read: past a document's size, no summary
+	big := `{"client_id":"` + id + `","redirect_uris":["https://app.example.com/` + strings.Repeat(string([]byte{0xff}), 1900) + `"]}`
+	if c, err := service.ParseMetadata("org1", id, []byte(big)); err == nil && service.MetadataSummary(c) != nil {
+		t.Fatalf("a summary of %d bytes for a document of %d", len(service.MetadataSummary(c)), len(big))
 	}
 }

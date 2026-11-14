@@ -13,6 +13,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/ephemeral"
+	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 )
@@ -468,5 +469,169 @@ func TestLockedRefusalsAuditedOncePerWindow(t *testing.T) {
 	}
 	if locked != 1 {
 		t.Fatalf("locked refusals audited: %d, want 1", locked)
+	}
+}
+
+// Wrong passwords, repeated at will (limits.lockout_attempts = 0: never locked), are audited once a minute per account
+// (or login that names no account), reason and client address on each node, not once per attempt; the rest are held
+// back for the next event's detail.suppressed, and still counted in quisora_audit_events_total. Each address that
+// tries is named by an event of its own; nothing else the request can vary makes a key of its own for the same
+// account: the organization's name spelled in other cases, the address typed in other cases. The account's own
+// browser (one it signed in from) has a key of its own, so its owner's mistakes are still seen while a stranger is
+// held back.
+func TestWrongCredentialsAuditedOncePerWindow(t *testing.T) {
+	e := newEnv(t, lockoutAfter(0), noIPLimit, trustLoopbackProxy)
+	org := e.org(t, "acme", nil)
+	pat := e.user(t, org, "pat", model.RoleUser)
+	own := e.browser(t) // pat's own browser, signed in from before
+	own.fromAddress("198.51.100.9")
+	res, out := own.login("acme", "pat", userPassword)
+	wantStatus(t, res, out, 200)
+	before := metrics.AuditEvents.Value("login.failure", "failure")
+
+	attempts := 0
+	for i, who := range []struct{ ip, org, login string }{
+		{"203.0.113.1", "acme", "pat@example.com"}, {"203.0.113.2", "ACME", "PAT@Example.com"},
+		{"203.0.113.1", "aCmE", " pat@EXAMPLE.com"}, {"203.0.113.4", org.ID, "nobody@example.com"},
+		{"203.0.113.4", "Acme", "NOBODY@example.com"},
+	} {
+		b := e.browser(t)
+		b.fromAddress(who.ip)
+		for j := range 10 {
+			res, out := b.login(who.org, who.login, fmt.Sprintf("guess-%d-%d", i, j))
+			wantStatus(t, res, out, 401)
+			attempts++
+		}
+	}
+	for range 3 {
+		res, out := own.login("acme", "pat", "a typo")
+		wantStatus(t, res, out, 401)
+		attempts++
+	}
+
+	stranger := map[string]int{}
+	var owner, unknown []*model.Audit
+	for _, a := range e.audits(t, "login.failure") {
+		switch {
+		case a.Detail["reason"] == "unknown user":
+			unknown = append(unknown, a)
+		case a.Detail["reason"] == "bad password" && a.TargetID == pat.ID && a.IP == "198.51.100.9":
+			owner = append(owner, a)
+		case a.Detail["reason"] == "bad password" && a.TargetID == pat.ID:
+			stranger[a.IP]++
+		default:
+			t.Fatalf("unexpected failure: %+v", a)
+		}
+	}
+	if len(stranger) != 2 || stranger["203.0.113.1"] != 1 || stranger["203.0.113.2"] != 1 {
+		t.Fatalf("strangers' wrong passwords audited: %v, want the first of each address", stranger)
+	}
+	if len(owner) != 1 {
+		t.Fatalf("the owner's own wrong passwords audited: %d, want 1 (apart from the stranger's)", len(owner))
+	}
+	if len(unknown) != 1 || unknown[0].IP != "203.0.113.4" || unknown[0].Actor != "nobody@example.com" {
+		t.Fatalf("an unknown login's failures audited: %d, want the first", len(unknown))
+	}
+	if got := metrics.AuditEvents.Value("login.failure", "failure") - before; got != uint64(attempts) {
+		t.Fatalf("login.failure counted in the metrics: %d, want every attempt (%d)", got, attempts)
+	}
+}
+
+// A guesser cannot keep their address out of the audit log behind another: one wrong password from a decoy address
+// at the start of the minute does not take the account's only event, leaving the address that sends every guess
+// after it unnamed. Each address that sends a wrong credential is named by an event, and the events stay bounded
+// by the addresses, not the guesses. The same holds for the refusals of a locked account.
+func TestDecoyAddressDoesNotHideAGuesser(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		lockout      int
+	}{{"wrong passwords", "bad password", 0}, {"locked refusals", "locked", 3}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, lockoutAfter(tc.lockout), noIPLimit, trustLoopbackProxy)
+			org := e.org(t, "acme", nil)
+			e.user(t, org, "pat", model.RoleUser)
+			if tc.lockout > 0 { // locked from a third address
+				b := e.browser(t)
+				b.fromAddress("192.0.2.200")
+				for range tc.lockout {
+					b.login("acme", "pat", "bad")
+				}
+			}
+			decoy := e.browser(t)
+			decoy.fromAddress("203.0.113.1")
+			decoy.login("acme", "pat", "x")
+			guesser := e.browser(t)
+			guesser.fromAddress("198.51.100.66")
+			for i := range 200 {
+				guesser.login("acme", "pat", fmt.Sprintf("guess-%d", i))
+			}
+			named := map[string]int{}
+			for _, a := range e.audits(t, "login.failure") {
+				if a.Detail["reason"] == tc.reason {
+					named[a.IP]++
+				}
+			}
+			if named["198.51.100.66"] != 1 || named["203.0.113.1"] != 1 {
+				t.Fatalf("events by address: %v, want one naming the decoy and one naming the guesser", named)
+			}
+		})
+	}
+}
+
+// One address trying many accounts, or making up logins, has a bounded number of events recorded: its allowance in
+// the organization, then one that names it once more and says the allowance is spent. Past that, each existing
+// account it tries is still named once (an event that cannot be kept for the address: it cannot spend its allowance
+// on decoys and then guess at its target unseen), and the logins that name none once for the step.
+func TestOneAddressCannotFloodTheAuditLog(t *testing.T) {
+	e := newEnv(t, lockoutAfter(0), noIPLimit, trustLoopbackProxy)
+	org := e.org(t, "acme", nil)
+	const accounts = service.LoginRowsPerAddress + 10
+	for i := range accounts {
+		e.user(t, org, fmt.Sprintf("user%d", i), model.RoleUser)
+	}
+	b := e.browser(t)
+	b.fromAddress("198.51.100.66")
+	for i := range accounts {
+		res, out := b.login("acme", fmt.Sprintf("user%d", i), "bad")
+		wantStatus(t, res, out, 401)
+		res, out = b.login("acme", fmt.Sprintf("nobody%d@example.com", i), "bad")
+		wantStatus(t, res, out, 401)
+	}
+	known, unknown, limits := 0, 0, 0
+	for _, a := range e.audits(t, "login.failure") {
+		if a.IP != "198.51.100.66" {
+			t.Fatalf("unexpected event: %+v", a)
+		}
+		if a.Detail["address_limit"] != "" {
+			limits++
+		}
+		if a.Detail["reason"] == "unknown user" {
+			unknown++
+		} else {
+			known++
+		}
+	}
+	if known != accounts || unknown != service.LoginRowsPerAddressUnknown+1+1 || limits != 2 {
+		t.Fatalf("events of one address: %d of accounts, %d of logins that name none, %d saying the allowance is spent",
+			known, unknown, limits)
+	}
+}
+
+// The lockout is audited when it trips, always, even though the failure that trips it is held back: login.lockout is
+// the event that says an account was locked, and it never goes through the failures' limiter.
+func TestLockoutAuditedWhenItsFailureIsHeldBack(t *testing.T) {
+	e := newEnv(t, lockoutAfter(3), noIPLimit)
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	b := e.browser(t)
+	for range 3 {
+		res, out := b.login("acme", "pat", "bad")
+		wantStatus(t, res, out, 401)
+	}
+	if n := len(e.audits(t, "login.failure")); n != 1 {
+		t.Fatalf("failures audited: %d, want the first only", n)
+	}
+	if l := e.audits(t, "login.lockout"); len(l) != 1 || l[0].Detail["minutes"] == "" {
+		t.Fatalf("lockout audits: %+v", l)
 	}
 }

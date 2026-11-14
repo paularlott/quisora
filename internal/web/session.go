@@ -142,6 +142,14 @@ func (m *Sessions) CreateWith(ctx context.Context, w http.ResponseWriter, r *htt
 		return nil, err
 	}
 	setSessionCookie(w, s, raw)
+	// Past the cap of sessions per user, the least recently used end (never this one, nor one signed in since); in the
+	// background, as nothing of this sign-in waits on it. A failure is logged and tried again at the user's next sign-in.
+	who, keep := *u, *s // (the caller may go on changing u)
+	m.svc.Background(ctx, service.BackgroundShort, func(ctx context.Context) {
+		if _, err := m.svc.CapSessions(ctx, &who, &keep); err != nil {
+			m.svc.Log.WithError(err).Warn("capping a user's sessions", "user", who.ID)
+		}
+	})
 	return s, nil
 }
 

@@ -193,6 +193,8 @@ type Node struct {
 	st  *Store
 	eph *Ephemeral
 
+	auditServing auditServing // the audit requests this node answers for others (handleAudit)
+
 	// The partition protocol (gossip only): the node's partition.Store over its database, the Manager (nil until the
 	// node holds a data set and starts it: joinDataSet; replaced by Resize, which restarts it with the new size) and
 	// what the node knows about the owners.
@@ -222,6 +224,11 @@ type Node struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// peersChecked is when warnMissingPeers last looked for the peers not in view (watchLoop's own: no lock), and
+	// peersChecking is set while that check runs.
+	peersChecked  time.Time
+	peersChecking atomic.Bool
 
 	mem       atomic.Pointer[membership]
 	memMu     sync.Mutex
@@ -314,6 +321,7 @@ func New(cfg *config.Config, st store.Store, opt Options) (*Node, error) {
 	if cfg.Cluster.Bind == "" {
 		if cfg.SharedStorage() {
 			n.shared = ephemeral.NewShared(st)
+			n.shared.Budget, n.shared.Log = n.eph.local.Budget, n.log // the rows this node writes, as its memory would be
 			n.lease = &lease{st: store.NewTable[model.Ephemeral](st), self: n.id, instance: uuid.NewString()}
 			if cfg.Cluster.Notify.Bind != "" {
 				if err := n.buildNotify(); err != nil {
@@ -845,8 +853,13 @@ func (n *Node) Ephemeral() *Ephemeral { return n.eph }
 func (n *Node) SharedDatabase() bool { return n.shared != nil }
 
 // LocalEphemeral is this node's in-memory short-lived state, for its metrics (with a shared database and no gossip the
-// state lives in the database, and this holds nothing).
+// state lives in the database, and this holds nothing: SharedEphemeral).
 func (n *Node) LocalEphemeral() *ephemeral.Local { return n.eph.local }
+
+// SharedEphemeral is the short-lived state this node keeps in the shared database (nodes that share one without
+// gossip), for its metrics: what this node wrote there, counted against the same budgets as its memory would be. Nil
+// otherwise.
+func (n *Node) SharedEphemeral() *ephemeral.Shared { return n.shared }
 
 // EphemeralStore is the store for short-lived state the application uses: the database when nodes share one without
 // gossip (any node can finish what another started), otherwise this node's memory with gossip routing.

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -67,7 +68,11 @@ func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct)
 		web.WriteError(w, err)
 		return
 	}
-	authURL, state, err := m.Upstream.BeginConnect(ctx, org, p, u, web.OrgPath(org.ID, "/account#providers"))
+	authURL, state, err := m.Upstream.BeginConnect(m.heldByUser(r, u.ID), org, p, u, web.OrgPath(org.ID, "/account#providers"))
+	if errors.Is(err, ephemeral.ErrHeld) || errors.Is(err, ephemeral.ErrFull) { // counted where they were refused
+		m.internalError(w, r, "upstream connect", err)
+		return
+	}
 	if err != nil {
 		m.s.Log.Warn("upstream connect", "provider", p.Name, "error", err)
 		writeErr(w, http.StatusBadGateway, "The provider could not be reached. Try again later.", "")

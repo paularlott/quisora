@@ -131,6 +131,9 @@ func (e *Env) SessionAMR(u *model.User, amr []string) (*http.Client, string) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, e.URL+"/", nil)
 	sess, err := e.Server.Sessions.Create(context.Background(), rec, req, u, org, amr)
+	// the sign-in's background work (the cap of sessions per user) is done before the test goes on, so a test that
+	// swaps out the store next does not race it
+	e.Svc.WaitBackground()
 	if err != nil {
 		e.T.Fatal(err)
 	}

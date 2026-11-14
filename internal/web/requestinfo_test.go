@@ -90,3 +90,25 @@ func TestRateKeyIP(t *testing.T) {
 		}
 	}
 }
+
+// What is kept for a request nobody has signed in for is charged to its address as rate limits count it, and for an
+// IPv6 address to its /48 and its /32 as well: one allocation's /64s share that wider budget, and a provider's
+// /48s the widest.
+func TestHolderIP(t *testing.T) {
+	for addr, want := range map[string][3]string{
+		"192.0.2.7:1234":             {"ip|192.0.2.7", "", ""},
+		"[2001:db8:1:2:aaaa::1]:443": {"ip|2001:db8:1:2::/64", "net|2001:db8:1::/48", "net|2001:db8::/32"},
+		"[2001:db8:1:ffff::9]:443":   {"ip|2001:db8:1:ffff::/64", "net|2001:db8:1::/48", "net|2001:db8::/32"},
+		"[2001:db8:ffff::9]:443":     {"ip|2001:db8:ffff::/64", "net|2001:db8:ffff::/48", "net|2001:db8::/32"},
+		"[::ffff:192.0.2.7]:443":     {"ip|::ffff:192.0.2.7", "", ""},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = addr
+		if got := HolderIP(r); got.Key != want[0] || got.Wide != want[1] || got.Widest != want[2] {
+			t.Errorf("%s: %+v, want %v", addr, got, want)
+		}
+	}
+	if h := HolderUser("u1"); h.Key != "user|u1" || h.Wide != "" || h.Widest != "" {
+		t.Errorf("user: %+v", h)
+	}
+}

@@ -3,15 +3,18 @@ package login_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/login"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
@@ -825,8 +828,239 @@ func TestUpstreamRejectsInvalidIDTokens(t *testing.T) {
 	if ids, _ := u.Svc.Identities.All(context.Background(), ""); len(ids) != 0 {
 		t.Fatalf("identities created from rejected tokens: %d", len(ids))
 	}
-	if n := len(u.audits(t, "login.failure")); n != len(cases) {
+	// The same failure, repeated, is audited once a minute (auditFailure): the next event counts those held back.
+	if n := len(u.audits(t, "login.failure")); n != 1 {
 		t.Fatalf("failures audited: %d", n)
+	}
+}
+
+// upstreamCallback starts a sign-in with provider p in browser b and sends its callback back with code ("good": one
+// the provider issues, for claims c), returning the callback's status.
+func (u *upEnv) upstreamCallback(t *testing.T, b *browser, p *model.Provider, code string, c map[string]any) int {
+	t.Helper()
+	res, _ := b.get("/o/acme/login/provider/" + p.ID)
+	if res.StatusCode != http.StatusFound {
+		t.Fatalf("provider start: %d", res.StatusCode)
+	}
+	lu, _ := url.Parse(res.Header.Get("Location"))
+	if code == "good" {
+		code = u.oidc.Authorize(res.Header.Get("Location"), c)
+	}
+	q := "?state=" + url.QueryEscape(lu.Query().Get("state"))
+	if code != "" {
+		q += "&code=" + url.QueryEscape(code)
+	}
+	res, _ = b.get("/login/callback/" + p.ID + q)
+	return res.StatusCode
+}
+
+// Past a provider's failed exchanges a minute, an address that has failed one of its exchanges lately is refused
+// before its exchange, a good code's too; an address that has not is never refused for the provider's minute.
+func TestUpstreamFailedExchangesPastProviderMinute(t *testing.T) {
+	u := newUpEnv(t, noIPLimit, trustLoopbackProxy)
+	p := u.oidcProvider(t, nil)
+	exchanges := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.CodeExchanges }
+	u.Mod.SpendUpstreamFailures(u.org.ID, p.ID, login.UpstreamFailPerProviderMin)
+	b := u.browser(t)
+	b.fromAddress("203.0.113.30")
+	if status := u.upstreamCallback(t, b, p, "made-up", nil); status != http.StatusFound || exchanges() != 1 {
+		t.Fatalf("an address with no failure, past the provider's minute: %d, %d exchanges", status, exchanges())
+	}
+	if status := u.upstreamCallback(t, b, p, "made-up", nil); status != http.StatusTooManyRequests || exchanges() != 1 {
+		t.Fatalf("an address with a failure, past the provider's minute: %d, %d exchanges", status, exchanges())
+	}
+	if status := u.upstreamCallback(t, b, p, "good", claims("s1", "pat@corp.example")); status != http.StatusTooManyRequests {
+		t.Fatalf("a good code from an address with a failure, past the provider's minute: %d", status)
+	}
+	// another /64 of an IPv6 /48 that failed counts as having failed; another /48 does not
+	v6 := u.browser(t)
+	v6.fromAddress("2001:db8:5:1::1")
+	if status := u.upstreamCallback(t, v6, p, "made-up", nil); status != http.StatusFound {
+		t.Fatalf("an IPv6 address with no failure: %d", status)
+	}
+	v6.fromAddress("2001:db8:5:2::1")
+	if status := u.upstreamCallback(t, v6, p, "good", claims("s2", "kim@corp.example")); status != http.StatusTooManyRequests {
+		t.Fatalf("another /64 of a /48 with a failure: %d", status)
+	}
+	c := u.browser(t)
+	c.fromAddress("2001:db8:6:1::1")
+	if status := u.upstreamCallback(t, c, p, "good", claims("s3", "lee@corp.example")); status != http.StatusSeeOther {
+		t.Fatalf("a good code from another /48, past the provider's minute: %d", status)
+	}
+}
+
+// A callback that brings no code makes no exchange (the provider is never asked), so it takes no part in the limits
+// on failed exchanges: sixty of them, each from one of sixty /64s of one /48 with a state it started itself, used to
+// fill the provider's minute, after which every callback for the provider was refused, those with good codes included.
+func TestUpstreamCallbacksWithoutCodeAreNoFailedExchanges(t *testing.T) {
+	u := newUpEnv(t, trustLoopbackProxy)
+	p := u.oidcProvider(t, nil)
+	exchanges := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.CodeExchanges }
+	for i := range login.UpstreamFailPerProviderMin {
+		b := u.browser(t)
+		b.fromAddress(fmt.Sprintf("2001:db8:1:%x::1", i+1))
+		if status := u.upstreamCallback(t, b, p, "", nil); status != http.StatusFound {
+			t.Fatalf("callback %d with no code: %d", i, status)
+		}
+	}
+	if n := exchanges(); n != 0 {
+		t.Fatalf("%d exchanges for callbacks with no code", n)
+	}
+	v := u.browser(t)
+	v.fromAddress("198.51.100.77")
+	if status := u.upstreamCallback(t, v, p, "good", claims("s1", "pat@corp.example")); status != http.StatusSeeOther {
+		t.Fatalf("a good code after sixty callbacks with none: %d", status)
+	}
+	// and an address that sent one goes on to sign in
+	b := u.browser(t)
+	b.fromAddress("2001:db8:1:1::1")
+	if status := u.upstreamCallback(t, b, p, "good", claims("s2", "kim@corp.example")); status != http.StatusSeeOther {
+		t.Fatalf("a good code from an address that sent none before: %d", status)
+	}
+}
+
+// Failed exchanges from many addresses, each failing once, fill the provider's minute; a user signing in from an
+// address with no failure still signs in, and every address that failed is refused before another exchange.
+func TestUpstreamFailedExchangesFromManyAddressesRefuseNoUser(t *testing.T) {
+	u := newUpEnv(t, trustLoopbackProxy)
+	p := u.oidcProvider(t, nil)
+	exchanges := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.CodeExchanges }
+	var attackers []*browser
+	for i := range login.UpstreamFailPerProviderMin + 5 {
+		b := u.browser(t)
+		b.fromAddress(fmt.Sprintf("2001:db8:%x::1", 0x100+i)) // each its own /48
+		if status := u.upstreamCallback(t, b, p, "made-up", nil); status != http.StatusFound {
+			t.Fatalf("attacker %d: %d", i, status)
+		}
+		attackers = append(attackers, b)
+	}
+	n := exchanges()
+	if n != login.UpstreamFailPerProviderMin+5 {
+		t.Fatalf("%d exchanges, want one for each address", n)
+	}
+	v := u.browser(t)
+	v.fromAddress("198.51.100.78")
+	if status := u.upstreamCallback(t, v, p, "good", claims("s1", "pat@corp.example")); status != http.StatusSeeOther {
+		t.Fatalf("a user with a good code while the provider's minute is full: %d", status)
+	}
+	for i, b := range attackers[:5] {
+		if status := u.upstreamCallback(t, b, p, "made-up", nil); status != http.StatusTooManyRequests {
+			t.Fatalf("attacker %d again: %d", i, status)
+		}
+	}
+	if got := exchanges(); got != n+1 {
+		t.Fatalf("%d exchanges past the provider's minute, want the user's alone", got-n)
+	}
+}
+
+// An IPv6 /48 has its share of a provider's failed exchanges, besides each /64's: one /48's /64s, each within its own
+// share, cannot together fail as many as they like.
+func TestUpstreamFailedExchangesSharePerSlash48(t *testing.T) {
+	u := newUpEnv(t, trustLoopbackProxy)
+	p := u.oidcProvider(t, nil)
+	exchanges := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.CodeExchanges }
+	refused := 0
+	for i := range login.UpstreamFailPerNetMin + 10 {
+		b := u.browser(t)
+		b.fromAddress(fmt.Sprintf("2001:db8:7:%x::1", i+1))
+		if u.upstreamCallback(t, b, p, "made-up", nil) == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if n := exchanges(); n != login.UpstreamFailPerNetMin || refused != 10 {
+		t.Fatalf("one /48's /64s made %d failed exchanges (%d refused), want its share of %d", n, refused, login.UpstreamFailPerNetMin)
+	}
+}
+
+// The limits on failed exchanges are taken before the exchange, not read before and counted after it: callbacks from
+// one address at the same moment, whose exchanges are all under way together, cannot all pass a limit that only
+// counts the ones done.
+func TestUpstreamFailedExchangesReservedBeforeTheExchange(t *testing.T) {
+	u := newUpEnv(t, noIPLimit)
+	p := u.oidcProvider(t, nil)
+	u.oidc.Mu.Lock()
+	u.oidc.CodeDelay = 300 * time.Millisecond // every exchange under way at once
+	u.oidc.Mu.Unlock()
+	exchanges := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.CodeExchanges }
+	const n = 3 * login.UpstreamFailPerIPMin
+	var urls []string
+	var browsers []*browser
+	for range n {
+		b := u.browser(t)
+		res, _ := b.get("/o/acme/login/provider/" + p.ID)
+		lu, _ := url.Parse(res.Header.Get("Location"))
+		urls = append(urls, u.URL+b.at("/login/callback/"+p.ID+"?state="+url.QueryEscape(lu.Query().Get("state"))+"&code=made-up"))
+		browsers = append(browsers, b)
+	}
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if res, err := browsers[i].c.Get(urls[i]); err == nil {
+				res.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	if got := exchanges(); got > login.UpstreamFailPerIPMin {
+		t.Fatalf("%d exchanges made by %d callbacks at once from one address, past its share of %d", got, n, login.UpstreamFailPerIPMin)
+	}
+	// a good exchange gives its place back: the address's share is not spent by sign-ins that work
+	v := newUpEnv(t, noIPLimit)
+	p = v.oidcProvider(t, nil)
+	for i := range login.UpstreamFailPerIPMin + 5 {
+		if status := v.upstreamCallback(t, v.browser(t), p, "good", claims("s1", "pat@corp.example")); status != http.StatusSeeOther {
+			t.Fatalf("good sign-in %d: %d", i, status)
+		}
+	}
+}
+
+// Callbacks that make the token exchange fail are limited per provider and minute, with a share for each address: a
+// state anyone can start, sent back with a made-up code, makes a request to the provider with the organization's client
+// secret, and a flood of them must not get the organization's client limited there. The callback past a limit is
+// refused before the exchange. Repeated failures are audited once a minute, however their states and codes vary.
+func TestUpstreamFailedExchangesLimited(t *testing.T) {
+	u := newUpEnv(t, noIPLimit)
+	p := u.oidcProvider(t, nil)
+	exchanges := func() int { u.oidc.Mu.Lock(); defer u.oidc.Mu.Unlock(); return u.oidc.CodeExchanges }
+	b := u.browser(t)
+	junk := func() int {
+		t.Helper()
+		res, _ := b.get("/o/acme/login/provider/" + p.ID)
+		if res.StatusCode != 302 {
+			t.Fatalf("provider start: %d", res.StatusCode)
+		}
+		lu, _ := url.Parse(res.Header.Get("Location"))
+		res, _ = b.get("/login/callback/" + p.ID + "?state=" + url.QueryEscape(lu.Query().Get("state")) + "&code=made-up")
+		return res.StatusCode
+	}
+	for i := range 30 {
+		if status := junk(); status == http.StatusTooManyRequests {
+			if i == 0 {
+				t.Fatal("the first callback refused")
+			}
+			break
+		}
+	}
+	if n := exchanges(); n == 0 || n > 10 {
+		t.Fatalf("%d exchanges with made-up codes from one address", n)
+	}
+	n := exchanges()
+	if status := junk(); status != http.StatusTooManyRequests || exchanges() != n {
+		t.Fatalf("past the address's share: %d, %d exchanges", status, exchanges()-n)
+	}
+	if got := len(u.audits(t, "login.failure")); got != 1 {
+		t.Fatalf("failed exchanges audited %d times", got)
+	}
+	// junk states: no exchange, and audited once a minute
+	for i := range 5 {
+		if res, _ := u.browser(t).get("/login/callback/no-such-provider?state=junk-" + string(rune('a'+i)) + "&code=x"); res.StatusCode != 302 {
+			t.Fatalf("junk state: %d", res.StatusCode)
+		}
+	}
+	if got := len(u.audits(t, "login.failure")); got != 2 {
+		t.Fatalf("failures audited %d times, want one for the exchanges and one for the junk states", got)
 	}
 }
 

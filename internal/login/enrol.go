@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/passkey"
 	"github.com/paularlott/quisora/internal/secure"
@@ -73,7 +74,7 @@ func (m *Module) enrolTicket(w http.ResponseWriter, r *http.Request, id string) 
 	// promotion that kept the link) is refused here as at the step (secondFactor): the provider's holder never
 	// chooses a privileged account's second factor.
 	if t.Provider != "" && u.Role.Privileged() {
-		m.audit(r, "login.failure", org, u, "", map[string]string{"reason": "no second factor of its own", "provider": t.Provider})
+		m.auditFailure(r, "enrol", org, u, "", "", map[string]string{"reason": "no second factor of its own", "provider": t.Provider})
 		writeErr(w, http.StatusForbidden, msgNoOwnFactor, "")
 		return nil, nil, nil, false
 	}
@@ -114,8 +115,15 @@ func (m *Module) enrolTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	}
 	secret := secure.NewTOTPSecret()
 	t.Pending = m.s.Svc.Sealer.SealFor(pendingTOTPBinding("ticket", in.Ticket), []byte(secret))
-	b, _ := json.Marshal(t)
-	if err := m.s.Eph.Set(r.Context(), nsTicket, in.Ticket, b, enrolTTL); err != nil {
+	// Kept until the ticket's own end, not for another enrolTTL: asking again would otherwise keep it, and what it
+	// holds, alive past the time its address was charged for (putTicket). And only if it is still there
+	// (ephemeral.Store.Replace): a ticket used or dropped since it was read (the sign-in finished in another tab)
+	// is not made again, with the stamp of a charge already given back.
+	if err := m.s.Eph.Replace(r.Context(), nsTicket, in.Ticket, ephemeral.JSON(t)); err != nil {
+		if errors.Is(err, ephemeral.ErrNotFound) {
+			ticketFailed(w, errTicketGone)
+			return
+		}
 		m.internalError(w, r, "ticket", err)
 		return
 	}
@@ -214,7 +222,7 @@ func (m *Module) enrolPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 	if !ok || asGuest(w, t.Sources) { // a guest's second factor here is an authenticator app (asGuest)
 		return
 	}
-	id, opts, err := m.Passkeys.BeginRegistration(r.Context(), u, map[string]string{passkey.PurposeKey: purposeEnrol})
+	id, opts, err := m.Passkeys.BeginRegistration(m.heldByIP(r), u, map[string]string{passkey.PurposeKey: purposeEnrol})
 	if err != nil {
 		m.internalError(w, r, "passkey registration", err)
 		return

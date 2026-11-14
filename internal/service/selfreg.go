@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,8 +30,9 @@ import (
 
 const (
 	// MaxSelfRegistered caps an organization's self-registered applications nobody has used yet (used ones do not
-	// count): at it, a registration makes room by removing one of them picked at random (RegisterClient), so a flood
-	// neither grows storage nor stops the next registration, and is one organization's alone.
+	// count): at it, a registration makes room by removing one of them picked at random, among those registered over
+	// an hour ago (evictUnusedSelfRegistered), so a flood neither grows storage nor stops the next registration, nor
+	// removes one just made before its first sign-in, and is one organization's alone.
 	MaxSelfRegistered = 10000
 	// selfRegUnusedTTL is how long a self-registered application never used to sign anyone in is kept.
 	selfRegUnusedTTL = 24 * time.Hour
@@ -50,6 +52,14 @@ const (
 	// applies to it); any other client's is its record id, which a store holds up to store.MaxIDLength (191).
 	MaxMetadataURL   = 190
 	maxSelfRedirects = 10
+	// MaxSelfRedirectLen bounds each redirect URI of a self-registered application, and MaxSelfRedirectsLen all of
+	// them together (as their audit event records them, separated by spaces). Anyone may register, and each
+	// registration is audited with its redirect URIs, kept for the audit retention (90 days by default): bounded, a
+	// flood at the organization's registration rate adds a bounded few hundred megabytes a day at most, where 10 URIs
+	// of 2000 characters each made it several gigabytes. An application's redirect URIs are short (a loopback port,
+	// an app scheme, a callback path).
+	MaxSelfRedirectLen  = 512
+	MaxSelfRedirectsLen = 2048
 )
 
 // SelfRegScopes are the scopes a self-registered application may have: signing in and the basic profile.
@@ -69,10 +79,10 @@ type RegistrationInput struct {
 // selfRegRedirect reports whether a self-registered application may use ru: https; http on the loopback interface
 // (localhost, 127.0.0.1 or [::1], any port at sign-in, RFC 8252 §7.3); or a private-use scheme in reverse domain
 // name form (§7.1: it holds a dot, which none of http, javascript, data or file do). Never with a fragment or
-// credentials, and at most 2000 characters.
+// credentials, and at most MaxSelfRedirectLen bytes.
 func selfRegRedirect(ru string) bool {
 	u, err := url.Parse(ru)
-	if err != nil || len(ru) > 2000 || u.Fragment != "" || u.User != nil || u.Opaque != "" {
+	if err != nil || len(ru) > MaxSelfRedirectLen || u.Fragment != "" || u.User != nil || u.Opaque != "" {
 		return false
 	}
 	switch {
@@ -87,11 +97,23 @@ func selfRegRedirect(ru string) bool {
 }
 
 // RegistrationError is an RFC 7591 §3.2.2 error: Code is invalid_redirect_uri or invalid_client_metadata.
-type RegistrationError struct{ Code, Description string }
+type RegistrationError struct {
+	Code, Description string
+	cause             error // what kind of refusal, when one is told apart (ErrRedirectCaps)
+}
 
 func (e *RegistrationError) Error() string { return e.Description }
 
+func (e *RegistrationError) Unwrap() error { return e.cause }
+
 func regErr(code, desc string) error { return &RegistrationError{Code: code, Description: desc} }
+
+// ErrRedirectCaps is the cause of a RegistrationError for redirect URIs over the length caps (MaxSelfRedirectLen each,
+// MaxSelfRedirectsLen together). The caps apply to a metadata document read again for a stored application as to any
+// other: one whose document is over them is no longer refreshed, and is unknown once its stored copy is MetadataStale
+// old. A deliberate limit (each registration is audited with its redirect URIs, and anyone may register), which the
+// caller logs apart from other refusals so that an administrator can tell why an application went.
+var ErrRedirectCaps = errors.New("redirect URIs over the length caps")
 
 // selfRegClient checks metadata and returns the client it describes (id not set).
 func selfRegClient(in RegistrationInput) (*model.Client, error) {
@@ -113,6 +135,10 @@ func selfRegClient(in RegistrationInput) (*model.Client, error) {
 	}
 	var redirects []string
 	for _, ru := range in.RedirectURIs {
+		if len(ru) > MaxSelfRedirectLen {
+			return nil, &RegistrationError{Code: "invalid_redirect_uri", cause: ErrRedirectCaps, Description: clip(ru, 64) +
+				"…: a redirect URI is at most " + itoa(MaxSelfRedirectLen) + " characters (this one is " + itoa(len(ru)) + ")"}
+		}
 		if !selfRegRedirect(ru) {
 			return nil, regErr("invalid_redirect_uri", ru+": use https, http on localhost, 127.0.0.1 or [::1], or a "+
 				"private-use scheme named after a domain, such as com.example.app:/callback (RFC 8252)")
@@ -120,6 +146,10 @@ func selfRegClient(in RegistrationInput) (*model.Client, error) {
 		if !slices.Contains(redirects, ru) {
 			redirects = append(redirects, ru)
 		}
+	}
+	if len(strings.Join(redirects, " ")) > MaxSelfRedirectsLen {
+		return nil, &RegistrationError{Code: "invalid_redirect_uri", cause: ErrRedirectCaps,
+			Description: "the redirect_uris are too long together: at most " + itoa(MaxSelfRedirectsLen) + " characters"}
 	}
 	scopes := slices.Clone(SelfRegScopes)
 	if s := strings.Fields(in.Scope); len(s) > 0 {
@@ -156,32 +186,74 @@ func (s *Service) unusedSelfRegistered(ctx context.Context, orgID string) (int, 
 	return n, mapStore(err)
 }
 
+// selfRegEvictAge is how old an unused registration must be before the cap may remove it while older ones are there:
+// time for its first sign-in. The cap turns over at the organization's registration rate, at most 60 a minute (the
+// caller's limit), so at least MaxSelfRegistered - 60*60 of a full organization's unused registrations are older than
+// this, and one of them is there to go; should none be (a sample of only fresh ones), the oldest goes instead: a
+// registration is never refused for the age rule.
+const selfRegEvictAge = time.Hour
+
+// selfRegEvictSample is how many unused registrations eviction reads to find one old enough.
+const selfRegEvictSample = 16
+
 // evictUnusedSelfRegistered removes one of organization orgID's self-registered applications nobody has used, picked
-// at random (the first by id after a random one; ids are random): refusing registrations at the cap instead would let
-// anyone hold an organization there, nobody else able to register. An application in use is never removed, and one
-// just registered is rarely: its first sign-in comes within minutes, while turning the cap over at the organization's
-// registration rate takes hours. One never used holds no grants, so it goes as the purge removes it.
+// at random among those older than selfRegEvictAge (of a sample: the first selfRegEvictSample by id after a random one;
+// ids are random), or, should the sample hold none that old, the oldest of it: refusing registrations at the cap
+// instead would let anyone hold an organization there, nobody else able to register, and a flood (at most 60 a
+// minute) cannot make the registrations of the last hour more than about a third of a full organization's, so a fresh
+// registration waiting for its first sign-in is not what goes (a sample of 16 all that fresh is about one in 10^7).
+// An application in use is never removed: the removal applies only to the record as read, unused (a use recorded
+// since, NoteSelfRegisteredUse, stops it). As RevokeSelfRegisteredApp does, it ends the grants users hold to the
+// application, should any have been made in the moment around its removal; an application never used has none.
 func (s *Service) evictUnusedSelfRegistered(ctx context.Context, orgID string) error {
-	q := store.ListQuery{Scope: orgID, Limit: 1, After: model.DynamicClientPrefix + secure.RandomToken(16),
+	q := store.ListQuery{Scope: orgID, Limit: selfRegEvictSample, After: model.DynamicClientPrefix + secure.RandomToken(16),
 		Filters: []store.Filter{{Field: "unused_self_registered", Value: true}}}
-	ids, _, err := s.Clients.IDs(ctx, q)
-	if err == nil && len(ids) == 0 { // past the last: the first
-		q.After = ""
-		ids, _, err = s.Clients.IDs(ctx, q)
+	l, _, err := s.Clients.List(ctx, q)
+	if err == nil && len(l) < selfRegEvictSample { // past the last: the first ones make up the sample
+		q.After, q.Limit = "", selfRegEvictSample-len(l)
+		var more []*model.Client
+		more, _, err = s.Clients.List(ctx, q)
+		l = append(l, more...)
 	}
 	if err != nil {
 		return mapStore(err)
 	}
-	if len(ids) == 0 {
+	var c *model.Client
+	for _, cand := range l {
+		if !cand.SelfRegistered || !cand.LastUsed.IsZero() {
+			continue // used since the listing's index was written: the cap is a bound, not an exact count
+		}
+		if time.Since(cand.Created) >= selfRegEvictAge {
+			c = cand
+			break
+		}
+		if c == nil || cand.Created.Before(c.Created) {
+			c = cand
+		}
+	}
+	if c == nil {
 		return nil
 	}
-	c, err := s.Clients.Get(ctx, ids[0])
-	if err != nil || !c.LastUsed.IsZero() { // gone, or used since: the cap is a bound, not an exact count
-		return nil
+	err = s.audited(ctx, System, orgID, "client.self_registered.evict", c.Name, map[string]string{"client_id": c.ID},
+		func() error { return s.Clients.DeleteIf(ctx, c.ID, c.Version) })
+	if errors.Is(err, store.ErrStale) || errors.Is(err, store.ErrNotFound) {
+		return nil // used (or removed) since it was read: it stays, or is gone already
 	}
-	if err := s.audited(ctx, System, orgID, "client.self_registered.evict", c.Name, map[string]string{"client_id": c.ID},
-		func() error { return s.Clients.Delete(ctx, c.ID) }); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err != nil {
 		return mapStore(err)
+	}
+	// Removed: no grant to it may outlive it. The registration that made room goes on whatever happens here; a grant
+	// whose application is gone is refused anyway, and the orphan sweep removes it (SweepOrphans).
+	users, err := s.selfRegUsers(ctx, c.ID)
+	if err == nil {
+		for _, u := range users {
+			if _, rerr := s.RevokeAppAccess(ctx, u, c.ID); rerr != nil {
+				err = rerr
+			}
+		}
+	}
+	if err != nil {
+		s.Log.WithError(err).Error("not every grant to an evicted self-registered application could be ended", "client", c.ID)
 	}
 	return nil
 }
@@ -257,8 +329,63 @@ func ParseMetadata(orgID, id string, doc []byte) (*model.Client, error) {
 	return c, nil
 }
 
+// MetadataSummary is what a sign-in keeps of the metadata document that c, an application not stored yet, was made
+// from (ParseMetadata): a document of the fields an application is made from and nothing else (its URL, name,
+// redirect URIs and scopes, as they were accepted), from which ParseMetadata makes the same application again. The
+// document itself is whatever its author wrote, up to MaxMetadataBytes, and would be held once for every sign-in
+// that names it. It is encoded without HTML escaping (six bytes for each <, > and &), and is nil when it would still
+// be longer than MaxMetadataBytes (redirect URIs full of bytes that are not UTF-8, each three once decoded): such an
+// application is not signed in to.
+//
+// It also says when the document was read (c.MetadataFetched), which ParseMetadataSummary gives the application made
+// from it again: the application stored at consent, maybe many minutes later, is as old as the document it was made
+// from, and is read again a day after that read, not after the consent.
+func MetadataSummary(c *model.Client) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	sum := metadataSummary{RegistrationInput: RegistrationInput{ClientID: c.MetadataURL, ClientName: c.Name,
+		RedirectURIs: c.RedirectURIs, Scope: strings.Join(c.Scopes, " ")}}
+	if !c.MetadataFetched.IsZero() {
+		sum.Read = c.MetadataFetched.Unix()
+	}
+	if enc.Encode(sum) != nil || buf.Len() > MaxMetadataBytes {
+		return nil
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'})
+}
+
+// metadataSummary is the form of MetadataSummary: the fields of a document, and when it was read.
+type metadataSummary struct {
+	RegistrationInput
+	Read int64 `json:"read_at,omitempty"` // unix seconds
+}
+
+// ParseMetadataSummary is ParseMetadata of a summary that MetadataSummary made (sum, kept by this server, never a
+// document as read: a document cannot set its own read time, as ParseMetadata takes no such field), with the
+// application's MetadataFetched the time the document was read, when the summary says and it is in the past.
+func ParseMetadataSummary(orgID, id string, sum []byte) (*model.Client, error) {
+	c, err := ParseMetadata(orgID, id, sum)
+	if err != nil {
+		return nil, err
+	}
+	var s metadataSummary
+	if json.Unmarshal(sum, &s) == nil && s.Read > 0 {
+		if read := time.Unix(s.Read, 0).UTC(); read.Before(c.MetadataFetched) {
+			c.MetadataFetched = read
+		}
+	}
+	return c, nil
+}
+
 // RefreshMetadataClient replaces a stored metadata-document application's details with a newly read copy of its
-// document (keeping its use). An administrator's client of that id is never touched.
+// document (keeping its use and its consent generation). An administrator's client of that id is never touched.
+//
+// A document is not pinned: whoever serves its URL may change it, and the application then is what the new copy
+// says. Where its codes go is what users allowed, though, so a copy that changes the redirect URIs moves the consent
+// generation on (model.Client.RememberGen), as an administrator's change of them does (credentialsChanged): a code
+// issued for the application as it was is not redeemed (the user signs in again, and is asked, as always), and nothing
+// a user allowed before stands in for consent to the new destinations.
 func (s *Service) RefreshMetadataClient(ctx context.Context, fresh *model.Client) (*model.Client, error) {
 	cur, err := s.Clients.Get(ctx, fresh.ID)
 	if err != nil {
@@ -268,11 +395,22 @@ func (s *Service) RefreshMetadataClient(ctx context.Context, fresh *model.Client
 		return nil, ErrNotFound
 	}
 	c := *fresh
-	c.Meta, c.LastUsed, c.Enabled = cur.Meta, cur.LastUsed, cur.Enabled
+	c.Meta, c.LastUsed, c.Enabled, c.RememberGen = cur.Meta, cur.LastUsed, cur.Enabled, cur.RememberGen
+	if !sameRedirects(cur.RedirectURIs, c.RedirectURIs) {
+		c.RememberGen++
+	}
 	if err := s.Clients.Update(ctx, &c); err != nil {
 		return nil, mapStore(err)
 	}
 	return &c, nil
+}
+
+// sameRedirects reports whether a and b hold the same redirect URIs, in any order.
+func sameRedirects(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
 
 // InTenant returns a self-registered application as the tenant t sees it: a client of t and its resources (t is of the
@@ -288,20 +426,49 @@ func InTenant(c *model.Client, t *model.Tenant) *model.Client {
 // NoteSelfRegisteredUse records that a self-registered application was authorized in tenant t (its last use, which
 // keeps it from being purged). A metadata-document application is stored here, on its first authorization: app is the
 // application as its document describes it (or as the tenant sees it, InTenant).
-func (s *Service) NoteSelfRegisteredUse(ctx context.Context, app *model.Client, t *model.Tenant) {
-	c, err := s.Clients.Get(ctx, app.ID)
-	if errors.Is(err, store.ErrNotFound) && app.IsMetadataClient() {
-		nc := *app
-		nc.TenantID, nc.Resources, nc.LastUsed = "", nil, time.Now().UTC()
-		_ = s.audited(ctx, System, t.OrgID, "client.self_register", nc.Name, map[string]string{"client_id": nc.ClientID(),
-			"metadata": "document", "tenant": t.Name}, func() error { return s.Clients.Create(ctx, &nc) })
-		return
+//
+// The caller records the use before it issues anything, and issues nothing when this returns an error: an application
+// whose first use is not on record counts as never used, which the cap on unused registrations may remove at any
+// moment (evictUnusedSelfRegistered) and the purge removes after a day, so a first use must be recorded, or not
+// happen. The error is ErrNotFound when the application is gone (removed since the sign-in began), else the store's.
+// A later use's record only keeps the application from the idle purge for months yet: one that cannot be written is
+// logged, not refused.
+func (s *Service) NoteSelfRegisteredUse(ctx context.Context, app *model.Client, t *model.Tenant) error {
+	for attempt := 0; ; attempt++ {
+		c, err := s.Clients.Get(ctx, app.ID)
+		if errors.Is(err, store.ErrNotFound) && app.IsMetadataClient() {
+			nc := *app
+			nc.TenantID, nc.Resources, nc.LastUsed = "", nil, time.Now().UTC()
+			err = s.audited(ctx, System, t.OrgID, "client.self_register", nc.Name, map[string]string{"client_id": nc.ClientID(),
+				"metadata": "document", "tenant": t.Name}, func() error { return s.Clients.Create(ctx, &nc) })
+			if errors.Is(err, store.ErrStale) && attempt < 2 {
+				continue // another first use stored it meanwhile: read it again
+			}
+			return mapStore(err)
+		}
+		if err != nil {
+			return mapStore(err)
+		}
+		if !c.SelfRegistered {
+			return nil
+		}
+		if time.Since(c.LastUsed) < time.Hour {
+			return nil // one write an hour at most
+		}
+		first := c.LastUsed.IsZero()
+		c.LastUsed = time.Now().UTC()
+		err = s.Clients.Update(ctx, c)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, store.ErrStale) && attempt < 2:
+			continue // changed meanwhile (used, refreshed, or removed): read it again
+		case first:
+			return mapStore(err)
+		}
+		s.Log.WithError(err).Warn("a self-registered application's use could not be recorded", "client", c.ID)
+		return nil
 	}
-	if err != nil || !c.SelfRegistered || time.Since(c.LastUsed) < time.Hour {
-		return // one write an hour at most
-	}
-	c.LastUsed = time.Now().UTC()
-	_ = s.Clients.Update(ctx, c)
 }
 
 // PurgeSelfRegistered removes the self-registered applications never used to sign anyone in within a day of
@@ -395,6 +562,12 @@ func (s *Service) RevokeSelfRegisteredApp(ctx context.Context, a *Actor, orgID, 
 	if err != nil || !c.SelfRegistered || c.OrgID != orgID {
 		return ErrNotFound
 	}
+	return s.endSelfRegistered(ctx, a, c, nil)
+}
+
+// endSelfRegistered ends self-registered application c for actor a: every user's grants to it, then the application
+// (client.self_registered.revoke, with detail besides).
+func (s *Service) endSelfRegistered(ctx context.Context, a *Actor, c *model.Client, detail map[string]string) error {
 	users, err := s.selfRegUsers(ctx, c.ID)
 	if err != nil {
 		return err
@@ -404,6 +577,26 @@ func (s *Service) RevokeSelfRegisteredApp(ctx context.Context, a *Actor, orgID, 
 			return err
 		}
 	}
-	return mapStore(s.audited(ctx, a, orgID, "client.self_registered.revoke", c.Name, map[string]string{"client_id": c.ClientID(),
-		"users": itoa(len(users))}, func() error { return s.Clients.Delete(ctx, c.ID) }))
+	d := map[string]string{"client_id": c.ClientID(), "users": itoa(len(users))}
+	for k, v := range detail {
+		d[k] = v
+	}
+	return mapStore(s.audited(ctx, a, c.OrgID, "client.self_registered.revoke", c.Name, d,
+		func() error { return s.Clients.Delete(ctx, c.ID) }))
+}
+
+// EndGoneMetadataApp ends organization orgID's stored metadata-document application whose document URL (its
+// client_id, url) this server read and was answered 404 Not Found or 410 Gone by that URL's own server (reason says
+// which): as RevokeSelfRegisteredApp does, every user's grants to it end and it is removed, by the system, the event's
+// reason naming the answer. Its author took the document down, which is how such an application is withdrawn; were the
+// stored copy kept, it would go on signing users in for up to MetadataStale. Only the caller's own read of that exact
+// URL decides it (anyone can make a sign-in name a URL, but not what its server answers); a network error, a timeout
+// or another answer never does. ErrNotFound when the organization has no such application stored (or the id is an
+// administrator's client, which is never touched).
+func (s *Service) EndGoneMetadataApp(ctx context.Context, orgID, url, reason string) error {
+	c, err := s.Clients.Get(ctx, model.ClientRecordID(orgID, url))
+	if err != nil || !c.SelfRegistered || !c.IsMetadataClient() || c.OrgID != orgID || c.MetadataURL != url {
+		return ErrNotFound
+	}
+	return s.endSelfRegistered(ctx, System, c, map[string]string{"reason": "metadata document gone: " + reason})
 }

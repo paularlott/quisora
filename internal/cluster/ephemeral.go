@@ -18,6 +18,9 @@ const (
 	opTake
 	opDelete
 	opIncr
+	// opReplace is Store.Replace: the owner gives an entry it holds a new value under its lock, keeping its expiry, or
+	// answers codeNotFound. It never falls back to Set, which would make again what another request ended.
+	opReplace
 )
 
 const (
@@ -217,6 +220,26 @@ func (e *Ephemeral) Set(ctx context.Context, ns, id string, value []byte, ttl ti
 	return err
 }
 
+// Replace routes as Set does, to the node that holds the entry, which replaces it under its own lock (opReplace): the
+// check that the entry is still there and the write are one step on the owner, whichever node the request reached.
+func (e *Ephemeral) Replace(ctx context.Context, ns, id string, value []byte) error {
+	if e.n.gc == nil {
+		return e.local.Replace(ctx, ns, id, value)
+	}
+	mb, dead := e.n.route(ns, id)
+	if dead {
+		return ephemeral.ErrNotFound
+	}
+	if mb == nil {
+		return errNoOwner
+	}
+	if mb.id == e.n.id {
+		return e.local.Replace(ctx, ns, id, value)
+	}
+	_, err := e.call(ctx, mb, &ephReq{Op: opReplace, NS: ns, ID: id, Val: value})
+	return err
+}
+
 func (e *Ephemeral) Get(ctx context.Context, ns, id string) ([]byte, error) {
 	if e.n.gc == nil {
 		return e.local.Get(ctx, ns, id)
@@ -323,6 +346,8 @@ func (n *Node) handleEph(_ *gossip.Node, pkt *gossip.Packet) (any, error) {
 	switch req.Op {
 	case opSet:
 		err = l.Set(n.ctx, req.NS, req.ID, req.Val, ttl)
+	case opReplace:
+		err = l.Replace(n.ctx, req.NS, req.ID, req.Val)
 	case opGet:
 		resp.Val, err = l.Get(n.ctx, req.NS, req.ID)
 	case opTake:

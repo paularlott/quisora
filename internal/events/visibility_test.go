@@ -184,3 +184,40 @@ func TestHubUnknownAndNoActorFailClosed(t *testing.T) {
 		t.Errorf("admin got %q", got)
 	}
 }
+
+// A manager watches the stream for the users and groups they manage, so they hear of nothing the management API keeps
+// to administrators (tenants, access entries, applications, providers, SSH CA keys): not even that one changed. An
+// administrator hears of all of them but a super admin's access to a tenant; the access entry of a group, which the hub
+// cannot tell from a deleted user, comes without its id.
+func TestHubAdminOnlyKindsAndHiddenAccess(t *testing.T) {
+	h := roleHub(map[string]model.Role{"usr": model.RoleUser, "sa": model.RoleSuperAdmin})
+	mgr := &subscriber{ch: make(chan Event, 64), orgID: "o", actor: actorOf("o", model.RoleManager)}
+	adm := &subscriber{ch: make(chan Event, 64), orgID: "o", actor: actorOf("o", model.RoleAdmin)}
+	sup := &subscriber{ch: make(chan Event, 64), orgID: "o", super: true, actor: actorOf("o", model.RoleSuperAdmin)}
+	for _, s := range []*subscriber{mgr, adm, sup} {
+		h.add(s)
+	}
+	for _, r := range []*store.Record{
+		{Kind: model.KindTenant, ID: "t1", Scope: "o"},
+		{Kind: model.KindClient, ID: "c1", Scope: "o"},
+		{Kind: model.KindProvider, ID: "p1", Scope: "o"},
+		{Kind: model.KindSSHKey, ID: "k1", Scope: "o"},
+		{Kind: model.KindAccess, ID: "t1:usr", Scope: "o"},
+		{Kind: model.KindAccess, ID: "t1:grp", Scope: "o"},
+		{Kind: model.KindAccess, ID: "t1:sa", Scope: "o"},
+		{Kind: model.KindAccess, ID: "t1:sa", Deleted: true},
+		{Kind: model.KindGroup, ID: "g1", Scope: "o"},
+	} {
+		h.Publish(r)
+	}
+	if got := drain(mgr); got != "group:g1:put" {
+		t.Errorf("manager got %q", got)
+	}
+	if got := drain(adm); got != "tenant:t1:put client:c1:put provider:p1:put sshkey:k1:put access:t1:usr:put access::put group:g1:put" {
+		t.Errorf("admin got %q", got)
+	}
+	if got := drain(sup); got != "tenant:t1:put client:c1:put provider:p1:put sshkey:k1:put access:t1:usr:put access:t1:grp:put "+
+		"access:t1:sa:put access::delete group:g1:put" {
+		t.Errorf("super got %q", got)
+	}
+}

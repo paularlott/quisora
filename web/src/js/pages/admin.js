@@ -1446,7 +1446,8 @@ export default function (Alpine) {
     get hasPassword() { return this.user.has_password },
     get canResetSignIn() { return this.user.can_reset_sign_in !== false },
     get resetBySuperOnly() { return this.user.can_reset_sign_in === false },
-    get canRemovePassword() { return this.hasPassword && this.canResetSignIn },
+    // someone else's: your own is never removed (the server refuses it), only changed on your account page
+    get canRemovePassword() { return this.hasPassword && this.canResetSignIn && !this.isSelf },
     // someone else's: your own is removed on your account page, which keeps your last second factor where one is required
     get canRemoveTOTP() { return !!this.user.mfa_enrolled_at && this.canResetSignIn && !this.isSelf },
     newInvite(ev) { this.openInvite(this.user, null, ev.currentTarget) },
@@ -2076,7 +2077,7 @@ export default function (Alpine) {
     'cluster.reload.failure', 'config.reload', 'config.reload.failure', 'group.create', 'group.delete', 'group.member.add',
     'group.member.remove', 'group.update', 'identity.link.email', 'identity.link.refused', 'identity.refresh.refused', 'identity.unlink', 'invite.accept',
     'keys.create', 'keys.remove', 'keys.rotate', 'login.email_code.sent', 'login.failure', 'login.limited', 'login.lockout',
-    'login.recovery_code', 'login.success', 'logout', 'mfa.import', 'oauth.client_auth.limited', 'oauth.client_credentials',
+    'login.recovery_code', 'login.session.evict', 'login.success', 'logout', 'mfa.import', 'oauth.client_auth.limited', 'oauth.client_credentials',
     'oauth.code.replay', 'oauth.consent', 'oauth.device.approve', 'oauth.device.start', 'oauth.grant', 'oauth.grant.evict',
     'oauth.refresh', 'oauth.refresh.reuse', 'oauth.revoke', 'oauth.token_exchange', 'org.create', 'org.delete', 'org.primary',
     'org.signout', 'org.spray.end', 'org.spray.start',

@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,9 +11,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
@@ -155,6 +158,105 @@ func TestRefusedRegistrationsDoNotSpendTheOrganizationsMinute(t *testing.T) {
 	}
 	if n := spent(); n != 1 {
 		t.Fatalf("a registration made counted %d", n)
+	}
+}
+
+// The last registerOrgReserve of the organization's minute are for addresses that have not registered there today: a
+// few addresses that keep registering cannot spend it all.
+func TestRegistrationReserveIsForNewAddresses(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	ctx := context.Background()
+	if _, err := h.p.s.Eph.Incr(ctx, nsRateOIDC, "register-org|"+h.env.Primary.ID, registerPerOrgMin-registerOrgReserve, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	reg := map[string]any{"redirect_uris": []string{"https://app.example/cb"}}
+	if r := h.postJSON(h.orgBase+"/oauth/register", reg); r.status != 201 {
+		t.Fatalf("an address new to the organization, from the reserve: %d %v", r.status, r.m)
+	}
+	r := h.postJSON(h.orgBase+"/oauth/register", reg)
+	if r.status != 429 || !strings.Contains(r.str("error_description"), "at this organization") {
+		t.Fatalf("an address that registered today, from the reserve: %d %v", r.status, r.m)
+	}
+}
+
+// An IPv6 address is new to the organization only when its /48 is too, and the /48 has its own share of the minute:
+// sixty /64s of one /48, each registering once, used to be sixty new addresses and spend the organization's minute,
+// reserve included, after which an application registering from an address that never had was refused.
+func TestRegistrationReserveCountsTheSlash48(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	reg := func(ip string) int {
+		req := httptest.NewRequest(http.MethodPost, h.orgBase+"/oauth/register",
+			bytes.NewReader([]byte(`{"redirect_uris":["https://app.example/cb"]}`)))
+		req.Header.Set("Content-Type", "application/json")
+		return h.serveFrom(ip, req).Code
+	}
+	made := 0
+	for i := range registerPerOrgMin {
+		switch code := reg(fmt.Sprintf("2001:db8:1:%x::1", i+1)); code {
+		case http.StatusCreated:
+			made++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("registration %d from one /48: %d", i, code)
+		}
+	}
+	if made != registerPerOrgMin-registerOrgReserve {
+		t.Fatalf("one /48's /64s made %d registrations in the minute, want %d (the reserve is for new addresses)",
+			made, registerPerOrgMin-registerOrgReserve)
+	}
+	for _, ip := range []string{"198.51.100.200", "2001:db8:2::1"} {
+		if code := reg(ip); code != http.StatusCreated {
+			t.Fatalf("a first registration from %s after one /48's flood: %d", ip, code)
+		}
+	}
+	// the /48's minute: past it, a /64 of it that has not registered is refused at once
+	h2 := setup(t, nil)
+	h2.mcpTenant("mcp", true)
+	if _, err := h2.p.s.Eph.Incr(context.Background(), nsRateOIDC, "register-net|2001:db8:3::/48", registerPerNetMin, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, h2.orgBase+"/oauth/register", bytes.NewReader([]byte(`{"redirect_uris":["https://app.example/cb"]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	if rec := h2.serveFrom("2001:db8:3:99::1", req); rec.Code != http.StatusTooManyRequests ||
+		!strings.Contains(rec.Body.String(), "from this address") {
+		t.Fatalf("a /64 of a /48 past its minute: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A registration request that makes nothing leaves no counter that lasts a day: an organization that takes no
+// registrations, or metadata refused. Only a registration made counts toward the address's day.
+func TestRefusedRegistrationsMakeNoDayCounter(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	key := "register-day|" + h.env.Primary.ID + "|127.0.0.1"
+	day := func() int64 {
+		t.Helper()
+		n, err := h.p.s.Eph.Incr(context.Background(), nsRateOIDC, key, 0, 24*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if r := h.postJSON(h.orgBase+"/oauth/register", map[string]any{"redirect_uris": []string{"https://app.example/cb"}}); r.status != 403 {
+		t.Fatalf("registration with no tenant accepting it: %d %v", r.status, r.m)
+	}
+	if n := day(); n != 0 {
+		t.Fatalf("a registration refused by an organization that takes none counted %d toward the day", n)
+	}
+	h.mcpTenant("mcp", true)
+	if r := h.postJSON(h.orgBase+"/oauth/register", map[string]any{"redirect_uris": []string{"ftp://app.example/cb"}}); r.status != 400 {
+		t.Fatalf("registration with bad metadata: %d %v", r.status, r.m)
+	}
+	if n := day(); n != 0 {
+		t.Fatalf("a registration with bad metadata counted %d toward the day", n)
+	}
+	h.register("https://app.example/cb")
+	if n := day(); n != 1 {
+		t.Fatalf("a registration made counted %d toward the day", n)
 	}
 }
 
@@ -568,9 +670,189 @@ func TestMetadataReadOutlivesItsRequester(t *testing.T) {
 	h.p.HTTP = srv.Client()
 	id = srv.URL + "/client.json"
 	org := h.env.Primary.ID
-	_, _ = h.p.readMetadata(ctx, nil, org, id, true)
-	ce, err := h.p.appClient(context.Background(), nil, org, id)
+	_, _, _ = h.p.readMetadata(ctx, nil, org, id, true)
+	ce, _, err := h.p.appClient(context.Background(), nil, org, id, nil)
 	if err != nil || ce.c.Name != "Doc App" || hits.Load() != 1 {
 		t.Fatalf("after the requester hung up: %+v %v, %d reads", ce, err, hits.Load())
+	}
+}
+
+// metadataDocServer serves, at any path, a valid metadata document naming that URL, padded with pad bytes, with
+// redirect as its one redirect URI; before, when set, runs first.
+func metadataDocServer(t *testing.T, redirect string, pad int, before func()) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	return newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if before != nil {
+			before()
+		}
+		id := "https://" + r.Host + r.URL.Path
+		_, _ = w.Write([]byte(`{"client_id":"` + id + `","client_name":"Gen","redirect_uris":["` + redirect +
+			`"],"padding":"` + strings.Repeat("x", pad) + `"}`))
+	})
+}
+
+// A metadata document read for a request that never becomes a sign-in (here: its redirect URI is not the document's,
+// so no flow starts) keeps nothing in the sign-in state: what is shared of it is held in the node's caches, under
+// their own cap. Requests nobody has admitted cannot fill the room flows and codes need.
+func TestMetadataDocumentsKeepOutOfSignInState(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	srv, hits := metadataDocServer(t, "http://127.0.0.1:44020/callback", 4500, nil)
+	h.p.HTTP = srv.Client()
+	local, ok := h.env.Server.Eph.(*ephemeral.Local)
+	if !ok {
+		t.Fatalf("the test server's ephemeral store is %T", h.env.Server.Eph)
+	}
+	_, ch := pkce()
+	before := local.Used()
+	const n = 15 // within the address's metadataPerIPMin
+	for i := range n {
+		cl := &model.Client{Meta: model.Meta{ID: srv.URL + "/flood/" + strconv.Itoa(i)}, RedirectURIs: []string{"http://127.0.0.1:44020/elsewhere"}}
+		rec := h.startFrom("198.51.100.40", authzQuery(cl, ch, url.Values{"resource": {mcpResource}}))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "redirect") {
+			t.Fatalf("request %d: %d %.200s", i, rec.Code, rec.Body)
+		}
+	}
+	if hits.Load() != n {
+		t.Fatalf("%d documents read, want %d", hits.Load(), n)
+	}
+	if grew := local.Used() - before; grew > 4<<10 {
+		t.Errorf("%d documents read for requests that started no sign-in took %d bytes of the sign-in state", n, grew)
+	}
+	if local.Cached() < n*4500 {
+		t.Errorf("the documents read are not shared from the caches: %d bytes there", local.Cached())
+	}
+}
+
+// The document a sign-in read when it began is kept in its flow: resume and consent do not need the copy every
+// caller shares, which a node keeps only while its caches have room (and only for a minute). With that copy never
+// kept, the sign-in still completes, its document read once.
+func TestMetadataSignInKeepsItsOwnDocument(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	redirect := "http://127.0.0.1:44021/callback"
+	srv, hits := metadataDocServer(t, redirect, 0, nil)
+	h.p.HTTP = srv.Client()
+	h.useEph(func(op, ns string) error {
+		if op == "set" && ns == nsCIMD {
+			return ephemeral.ErrFull // the caches are full: nothing is shared
+		}
+		return nil
+	})
+	cl := &model.Client{Meta: model.Meta{ID: srv.URL + "/app.json"}, RedirectURIs: []string{redirect}}
+	if r, _ := h.publicLogin(cl, url.Values{"resource": {mcpResource}}); r.status != http.StatusOK {
+		t.Fatalf("sign-in with nothing shared: %d %v", r.status, r.m)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("the document was read %d times for one sign-in", hits.Load())
+	}
+}
+
+// Concurrent first requests for one document share one read: none of them is told the application is unknown because
+// another spent the URL's read a minute.
+func TestConcurrentFirstMetadataReadsShareOne(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	redirect := "http://127.0.0.1:44022/callback"
+	g := newGate(t)
+	srv, hits := metadataDocServer(t, redirect, 0, g.hold)
+	h.p.HTTP = srv.Client()
+	cl := &model.Client{Meta: model.Meta{ID: srv.URL + "/shared.json"}, RedirectURIs: []string{redirect}}
+	_, ch := pkce()
+	const n = 5
+	codes := make(chan int, n)
+	start := func(i int) {
+		rec := h.startFrom("198.51.100."+strconv.Itoa(50+i), authzQuery(cl, ch, url.Values{"resource": {mcpResource}}))
+		codes <- rec.Code
+	}
+	go start(0)
+	g.waitHeld(t) // the first read is under way
+	for i := 1; i < n; i++ {
+		go start(i)
+	}
+	time.Sleep(200 * time.Millisecond) // the others arrive while it is
+	g.open()
+	for range n {
+		if code := <-codes; code != http.StatusFound {
+			t.Errorf("a concurrent first request: %d, want a sign-in started (302)", code)
+		}
+	}
+	if hits.Load() != 1 {
+		t.Errorf("the document was read %d times", hits.Load())
+	}
+}
+
+// A URL's read a minute is each organization's own: requests naming one organization (anyone may send them, every
+// minute) cannot keep another organization's application from being read, even when nothing read is shared.
+func TestMetadataReadLimitIsPerOrganization(t *testing.T) {
+	t.Parallel()
+	h := setup(t, nil)
+	srv, hits := metadataDocServer(t, "https://app.example/cb", 0, nil)
+	h.p.HTTP = srv.Client()
+	h.useEph(func(op, ns string) error {
+		if op == "set" && ns == nsCIMD {
+			return ephemeral.ErrFull
+		}
+		return nil
+	})
+	ctx, id := context.Background(), srv.URL+"/client.json"
+	if c, _, err := h.p.readMetadata(ctx, nil, "org-attacker", id, true); c == nil || err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if c, _, err := h.p.readMetadata(ctx, nil, "org-victim", id, true); c == nil || err != nil || c.OrgID != "org-victim" {
+		t.Fatalf("another organization's read in the same minute: %+v %v", c, err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("%d reads, want one per organization", hits.Load())
+	}
+	// Nothing was shared (the caches could not keep it): the minute's read is over, so a caller reads again rather
+	// than wait for a copy that is not coming, a few times a minute at most, and is refused at once past them.
+	for i := range metadataRereadsPerMin {
+		if c, _, _ := h.p.readMetadata(ctx, nil, "org-victim", id, true); c == nil || hits.Load() != int32(3+i) {
+			t.Fatalf("read again %d, nothing shared: %v, %d reads", i+1, c != nil, hits.Load())
+		}
+	}
+	start := time.Now()
+	if c, _, _ := h.p.readMetadata(ctx, nil, "org-victim", id, true); c != nil || hits.Load() != 2+metadataRereadsPerMin ||
+		time.Since(start) > 3*time.Second {
+		t.Errorf("a read for one organization past the minute's reads again: %v, %d reads, after %v", c != nil, hits.Load(), time.Since(start))
+	}
+}
+
+// A self-registered application's first use is on record before its code is issued: when it cannot be recorded, no
+// code is issued (the flow is kept, and works once the store does), for an application never used is one the cap on
+// unused registrations may remove, its users' grants with it.
+func TestSelfRegisteredFirstUseRecordedBeforeCode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	cl := h.register("http://127.0.0.1:44023/callback")
+	c, csrf := h.session(h.user)
+	_, ch := pkce()
+	to := h.authorize(c, authzQuery(cl, ch, url.Values{"resource": {mcpResource}}))
+	_, resume := h.decideConsent(c, csrf, to.Query().Get("flow"), true)
+	if resume == "" {
+		t.Fatalf("consent not accepted: %s", to)
+	}
+	good := h.env.Svc.Clients.S
+	h.env.Svc.Clients.S = failCAS(good, model.KindClient, func() error { return store.ErrUnavailable })
+	resp := h.get(c, resume)
+	text := body(resp)
+	h.env.Svc.Clients.S = good
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Location") != "" {
+		t.Fatalf("a code with the use unrecorded: %d %s %.200s", resp.StatusCode, resp.Header.Get("Location"), text)
+	}
+	if stored, _ := h.env.Svc.Clients.Get(ctx, cl.ID); !stored.LastUsed.IsZero() {
+		t.Fatal("use recorded through a failing store")
+	}
+	if code := loc(t, h.get(c, resume)).Query().Get("code"); code == "" {
+		t.Fatal("no code once the use could be recorded")
+	}
+	if stored, _ := h.env.Svc.Clients.Get(ctx, cl.ID); stored.LastUsed.IsZero() {
+		t.Error("use not recorded")
 	}
 }

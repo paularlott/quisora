@@ -286,8 +286,9 @@ https://id.example.com/o/<org id>/oauth/logout?id_token_hint=<the ID token>&post
 ```
 
 With a valid `id_token_hint` for the user signed in, Quisora signs them out at once; without one it asks them to
-confirm. It then returns to `post_logout_redirect_uri` (which must be registered on the client as a post-logout
-redirect URI) with your `state`.
+confirm (a session has one confirmation waiting at a time: asking again replaces it, and the page shown last is the
+one that confirms). It then returns to `post_logout_redirect_uri` (which must be registered on the client as a
+post-logout redirect URI) with your `state`.
 
 **Back-channel logout.** Give a client a back-channel logout URI and Quisora posts a signed `logout_token` (with `sid`)
 to it whenever one of its users' sessions ends: sign-out, a session revoked, a password reset, an account disabled

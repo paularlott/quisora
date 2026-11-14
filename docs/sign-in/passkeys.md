@@ -105,7 +105,7 @@ The list never contains the credential or its public key.
 | `account.passkey.delete` | A user deleted one of theirs |
 | `user.passkey.remove` | An administrator removed one |
 | `passkey.clone` | A copied authenticator was suspected; the passkey was disabled |
-| `login.failure` | With reasons such as `passkey disabled or unverified` or `passkey for another organization` |
+| `login.failure` | With reasons such as `passkey disabled or unverified` or `passkey for another organization`. At most once a minute per reason and account on each node (per organization for a passkey that names no account, in the organization whose sign-in page was used), the next with `detail.suppressed` counting the repeats held back |
 
 ## What is stored
 

@@ -28,7 +28,11 @@ below say which records, and the queries that produce most of them.
 
 - `audit.victorialogs_url` set: without it every start logs a warning that the database trail is not an audit trail.
 - `audit.logins = true` (the default): successful sign-ins are the evidence of access reviews and monitoring. Failed
-  ones, lock-outs and refusals are always recorded.
+  ones, lock-outs and refusals are always recorded (a failure or refusal repeated from the same address within a
+  minute in the next one's `detail.suppressed` count, and what one address causes past its allowance of events in
+  `detail.address_suppressed`; every address that causes one is named until the organization's 200 events a minute
+  naming addresses (of each kind, on each node) are spent, and every existing account tried is named once a minute
+  per sign-in step whatever the addresses do: [what is recorded](RUNNING.md#what-is-recorded)).
 - `audit.tokens = true` if you must show every refresh and client credentials token issued (off by default: new
   grants, revocations and reuse are always recorded).
 
@@ -42,9 +46,12 @@ header, a console session without a second factor, an action the actor's role do
 
 ### Completeness
 
-Every event a node accepts is written to its spool on disk before the request goes on, and leaves the spool only once
-VictoriaLogs has taken it ([Spool](RUNNING.md#spool)). An event VictoriaLogs will never receive (a spool full after a
-long outage, a disk that fails) is written in full to the structured log as `audit.undelivered`.
+Every event a node accepts is written to its spool on disk before the request goes on (or, while the spool's disk
+does not answer within 2 seconds, written in full to the structured log and spooled once the disk answers, while the
+spool's queue has room: an event that finds it full is in the structured log only), and leaves
+the spool only once VictoriaLogs has taken it ([Spool](RUNNING.md#spool)). An event VictoriaLogs will never receive (a spool full after a
+long outage, a disk that fails, a full queue) is written in full to the structured log as `audit.undelivered`; so is
+one logged because the disk did not answer in time, which VictoriaLogs receives as well once it does.
 
 Every event carries `node`, `boot` (random, new at each start of the process) and `seq` (1, 2, 3… within that boot,
 in the order the node accepted the events). Delivery is at least once (a batch can arrive twice), so an event's `seq`
@@ -76,7 +83,10 @@ When VictoriaLogs refuses events, the spool decides by the answer:
 
 - **For what the events are** (400, 413, 422: it will never take them): they are written in full to the structured
   log as `audit.undelivered`, with VictoriaLogs' reason, and leave the spool, so they do not hold back the events
-  after them.
+  after them. A refused batch is split until the refused events are found, so the other events sent with them, of
+  every organization, still reach VictoriaLogs. The splitting is bounded (up to 33 refused events scattered through a
+  full batch are found; past that, or in a batch refused wholesale, events that share a part with a refused one are
+  logged as `audit.undelivered` with it: [Spool](RUNNING.md#spool)).
 - **For who is asking** (401, 403: wrong credentials, or vmauth misconfigured): nothing is dropped. Every event waits
   in the spool until the credentials are fixed, and the log says which. Alert on `quisora_audit_spool_bytes` growing:
   past `audit.victorialogs_spool_max_mb` the oldest events leave the spool as `audit.undelivered`.

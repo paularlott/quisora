@@ -204,6 +204,27 @@ func TestSCIMKeepsPendingAddressUnverified(t *testing.T) {
 	}
 }
 
+// A directory that corrects how a linked address is written (full-width to ASCII, which claim the same key) has the
+// correction stored: it is the same address, but its form is a change, and the mail goes to the form stored.
+func TestSCIMCorrectsTheFormOfALinkedAddress(t *testing.T) {
+	e := newEnv(t)
+	r := e.createUser("acme", e.admA, map[string]any{"userName": "wide", "name": map[string]any{"givenName": "Wide"},
+		"emails": []any{map[string]any{"value": "wide@acme.test", "primary": true}, map[string]any{"value": "ａｌｔ@acme.test"}}})
+	if r.Status != 201 {
+		t.Fatalf("create: %d %s", r.Status, r.Raw)
+	}
+	id := r.str("id")
+	put := e.do("PUT", "/scim/v2/acme/Users/"+id, e.admA, map[string]any{"userName": "wide", "name": map[string]any{"givenName": "Wide"},
+		"emails": []any{map[string]any{"value": "wide@acme.test", "primary": true}, map[string]any{"value": "alt@acme.test"}}})
+	if put.Status != 200 {
+		t.Fatalf("put: %d %s", put.Status, put.Raw)
+	}
+	u, _ := e.Svc.Users.Get(e.ctx, id)
+	if len(u.LinkedEmails) != 1 || u.LinkedEmails[0].Address != "alt@acme.test" || !u.LinkedEmails[0].Verified {
+		t.Fatalf("stored %+v", u.LinkedEmails)
+	}
+}
+
 // A PUT that leaves out the Quisora extension (a client that does not know it) keeps the end date; naming it with
 // null clears it, and a PATCH that removes it clears it.
 func TestSCIMPutKeepsValidUntil(t *testing.T) {

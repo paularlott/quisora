@@ -451,18 +451,22 @@ func (u *User) FullName() string {
 }
 
 // HasVerifiedEmail reports whether addr is a verified address of u: its primary address, verified, or a verified linked
-// one.
+// one. It is how a provider that vouches for addr links a sign-in to the account (package upstream), so the address
+// must be the one verified as it is written (SameAddress: in any ASCII case), not merely another form that claims the
+// same key (SameKey): a provider vouching for a full-width ｖictim@corp.com has vouched for nothing the account
+// verified, which may be another mailbox.
 func (u *User) HasVerifiedEmail(addr string) bool {
-	if strings.EqualFold(u.Email, addr) && u.EmailVerified {
+	if SameAddress(u.Email, addr) && u.EmailVerified {
 		return true
 	}
 	l, found := u.LinkedEmail(addr)
-	return found && l.Verified
+	return found && l.Verified && SameAddress(l.Address, addr)
 }
 
+// LinkedEmail returns u's linked address addr (matched as SameKey), as it is stored.
 func (u *User) LinkedEmail(addr string) (LinkedEmail, bool) {
 	for _, l := range u.LinkedEmails {
-		if strings.EqualFold(l.Address, addr) {
+		if SameKey(l.Address, addr) {
 			return l, true
 		}
 	}

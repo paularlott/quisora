@@ -295,3 +295,189 @@ func TestRevokeSessionsEndsSessionsAndGrants(t *testing.T) {
 		t.Error("revocation not audited")
 	}
 }
+
+// A user holds at most limits.sessions_per_user live sessions: past it the least recently used end (their applications
+// told first, their grants without offline_access with them, those with it kept), never the session just made even when
+// it is the least recently used, and never a dead session in place of a live one; nothing is refused, and another user's
+// sessions are not touched.
+func TestCapSessionsEndsLeastRecentlyUsed(t *testing.T) {
+	e := newEnv(t)
+	l := e.svc.Cfg.LiveLimits()
+	l.SessionsPerUser = 3
+	e.svc.Cfg.SetLiveLimits(l)
+	org := e.org("acme")
+	u, other := e.user(org.ID, "ann", model.RoleUser), e.user(org.ID, "bob", model.RoleUser)
+	now := time.Now()
+	used := func(s *model.Session, ago time.Duration) *model.Session {
+		t.Helper()
+		s.LastSeen, s.AuthTime = now.Add(-ago), now.Add(-ago-time.Hour)
+		if err := e.svc.Sessions.Update(e.ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	keep := e.session(u) // the sign-in's own: least recently used of all, still kept
+	keep.LastSeen, keep.AuthTime = now.Add(-5*time.Hour), now
+	if err := e.svc.Sessions.Update(e.ctx, keep); err != nil {
+		t.Fatal(err)
+	}
+	oldest, older := used(e.session(u), 4*time.Hour), used(e.session(u), 3*time.Hour)
+	recent, newest := used(e.session(u), time.Hour), used(e.session(u), 0)
+	idle := e.session(u) // dead: idle too long (counts for nothing, ended by nobody)
+	idle.IdleTTL = 60
+	used(idle, 6*time.Hour)
+	theirs := []*model.Session{e.session(other), e.session(other), e.session(other), e.session(other)}
+	offline := e.grant(u, oldest.ID)
+	offline.Scopes = []string{"openid", "offline_access"}
+	if err := e.svc.Grants.Update(e.ctx, offline); err != nil {
+		t.Fatal(err)
+	}
+	online := e.grant(u, older.ID)
+	var told []string
+	e.svc.OnSessionsEnding = func(_ context.Context, _ string, ids []string) { told = append(told, ids...) }
+
+	n, err := e.svc.CapSessions(e.ctx, u, keep)
+	if err != nil || n != 2 {
+		t.Fatalf("ended %d: %v", n, err)
+	}
+	gone := func(s *model.Session) bool {
+		_, err := e.svc.Sessions.Get(e.ctx, s.ID)
+		return errors.Is(err, store.ErrNotFound)
+	}
+	for _, s := range []*model.Session{oldest, older} {
+		if !gone(s) {
+			t.Errorf("session last used %v ago is still there", now.Sub(s.LastSeen).Round(time.Hour))
+		}
+	}
+	for _, s := range []*model.Session{keep, recent, newest, idle} {
+		if gone(s) {
+			t.Errorf("session last used %v ago was ended", now.Sub(s.LastSeen).Round(time.Hour))
+		}
+	}
+	if len(told) != 2 {
+		t.Errorf("applications told of %v", told)
+	}
+	if _, err := e.svc.Grants.Get(e.ctx, online.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the grant without offline_access outlived its session: %v", err)
+	}
+	if _, err := e.svc.Grants.Get(e.ctx, offline.ID); err != nil {
+		t.Errorf("the grant with offline_access ended with its session: %v", err)
+	}
+	for _, s := range theirs {
+		if gone(s) {
+			t.Error("another user's session was ended")
+		}
+	}
+	if got := e.audits("login.session.evict"); len(got) != 2 || got[0].Detail["cap"] != "3" {
+		t.Errorf("audited %d", len(got))
+	}
+	// at the cap: nothing more ends
+	if n, err := e.svc.CapSessions(e.ctx, u, newest); err != nil || n != 0 {
+		t.Errorf("at the cap, ended %d: %v", n, err)
+	}
+}
+
+// signedIn makes a live session of u signed in, and last used, at at.
+func signedIn(e *env, u *model.User, at time.Time) *model.Session {
+	e.t.Helper()
+	s := e.session(u)
+	s.AuthTime, s.LastSeen = at, at
+	if err := e.svc.Sessions.Update(e.ctx, s); err != nil {
+		e.t.Fatal(err)
+	}
+	return s
+}
+
+// Sign-ins at once, more of them than limits.sessions_per_user, do not end each other's sessions: a cap run never ends
+// a session signed in at or after its own (another sign-in's, which that sign-in's run caps). Here the earlier
+// sign-in's run reads both sessions, and the later sign-in's run reads them too while the first is telling the
+// applications: the later session is kept, not both ended.
+func TestCapSessionsConcurrentSignInsKeepTheLatest(t *testing.T) {
+	e := newEnv(t)
+	l := e.svc.Cfg.LiveLimits()
+	l.SessionsPerUser = 1
+	e.svc.Cfg.SetLiveLimits(l)
+	u := e.user(e.org("acme").ID, "ann", model.RoleUser)
+	now := time.Now()
+	first, second := signedIn(e, u, now.Add(-time.Second)), signedIn(e, u, now)
+	first.LastSeen = now // used as recently as the later one
+	if err := e.svc.Sessions.Update(e.ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	ranSecond := false
+	runSecond := func() {
+		if !ranSecond {
+			ranSecond = true
+			if _, err := e.svc.CapSessions(e.ctx, u, second); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	e.svc.OnSessionsEnding = func(context.Context, string, []string) { runSecond() }
+	if _, err := e.svc.CapSessions(e.ctx, u, first); err != nil {
+		t.Fatal(err)
+	}
+	runSecond()
+	if _, err := e.svc.Sessions.Get(e.ctx, second.ID); err != nil {
+		t.Fatalf("the latest sign-in's session was ended: %v", err)
+	}
+	if _, err := e.svc.Sessions.Get(e.ctx, first.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the earlier session outlived the cap: %v", err)
+	}
+}
+
+// A run ends at most 100 sessions (a cap lowered far below what a user holds is reached over the next sign-ins), one
+// at a time: an application is told of a session only as it is about to end, and once the run stops (its time is up)
+// none is told of a session left; only the sessions ended are audited.
+func TestCapSessionsBoundedAndInOrder(t *testing.T) {
+	e := newEnv(t)
+	l := e.svc.Cfg.LiveLimits()
+	l.SessionsPerUser = 1
+	e.svc.Cfg.SetLiveLimits(l)
+	u := e.user(e.org("acme").ID, "ann", model.RoleUser)
+	now := time.Now()
+	for i := range 150 {
+		signedIn(e, u, now.Add(-time.Hour+time.Duration(i)*time.Second))
+	}
+	keep := signedIn(e, u, now)
+	exists := func(id string) bool {
+		_, err := e.svc.Sessions.Get(e.ctx, id)
+		return err == nil
+	}
+	var told []string
+	e.svc.OnSessionsEnding = func(_ context.Context, _ string, ids []string) {
+		for _, id := range told {
+			if exists(id) {
+				t.Fatalf("session %s was told of and not ended before the next was told of", id)
+			}
+		}
+		told = append(told, ids...)
+	}
+	n, err := e.svc.CapSessions(e.ctx, u, keep)
+	if err != nil || n != 100 || len(told) != 100 {
+		t.Fatalf("one run ended %d (told %d): %v", n, len(told), err)
+	}
+	if got := len(e.audits("login.session.evict")); got != 100 {
+		t.Errorf("audited %d", got)
+	}
+	// A run whose time runs out stops: the sessions it did not reach are neither told of nor audited.
+	ctx, cancel := context.WithCancel(e.ctx)
+	defer cancel()
+	told = nil
+	e.svc.OnSessionsEnding = func(_ context.Context, _ string, ids []string) {
+		told = append(told, ids...)
+		if len(told) == 3 {
+			cancel()
+		}
+	}
+	n, err = e.svc.CapSessions(ctx, u, keep)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("a stopped run: %v", err)
+	}
+	if n > 3 || len(told) != 3 {
+		t.Fatalf("a stopped run ended %d, told of %d", n, len(told))
+	}
+	if got := len(e.audits("login.session.evict")); got != 100+n {
+		t.Errorf("audited %d after ending %d more", got, n)
+	}
+}

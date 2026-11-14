@@ -137,15 +137,22 @@ var (
 	HTTPRequests = Default.NewCounter("quisora_http_requests_total", "HTTP requests answered, by status class.", "code")
 	HTTPDuration = Default.NewHistogram("quisora_http_request_duration_seconds", "Time to answer an HTTP request.",
 		0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
-	HTTPShed   = Default.NewCounter("quisora_http_shed_total", "Requests refused with 503 because too many were in progress.")
+	HTTPShed = Default.NewCounter("quisora_http_shed_total", "Requests refused with 503 because too many were in progress.")
+	// HTTPShedAddress counts the requests refused because their client address had its share in progress.
+	HTTPShedAddress = Default.NewCounter("quisora_http_shed_address_total",
+		"Requests refused with 429 because their client address (an IPv6 /64) had limits.max_in_flight_per_ip in progress, or its IPv6 /48 four times that.")
 	HTTPDenied = Default.NewCounter("quisora_http_denied_total",
 		"Requests refused with 403 because the client's address is in server.deny_networks (not in quisora_http_requests_total).")
 	AuditEvents = Default.NewCounter("quisora_audit_events_total",
 		"Audit events recorded, by action and outcome: login.failure, login.lockout, login.limited, "+
-			"oauth.refresh.reuse, oauth.code.replay, oauth.client_auth.limited and the others (docs/RUNNING.md).",
+			"oauth.refresh.reuse, oauth.code.replay, oauth.client_auth.limited and the others (docs/RUNNING.md). "+
+			"login.failure counts every wrong password or code, those held back from the audit log too.",
 		"action", "outcome")
 	AuditUndelivered = Default.NewCounter("quisora_audit_undelivered_total",
-		"Audit events VictoriaLogs will never receive (logged in full as audit.undelivered).")
+		"Audit events logged in full as audit.undelivered instead of being known to be on their way to VictoriaLogs: "+
+			"the ones it will never receive (refused, or a spool that is full or cannot be written), and the ones "+
+			"logged because the spool's disk did not answer in time, which are spooled and delivered as well once it "+
+			"does.")
 	AuthorizeRefused = Default.NewCounter("quisora_authorize_refused_total",
 		"Authorization requests from a known application sent back with an error before anyone signed in, by error "+
 			"(invalid_scope, unauthorized_client, invalid_request and the others): mostly an application asking for "+
@@ -159,14 +166,23 @@ var (
 			"queue's discard horizon, or unreadable) and expired (the code or link in it had expired while it was queued).",
 		"reason")
 	AuditRefusalsDropped = Default.NewCounter("quisora_audit_refusals_dropped_total",
-		"Refusal audit events (apitoken.refused, api.request.refused, SSH refusals, sign-in lockout refusals) not recorded "+
-			"because the node already tracked 10,000 refusing keys at once, by limiter: refusals, login (sign-in keys "+
-			"that name no account, addresses) and login_accounts (existing accounts').",
+		"Refusal audit events (apitoken.refused, api.request.refused, SSH refusals, sign-in lockout refusals and "+
+			"wrong credentials) not recorded because the node already tracked 10,000 keys (or, for the sign-in events, "+
+			"10,000 client addresses) at once in their limiter, or one organization 2,500 of them, or (sign-in events) "+
+			"because the organization already had 200 events naming addresses recorded in the minute, by "+
+			"limiter: refusals, login (lockout refusals of sign-in keys that name no account, and of addresses), "+
+			"login_accounts (existing accounts' lockout refusals), login_failures (wrong passwords for logins that name "+
+			"no account), login_account_failures (existing accounts' wrong passwords and codes) and device_starts (the "+
+			"device sign-ins public clients started, oauth.device.start).",
 		"limiter")
 	EphemeralRefused = Default.NewCounter("quisora_ephemeral_refused_total",
 		"Requests refused for short-lived state, by reason: full (this node's short-lived state at limits.ephemeral_mb: "+
-			"503), counters (a new rate-limit counter past the counters' share of limits.ephemeral_mb: the limit refuses) "+
-			"and flows_per_ip (a client address holding limits.flows_per_ip sign-in flows: 429).",
+			"503), counters (a new rate-limit counter past the counters' share of limits.ephemeral_mb: the limit refuses), "+
+			"flows_per_ip (a client address holding limits.flows_per_ip sign-in flows: 429), held_bytes (a client address "+
+			"or signed-in user holding limits.held_kb of short-lived state: 429), guard (a record of a used code or a "+
+			"device poll past those records' cap: the code is not redeemed, the poll is told to slow down) and cache (an "+
+			"entry of a short-lived cache, such as client metadata documents just read, not kept past the caches' cap: "+
+			"nothing refused).",
 		"reason")
 )
 

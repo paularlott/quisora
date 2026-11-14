@@ -74,12 +74,14 @@ type Mailer struct {
 // store, so this only stops a flood of messages SMTP cannot take from filling it.
 const QueueSize = 10000
 
-// The queue is shared fairly between organizations. Each holds at most queueOrgMax messages of it, a quarter, so one
-// organization's burst (invitations to thousands of users, or someone asking for password resets of address after
-// address) fills its own share, refused past it, and four at once are needed to refuse everyone's mail; at the rate
-// the senders keep up (below) a full share is sent within minutes. Messages go out by sendWorkers at once, of which
-// one organization has at most sendPerOrg, so the others' resets and sign-in codes go out beside its backlog rather
-// than behind it. All organizations share one SMTP server, though: when it is slow or down, every organization's mail
+// The queue is shared fairly between organizations. Each holds at most queueOrgMax messages of it, a quarter, and no
+// more than the room the queue has left for the others (queue.Options.MaxPerKey), so one organization's burst
+// (invitations to thousands of users, or someone asking for password resets of address after address) fills its own
+// share, refused past it, and the organizations that are busy at once leave each new one at least half of the room
+// they left: refusing everyone's mail takes many at once, not four; at the rate the senders keep up (below) a full
+// share is sent within minutes. Messages go out by sendWorkers at once, of which one organization has at most
+// sendPerOrg, and a free sender goes to an organization with none of its mail being sent first, so the others' resets
+// and sign-in codes go out beside the busy ones' backlogs rather than behind them. All organizations share one SMTP server, though: when it is slow or down, every organization's mail
 // waits alike, and the fairness only keeps a burst of one from holding back the others.
 const (
 	queueOrgMax = QueueSize / 4

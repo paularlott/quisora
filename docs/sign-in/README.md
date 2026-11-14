@@ -109,9 +109,18 @@ second factor, session lifetimes) cover the super admins, so only super admins c
 Users see their sessions of the organization on their account page and can end any of them; administrators can end a user's sessions
 from the user's page. Changing a password signs the user out of every other browser and device.
 
+A user holds at most `limits.sessions_per_user` sessions at once (100 by default; sessions expired or idle too long do
+not count). A sign-in is never refused for it: past it, the sessions least recently used end, as a sign-out ends them
+(the first column below), and each one ended is recorded as `login.session.evict` in the audit log. The session the
+sign-in just made is always kept, and so is any session signed in at the same moment or since (another sign-in's), so
+nobody is locked out by sessions they forgot, and sign-ins at once never end each other's sessions. One sign-in ends at
+most 100: a cap lowered far below what users hold is reached over their next few sign-ins. Sign-ins at once, and on a
+cluster sign-ins on several nodes at once (each node counts as it reads), can leave a user a few past the cap until
+their next sign-in.
+
 **Signing out and ending a session are not the same.** What goes with the session depends on how it ends:
 
-| | Signing out (the sign-out page, an application's logout, another user signing in in the same browser) | Ending it from another session or by an administrator, signing out everywhere, a lock-out |
+| | Signing out (the sign-out page, an application's logout, another user signing in in the same browser, a session ended past `limits.sessions_per_user`) | Ending it from another session or by an administrator, signing out everywhere, a lock-out |
 | --- | --- | --- |
 | The browser session | ends | ends |
 | Applications' sign-ins without `offline_access` | end | end |

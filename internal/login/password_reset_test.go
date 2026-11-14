@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
@@ -110,6 +111,42 @@ func TestResetClearsLockout(t *testing.T) {
 	wantStatus(t, res, out, 200)
 }
 
+// Addresses that spend an account's hourly reset mails between them do not stop its owner's own request from another
+// address: a few more an hour are kept for addresses that have not asked yet, one each, so the inbox still gets a
+// bounded number.
+func TestForgotReserveForNewAddresses(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 }, trustLoopbackProxy)
+	org := e.org(t, "acme", nil)
+	e.user(t, org, "pat", model.RoleUser)
+	forgot := func(ip string, times int) int {
+		t.Helper()
+		b := e.browserAt(t, org)
+		b.fromAddress(ip)
+		for range times {
+			res, out := b.post("/o/acme/api-internal/password/forgot", map[string]any{"email": "pat@example.com"})
+			wantStatus(t, res, out, 200)
+		}
+		for n := 0; ; n++ { // the mails sent (none, at times)
+			select {
+			case <-e.mailCh:
+			case <-time.After(mailSettle):
+				return n
+			}
+		}
+	}
+	for i := range 4 {
+		if n := forgot("203.0.113."+strconv.Itoa(i+1), 5); n != 5 {
+			t.Fatalf("address %d: %d reset mails", i, n)
+		}
+	}
+	if n := forgot("198.51.100.1", 2); n != 1 {
+		t.Fatalf("the owner's request past the account's allowance: %d reset mails, want 1", n)
+	}
+	if n := forgot("198.51.100.2", 1) + forgot("198.51.100.3", 1) + forgot("198.51.100.4", 1); n != 2 {
+		t.Fatalf("the reserve gave %d more, want 2", n)
+	}
+}
+
 func TestForgotThrottleAndDisabledPassword(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.Limits.LoginPerIPMin = 0 })
 	org := e.org(t, "acme", nil)
@@ -196,7 +233,7 @@ func TestResetFormIsRateLimited(t *testing.T) {
 
 // Anyone who knows an address may ask for its account's reset mails, so the hourly allowance is the requesting
 // address's: five requests from one address do not use up the owner's own from another. All addresses together still
-// get at most twenty an hour, so the form cannot flood the inbox.
+// get at most twenty an hour and three more (TestForgotReserveForNewAddresses), so the form cannot flood the inbox.
 func TestForgotAllowanceIsPerAddress(t *testing.T) {
 	e := newEnv(t, noIPLimit, trustLoopbackProxy)
 	org := e.org(t, "acme", nil)
@@ -218,10 +255,12 @@ func TestForgotAllowanceIsPerAddress(t *testing.T) {
 	if n := e.drainMails(t); n != 1 {
 		t.Fatalf("the owner's own request was sent %d mails after another address used its allowance", n)
 	}
-	for i := range 6 { // 30 requests from other addresses: the account's 20 an hour, 6 of which are sent
+	// 30 requests from other addresses: the account's 20 an hour, 6 of which are sent, then the 3 kept for addresses
+	// that had not asked yet (each address's first request past the 20)
+	for i := range 6 {
 		forgot("192.0.2."+strconv.Itoa(i+1), 5)
 	}
-	if n := e.drainMails(t); n != 14 {
-		t.Fatalf("every address together was sent %d more, want 14 (20 an hour)", n)
+	if n := e.drainMails(t); n != 17 {
+		t.Fatalf("every address together was sent %d more, want 17 (20 an hour and 3 more)", n)
 	}
 }

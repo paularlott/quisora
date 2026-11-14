@@ -145,7 +145,7 @@ func (m *Module) password(w http.ResponseWriter, r *http.Request) {
 		}
 		wrong = true
 		m.sprayFailed(r, org)
-		m.failed(w, r, n, org, u, login, reason)
+		m.failed(w, r, n, org, u, login, reason, key)
 		return
 	}
 
@@ -199,7 +199,11 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 	default:
 		return stepResp{}, nil
 	}
-	id, err := m.putTicket(ctx, &t, ttl)
+	extra := 0
+	if t.Step == "email_code" { // the code sent for the ticket is kept beside it (sendEmailCode)
+		extra = 256
+	}
+	id, err := m.putTicket(r, &t, ttl, extra)
 	if err != nil {
 		return stepResp{}, err
 	}
@@ -232,7 +236,7 @@ func (m *Module) secondFactor(r *http.Request, u *model.User, eff *service.SignI
 func (m *Module) afterPassword(w http.ResponseWriter, r *http.Request, u *model.User, org *model.Org, eff *service.SignInMethods, tenant, next string) {
 	step, err := m.secondFactor(r, u, eff, ticket{Next: next, AMR: []string{"pwd"}, Tenant: tenant})
 	if errors.Is(err, errFactorLost) {
-		m.audit(r, "login.failure", org, u, "", map[string]string{"reason": "second factor unusable"})
+		m.auditFailure(r, "factor_lost", org, u, "", "", map[string]string{"reason": "second factor unusable"})
 		writeErr(w, http.StatusForbidden, msgFactorLost, "")
 		return
 	}
@@ -252,9 +256,10 @@ func (m *Module) afterPassword(w http.ResponseWriter, r *http.Request, u *model.
 	web.WriteJSON(w, http.StatusOK, stepResp{Next: dest})
 }
 
-// failed records the n-th failed attempt (charge: audit, lockout event) and answers with the generic message.
-func (m *Module) failed(w http.ResponseWriter, r *http.Request, n int64, org *model.Org, u *model.User, login, reason string) {
-	m.audit(r, "login.failure", org, u, login, map[string]string{"reason": reason})
+// failed records the n-th failed attempt (charge) at the lockout key key (lockKeyFor), the failure through
+// auditFailure, the lockout event, when this failure trips it, always, and answers with the generic message.
+func (m *Module) failed(w http.ResponseWriter, r *http.Request, n int64, org *model.Org, u *model.User, login, reason, key string) {
+	m.auditFailure(r, failureStep(reason), org, u, login, key, map[string]string{"reason": reason})
 	if m.tripped(org, n) && u != nil {
 		m.audit(r, "login.lockout", org, u, login, map[string]string{"minutes": strconv.Itoa(int(m.lockWindow(org).Minutes()))})
 	}
@@ -328,7 +333,7 @@ func (m *Module) totp(w http.ResponseWriter, r *http.Request) {
 	}
 	if !good {
 		wrong = true
-		m.failed(w, r, n, org, u, u.Username, "totp")
+		m.failed(w, r, n, org, u, u.Username, "totp", key)
 		return
 	}
 	if err := m.useTicket(ctx, in.Ticket); err != nil {
@@ -395,7 +400,7 @@ func (m *Module) recovery(w http.ResponseWriter, r *http.Request) {
 	}
 	if !used {
 		wrong = true
-		m.failed(w, r, n, org, u, u.Username, "recovery_code")
+		m.failed(w, r, n, org, u, u.Username, "recovery_code", key)
 		return
 	}
 	if err := m.useTicket(ctx, in.Ticket); err != nil {
@@ -474,23 +479,40 @@ func (m *Module) forgot(w http.ResponseWriter, r *http.Request) {
 }
 
 // Reset mails an account is sent an hour: forgotPerAddress for the requests of one address, forgotPerAccount for all
-// of them together.
+// of them together, and past that forgotReserve more for addresses that have not asked for the account's resets in
+// the hour. Anyone who knows the address can ask for resets: four addresses at their own allowance spend the account's,
+// and its owner's own request would then be dropped (silently: the form says the same thing whatever happens) until
+// the hour is over. The reserve is for an address new to the account, so the owner asking from where they are is
+// still served while a few others are at it; one that has asked already spends nothing of it. The inbox gets at most
+// forgotPerAccount + forgotReserve an hour whatever happens; keeping the reserve spent too takes forgotReserve new
+// addresses an hour, each of which can then use only that one request.
 const (
 	forgotPerAddress = 5
 	forgotPerAccount = 20
+	forgotReserve    = 3
 )
 
 // forgotAllowed spends a reset mail of account userID's hourly allowance for the request's address, then of the
-// account's: anyone who knows the address can ask for resets, and must not use up the owner's own requests from
-// another address, while the form still cannot flood the inbox. A request past its address's allowance does not
-// spend the account's.
+// account's, or past it, of its reserve for an address that had not asked yet (forgotReserve): anyone who knows the
+// address can ask for resets, and must not use up the owner's own requests from another address, while the form
+// still cannot flood the inbox. A request past its address's allowance does not spend the account's.
 func (m *Module) forgotAllowed(ctx context.Context, r *http.Request, userID string) bool {
-	n, err := m.s.Eph.Incr(ctx, nsForgot, userID+"|"+web.RateKeyIP(r), 1, time.Hour)
-	if err != nil || n > forgotPerAddress {
+	mine, err := m.s.Eph.Incr(ctx, nsForgot, userID+"|"+web.RateKeyIP(r), 1, time.Hour)
+	if err != nil || mine > forgotPerAddress {
 		return false
 	}
-	n, err = m.s.Eph.Incr(ctx, nsForgot, userID, 1, time.Hour)
-	return err == nil && n <= forgotPerAccount
+	n, err := m.s.Eph.Incr(ctx, nsForgot, userID, 1, time.Hour)
+	if err != nil {
+		return false
+	}
+	if n <= forgotPerAccount {
+		return true
+	}
+	if mine != 1 { // this address has asked in the hour already: the reserve is for one that has not
+		return false
+	}
+	n, err = m.s.Eph.Incr(ctx, nsForgot, userID+"|new", 1, time.Hour)
+	return err == nil && n <= forgotReserve
 }
 
 type resetReq struct {

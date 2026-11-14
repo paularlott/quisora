@@ -82,7 +82,7 @@ func TestShedLimitReloads(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.MaxInFlight = 2
 	release, busy := make(chan struct{}), make(chan struct{})
-	h := shed(func() int { return cfg.LiveLimits().MaxInFlight }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := shed(func() (int, int) { return cfg.LiveLimits().MaxInFlight, 1 << 20 }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/slow" {
 			close(busy)
 			<-release

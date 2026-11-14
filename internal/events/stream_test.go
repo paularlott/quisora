@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -198,4 +199,96 @@ func TestStreamEndsAtTheNextChangeAfterRevocation(t *testing.T) {
 		}
 	}
 	t.Fatal("the stream outlived its session")
+}
+
+// A stream is judged against the viewer it was opened for: once the viewer's role changes (an administrator demoted to
+// manager, or a manager promoted to administrator), the stream ends at the next check, so the client reconnects and
+// is judged afresh. A demoted administrator is not sent the administrator-only kinds meanwhile.
+func TestStreamEndsWhenViewerRoleChanges(t *testing.T) {
+	oldEvery, oldEvent := recheckEvery, eventRecheck
+	recheckEvery, eventRecheck = 50*time.Millisecond, 0
+	t.Cleanup(func() { recheckEvery, eventRecheck = oldEvery, oldEvent })
+	for _, tc := range []struct {
+		name     string
+		from, to model.Role
+	}{
+		{"demoted", model.RoleAdmin, model.RoleManager},
+		{"promoted", model.RoleManager, model.RoleAdmin},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := NewHub()
+			env := webtest.New(t, webtest.Options{Modules: func(*web.Server) []web.Module { return []web.Module{&Module{Hub: hub}} }})
+			ctx := context.Background()
+			u, err := env.Svc.CreateUser(ctx, service.System, env.Primary.ID, service.UserInput{GivenName: ptr("A"),
+				Username: ptr("staff"), Email: ptr("staff@example.com"), Role: ptr(tc.from)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, _ := env.ConsoleSession(u)
+			resp, sc := openStream(t, c, env.URL+web.EventsPath+"?org=primary")
+			if resp.StatusCode != 200 || !waitEvent(sc, "ready") {
+				t.Fatalf("stream: %d", resp.StatusCode)
+			}
+			waitCount(t, hub, 1)
+			if _, err := env.Svc.UpdateUser(ctx, service.System, u.ID, service.UserInput{Role: ptr(tc.to)}); err != nil {
+				t.Fatal(err)
+			}
+			env.Server.Sessions.Evict("", u.ID) // what the node does on hearing the user record changed
+			hub.Publish(&store.Record{Kind: model.KindTenant, ID: "tenant-1", Scope: env.Primary.ID})
+			hub.Publish(&store.Record{Kind: model.KindAudit, ID: "audit-1", Scope: env.Primary.ID})
+			for sc.Scan() {
+				switch line := sc.Text(); {
+				case line == "event: ended":
+					for sc.Scan() { // and the server closes it
+					}
+					waitCount(t, hub, 0)
+					return
+				case strings.HasPrefix(line, "data: ") && tc.to == model.RoleManager &&
+					(strings.Contains(line, `"tenant"`) || strings.Contains(line, `"audit"`)):
+					t.Fatalf("a demoted administrator was sent %s", line)
+				}
+			}
+			t.Fatal("the stream outlived the change of its viewer's role")
+		})
+	}
+}
+
+// sameView tells actors apart by everything sees judges them by, and by nothing else.
+func TestSameView(t *testing.T) {
+	base := service.Actor{UserID: "u", OrgID: "o", Role: model.RoleAdmin, Name: "n", IP: "1.2.3.4", TokenID: "t",
+		Scopes: []string{service.ScopeAdmin, service.ScopeSSH}}
+	same := []func(*service.Actor){
+		func(a *service.Actor) { a.Name, a.IP, a.TokenID, a.App = "other", "5.6.7.8", "t2", "app" },
+		func(a *service.Actor) { a.Scopes = []string{service.ScopeSSH, service.ScopeAdmin} },
+	}
+	differ := []func(*service.Actor){
+		func(a *service.Actor) { a.Role = model.RoleManager },
+		func(a *service.Actor) { a.OrgID = "o2" },
+		func(a *service.Actor) { a.UserID = "u2" },
+		func(a *service.Actor) { a.ClientID = "c" },
+		func(a *service.Actor) { a.Unscoped = true },
+		func(a *service.Actor) { a.Scopes = []string{service.ScopeAdmin} }, // lost the ssh scope
+		func(a *service.Actor) { a.Scopes = append(a.Scopes, service.ScopeManageAdmins) },
+	}
+	for i, f := range same {
+		b := base
+		b.Scopes = slices.Clone(base.Scopes)
+		f(&b)
+		if !sameView(&base, &b) {
+			t.Errorf("same %d: told apart", i)
+		}
+	}
+	for i, f := range differ {
+		b := base
+		b.Scopes = slices.Clone(base.Scopes)
+		f(&b)
+		if sameView(&base, &b) {
+			t.Errorf("differ %d: not told apart", i)
+		}
+	}
+	u1 := service.Actor{Unscoped: true, Role: model.RoleAdmin, Scopes: []string{"x"}}
+	u2 := service.Actor{Unscoped: true, Role: model.RoleAdmin}
+	if !sameView(&u1, &u2) {
+		t.Error("an unscoped actor's ignored scopes told it apart")
+	}
 }

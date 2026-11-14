@@ -53,10 +53,29 @@ type flow struct {
 	// Device is the device_code of the device sign-in (device.go) the flow approves: it ends in the browser, with
 	// the device told, instead of at a redirect URI.
 	Device string `json:"dv,omitempty"`
-	// Holder is the client address (web.RateKeyIP) the flow is counted against (startFlow); dropFlow gives its slot
-	// back. Empty when limits.flows_per_ip was off as the flow started.
-	Holder string `json:"ip,omitempty"`
+	// Slot is the flow's place among those its client address may hold (limits.flows_per_ip), as it was counted
+	// (startFlow): dropFlow gives it back, into the window it was counted in. Nil when the limit was off as the flow
+	// started.
+	Slot *ephemeral.Held `json:"sl,omitempty"`
+	// Held is the charge for the flow's bytes against what its client address may hold (limits.held_kb), given back
+	// the same way. Nil when that budget was off.
+	Held *ephemeral.Held `json:"h,omitempty"`
+	// Doc is what the Client ID Metadata Document of an application not stored yet (ClientID is its URL) said, as read
+	// when the flow started: not the document, which is whatever its author made it, but the few fields the
+	// application is made from, encoded again (service.MetadataSummary). The flow's later steps use it instead of
+	// reading the URL again, and it costs this flow's room (its address's limits.held_kb and limits.flows_per_ip),
+	// going when the flow ends, never the memory every sign-in shares (selfreg.go).
+	Doc json.RawMessage `json:"md,omitempty"`
 }
+
+// encode is the flow as it is stored: JSON without the HTML escaping (ephemeral.JSON), which would keep each <, >
+// and & of the request's own state and nonce, and of the document summary, as six bytes.
+func (f *flow) encode() []byte { return ephemeral.JSON(f) }
+
+// storedLen is how many bytes s takes in a stored flow (or any other state encoded with ephemeral.JSON): its length,
+// but six for each control character and each byte that is not UTF-8. The caps on what a request may have kept
+// (state, nonce, login_hint, a path to return to) are on this, so that no choice of bytes holds more than the cap.
+func storedLen(s string) int { return len(ephemeral.JSON(s)) - 2 }
 
 // consent is what the request asks the user to allow (consentScopes).
 func (f *flow) consent() []string { return consentScopes(f.Scopes, f.ClaimsUI, f.ClaimsID) }
@@ -126,55 +145,102 @@ func (p *Provider) codeTTL(c *model.Client) time.Duration {
 
 func (f *flow) has(prompt string) bool { return slices.Contains(f.Prompt, prompt) }
 
-func (p *Provider) saveFlow(ctx context.Context, id string, f *flow) {
-	b, _ := json.Marshal(f)
-	_ = p.s.Eph.Set(ctx, nsFlow, id, b, flowTTL)
+// saveFlow stores flow id again as a later step left it (a sign-in begun, a decision made), if it is still there
+// (ephemeral.Store.Replace). It lasts until the moment it was to end at when it started, not flowTTL from now: its
+// slot and its bytes were charged to its address for that long and no longer (startFlow), so a flow that every visit
+// kept alive for another twenty minutes would be held long after its address had been given the room back.
+//
+// A flow that another request ended since this one read it (cancelled, finished, expired) is ephemeral.ErrNotFound,
+// and is not made again: written back, it would carry the stamps of a slot and a charge already given back
+// (dropFlow), and ending it again would give them back a second time, off the count of another flow that is still
+// there; an address could then hold flows without a bound, and a cancelled sign-in would go on. The caller ends its
+// request (flowUnsaved).
+func (p *Provider) saveFlow(ctx context.Context, id string, f *flow) error {
+	return p.s.Eph.Replace(ctx, nsFlow, id, f.encode())
+}
+
+// flowUnsaved answers a step whose flow could not be saved (saveFlow): gone meanwhile is the page for an expired
+// request, anything else (the store full, or the node that holds the flow not answering) asks to try again.
+func (p *Provider) flowUnsaved(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, ephemeral.ErrNotFound) {
+		p.expired(w, r)
+		return
+	}
+	p.tryAgain(w, r)
+}
+
+// tooManyHeld answers a request that would have this server keep more short-lived state for its requester than the
+// requester may hold (limits.flows_per_ip, limits.held_kb): 429, as a page. Counted by whoever refused; never audited
+// or logged per request.
+func (p *Provider) tooManyHeld(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "60")
+	p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-ins in progress",
+		"Too many sign-ins were started from your network and not finished. Finish one, or wait a few minutes, then try again.")
 }
 
 // startFlow stores a new flow f and returns its id. Each client address (web.RateKeyIP: an IPv6 /64 counts as one)
-// holds at most limits.flows_per_ip flows at once, so that a few addresses cannot fill this node's short-lived state
-// with flows they never finish; past it the request gets 429. A flow gives its slot back when it ends (dropFlow).
-// Like the other limits the count is approximate: it is a counter that starts again flowTTL after its first flow
-// (one that expires unfinished keeps its slot until then), so an address may hold up to about twice the limit across
-// the turn of its window. A store that cannot keep the flow (full: ephemeral.ErrFull) is 503, never a server error.
-// It reports false when it has answered.
+// holds at most limits.flows_per_ip flows at once, and at most limits.held_kb of short-lived state in all, the
+// flow's bytes among it (web.HolderIP: an IPv6 /48 sixteen times either, its /32 sixty-four times), so that a few
+// addresses cannot fill this node's short-lived state with flows they never finish, however large they make them;
+// past either the request gets 429. A flow gives both back when it ends (dropFlow). Both are counted as ephemeral.Hold counts: in windows of
+// flowTTL, each flow stamped with the window it was counted in and given back into that one only, so an address
+// holds at most twice the limit, across the turn of a window, and never buys room by ending old flows. A store that
+// cannot keep the flow (full: ephemeral.ErrFull) is 503, never a server error. It reports false when it has answered.
 func (p *Provider) startFlow(w http.ResponseWriter, r *http.Request, f *flow) (string, bool) {
 	ctx := r.Context()
 	if limit := p.cfg.LiveLimits().FlowsPerIP; limit > 0 {
-		key := web.RateKeyIP(r)
-		n, err := p.s.Eph.Incr(ctx, nsHeld, key, 1, flowTTL)
+		holder := web.HolderIP(r) // its wider keys; the address itself as rate limits name it
+		holder.Key = web.RateKeyIP(r)
+		slot, ok, err := ephemeral.HoldFor(ctx, p.s.Eph, nsHeld, holder, 1, int64(limit), flowTTL)
 		if err != nil {
 			p.tryAgain(w, r)
 			return "", false
 		}
-		if n > int64(limit) {
-			_, _ = p.s.Eph.Incr(ctx, nsHeld, key, -1, flowTTL)
+		if !ok {
 			metrics.EphemeralRefused.Inc("flows_per_ip")
-			w.Header().Set("Retry-After", "60")
-			p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-ins in progress",
-				"Too many sign-ins were started from your network and not finished. Finish one, or wait a few minutes, then try again.")
+			p.tooManyHeld(w, r)
 			return "", false
 		}
-		f.Holder = key
+		f.Slot = &slot
 	}
-	b, _ := json.Marshal(f)
-	id, err := p.s.Eph.New(ctx, nsFlow, b, flowTTL)
-	if err != nil { // a full store has counted and logged the refusal (ephemeral.ErrFull)
-		if f.Holder != "" {
-			_, _ = p.s.Eph.Incr(ctx, nsHeld, f.Holder, -1, flowTTL)
+	giveBack := func() {
+		if f.Slot != nil {
+			ephemeral.Release(ctx, p.s.Eph, nsHeld, *f.Slot)
 		}
+		f.Held.Refund(ctx, p.s.Eph)
+	}
+	held, err := p.s.Held.Charge(ctx, web.HolderIP(r), nsFlow, len(f.encode()), flowTTL)
+	if err != nil {
+		giveBack()
+		if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
+			p.tooManyHeld(w, r)
+		} else {
+			p.tryAgain(w, r)
+		}
+		return "", false
+	}
+	f.Held = held
+	id, err := p.s.Eph.New(ctx, nsFlow, f.encode(), flowTTL)
+	if err != nil { // a full store has counted and logged the refusal (ephemeral.ErrFull)
+		giveBack()
 		p.tryAgain(w, r)
 		return "", false
 	}
 	return id, true
 }
 
-// dropFlow ends flow id: it is deleted, and its slot given back to the address it was counted against (startFlow).
-// Of two requests ending the same flow only the one that takes it gives the slot back.
-func (p *Provider) dropFlow(ctx context.Context, id string, f *flow) {
-	if _, err := p.s.Eph.Take(ctx, nsFlow, id); err == nil && f.Holder != "" {
-		_, _ = p.s.Eph.Incr(ctx, nsHeld, f.Holder, -1, flowTTL)
+// dropFlow ends flow id: it is deleted, and its slot and its bytes given back to the address they were counted
+// against (startFlow). Of two requests ending the same flow only the one that takes it gives them back, and only
+// that one gets no error: ephemeral.ErrNotFound says another request ended the flow first (or it expired).
+func (p *Provider) dropFlow(ctx context.Context, id string, f *flow) error {
+	if _, err := p.s.Eph.Take(ctx, nsFlow, id); err != nil {
+		return err
 	}
+	if f.Slot != nil {
+		ephemeral.Release(ctx, p.s.Eph, nsHeld, *f.Slot)
+	}
+	f.Held.Refund(ctx, p.s.Eph)
+	return nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -345,8 +411,8 @@ func repeated(v url.Values) string {
 	return ""
 }
 
-// authorizePerIPMin bounds the authorization requests per IP address and minute (one that starts a sign-in flow holds
-// about 1-2 KB for up to flowTTL). Far above what people signing in behind one address make; behind a proxy, set
+// authorizePerIPMin bounds the authorization requests per IP address and minute. What the flows they start hold is
+// bounded apart from it, in number and in bytes (startFlow). Far above what people signing in behind one address make; behind a proxy, set
 // server.trust_proxy, or every user shares the proxy's address and its budget.
 const authorizePerIPMin = 300
 
@@ -416,7 +482,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ce, err := p.appClient(r.Context(), r, org.ID, q.Get("client_id"))
+	ce, doc, err := p.appClient(r.Context(), r, org.ID, q.Get("client_id"), nil)
 	if err != nil && !gone(err) { // the application or its organization cannot be read now: not an unknown one
 		p.tryAgain(w, r)
 		return
@@ -433,9 +499,9 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// From here on errors go back to the client.
-	f := &flow{Org: org.ID, ClientID: c.ClientID(), RedirectURI: redirectURI, MaxAge: -1, Mode: "query", Created: time.Now().UnixNano()}
+	f := &flow{Org: org.ID, ClientID: c.ClientID(), RedirectURI: redirectURI, MaxAge: -1, Mode: "query", Created: time.Now().UnixNano(), Doc: doc}
 	f.State = q.Get("state")
-	if len(f.State) > 2048 || dup == "state" {
+	if storedLen(f.State) > 2048 || dup == "state" {
 		f.State = ""
 		p.redirectError(w, r, f, "invalid_request", "state is too long or repeated")
 		return
@@ -515,7 +581,7 @@ func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client
 		return nil, oerr("invalid_scope", "the requested scope is not available to this client")
 	}
 	f.Nonce = q.Get("nonce")
-	if len(f.Nonce) > 1024 {
+	if storedLen(f.Nonce) > 1024 {
 		return nil, oerr("invalid_request", "nonce is too long")
 	}
 	f.Prompt = strings.Fields(q.Get("prompt"))
@@ -534,7 +600,7 @@ func (p *Provider) checkAuthz(ctx context.Context, q url.Values, c *model.Client
 		}
 		f.MaxAge = n
 	}
-	if f.LoginHint = q.Get("login_hint"); len(f.LoginHint) > 256 {
+	if f.LoginHint = q.Get("login_hint"); storedLen(f.LoginHint) > 256 {
 		f.LoginHint = ""
 	}
 	res, err := parseResources(q["resource"])
@@ -648,7 +714,10 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 			p.dropFlow(ctx, id, f)
 			return
 		}
-		p.saveFlow(ctx, id, f)
+		if err := p.saveFlow(ctx, id, f); err != nil { // ended meanwhile (cancelled in another tab, say): not begun again
+			p.flowUnsaved(w, r, err)
+			return
+		}
 		target := web.OrgPath(c.OrgID, "/login") + "?tenant=" + url.QueryEscape(tenant.Name) +
 			"&next=" + url.QueryEscape(resumePath(c.OrgID, id))
 		if reauth {
@@ -752,7 +821,10 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 				p.redirectError(w, r, f, "consent_required", "the user has not consented")
 				return
 			}
-			p.saveFlow(ctx, id, f)
+			if err := p.saveFlow(ctx, id, f); err != nil {
+				p.flowUnsaved(w, r, err)
+				return
+			}
 			http.Redirect(w, r, web.OrgPath(c.OrgID, "/oauth/consent?flow="+url.QueryEscape(id)), http.StatusFound)
 			return
 		}
@@ -790,27 +862,69 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 			"Return to your device: it carries on by itself. You can close this page.")
 		return
 	}
+	// A self-registered application's use is recorded before its code exists, and no code is issued without it: an
+	// application that has never been used is one the cap on unused registrations may remove (and the purge does after
+	// a day), so a first use left unrecorded would leave a user's grant to an application about to go. One that has
+	// gone since the flow began gets no code.
+	if c.SelfRegistered {
+		if err := p.svc.NoteSelfRegisteredUse(ctx, c, tenant); err != nil { // a metadata-document application is stored now
+			if gone(err) {
+				p.dropFlow(ctx, id, f)
+				clearFlowCookie(w, id)
+				p.message(w, r, http.StatusBadRequest, "Unavailable", "This application is not available", "")
+				return
+			}
+			p.tryAgain(w, r) // the flow is kept
+			return
+		}
+	}
 	if f.Pushed != "" && !p.usePushed(ctx, f.Pushed) { // another flow of the same request_uri was decided first
 		p.dropFlow(ctx, id, f)
 		clearFlowCookie(w, id)
 		p.redirectError(w, r, f, "invalid_request_uri", "the request_uri was already used")
 		return
 	}
+	ttl := p.codeTTL(c)
 	cd := codeData{GrantID: model.NewID(), ClientID: c.ID, RedirectURI: f.RedirectURI, Challenge: f.Challenge, Nonce: f.Nonce, SessionID: sess.ID,
 		UserID: user.ID, OrgID: user.OrgID, AuthTime: sess.AuthTime.Unix(), AMR: sess.AMR, IdP: idp, UpstreamAMR: sess.UpstreamAMR, Upstream: upstreamAccount(idp, sess), Scopes: f.Scopes,
 		Resources: f.Resources, ADTypes: f.ADTypes, ClaimsUI: f.ClaimsUI, ClaimsID: f.ClaimsID, DPoPJKT: f.DPoPJKT, ConsentGen: c.RememberGen,
-		AppFence: sess.AppFence(c.ID)}
-	b, _ := json.Marshal(cd)
-	code, err := p.s.Eph.New(ctx, nsCode, b, p.codeTTL(c))
-	if err != nil { // the store is full (or cannot be written): the flow is kept, and the page asks to try again
+		AppFence: sess.AppFence(c.ID), Exp: time.Now().Add(ttl).UnixNano()}
+	// The flow's room goes back to its address now (dropFlow); what takes its place is the user's to answer for: the
+	// code, until it is redeemed or expires. Charged to the user (limits.held_kb), so that a signed-in account asking
+	// for codes it never redeems holds no more of this node than an address may, but in windows of the code's own
+	// minute or so (ephemeral.Budget.ChargeFor), apart from the rest of what the user holds, and given back when the
+	// code is redeemed (exchangeCode): any page can send a signed-in browser here for an application its user
+	// allowed before, as often as it can navigate, and codes made that way must not use up what the user's own
+	// sign-ins need, nor stay counted for twenty minutes after they expired. The records of a code's use are
+	// charged when it is redeemed, which such a page cannot do.
+	codeHeld, err := p.s.Held.ChargeFor(ctx, web.HolderUser(user.ID), nsCode, len(ephemeral.JSON(cd)), ttl)
+	if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget; the flow is kept
+		p.tooManyHeld(w, r)
+		return
+	}
+	if err != nil {
 		p.tryAgain(w, r)
 		return
 	}
-	p.dropFlow(ctx, id, f)
-	clearFlowCookie(w, id)
-	if c.SelfRegistered {
-		p.svc.NoteSelfRegisteredUse(ctx, c, tenant) // a metadata-document application is stored now
+	cd.Held = codeHeld
+	code, err := p.s.Eph.New(ctx, nsCode, ephemeral.JSON(cd), ttl)
+	if err != nil { // the store is full (or cannot be written): the flow is kept, and the page asks to try again
+		codeHeld.Refund(ctx, p.s.Eph)
+		p.tryAgain(w, r)
+		return
 	}
+	// The flow ends with its code. One that another request ended while this one ran (cancelled in another tab, or
+	// answered by a second request of the same step) has had its answer: this code is taken back, so that a flow
+	// answers once, and never after it was cancelled.
+	if err := p.dropFlow(ctx, id, f); err != nil {
+		if _, terr := p.s.Eph.Take(ctx, nsCode, code); terr == nil {
+			codeHeld.Refund(ctx, p.s.Eph)
+		}
+		clearFlowCookie(w, id)
+		p.flowUnsaved(w, r, err)
+		return
+	}
+	clearFlowCookie(w, id)
 	p.respond(w, r, f, url.Values{"code": {code}})
 }
 
@@ -1000,7 +1114,7 @@ func (p *Provider) loadFlow(r *http.Request, id string) (*flow, *model.Client, e
 	if err != nil {
 		return nil, nil, err
 	}
-	ce, err := p.appClient(ctx, r, f.Org, f.ClientID)
+	ce, _, err := p.appClient(ctx, r, f.Org, f.ClientID, f.Doc)
 	if err != nil && !gone(err) {
 		return nil, nil, unavailable(err)
 	}
@@ -1013,6 +1127,15 @@ func (p *Provider) loadFlow(r *http.Request, id string) (*flow, *model.Client, e
 			return nil, nil, unavailable(err)
 		}
 		return nil, nil, ephemeral.ErrNotFound // the tenant no longer accepts it (or the resource moved)
+	}
+	// Where the code goes was checked as the flow began, against the application as it was then. Its redirect URIs
+	// may have changed since (an administrator's change, a metadata document read again, or a document application
+	// stored meanwhile from a newer copy than the flow's): a flow whose redirect URI the application no longer has
+	// ends, as a code issued then would carry the application's present consent generation (Client.RememberGen) and be
+	// redeemed at an address the application no longer names. The same rule for every client: one whose redirect URIs
+	// an administrator changed mid-flow is no different.
+	if f.Device == "" && !redirectMatches(c.RedirectURIs, f.RedirectURI) {
+		return nil, nil, ephemeral.ErrNotFound
 	}
 	return f, c, nil
 }
@@ -1106,7 +1229,17 @@ func (p *Provider) handleConsent(w http.ResponseWriter, r *http.Request) {
 	if in.Approve {
 		f.Decision = "allow"
 	}
-	p.saveFlow(r.Context(), in.Flow, f)
+	// Saved only if the flow is still there (saveFlow): a decision on one cancelled or finished meanwhile is not
+	// recorded, nor remembered.
+	if err := p.saveFlow(r.Context(), in.Flow, f); err != nil {
+		if errors.Is(err, ephemeral.ErrNotFound) {
+			web.WriteJSON(w, http.StatusNotFound, web.ErrorBody{Error: "This request has expired. Return to the application and try again."})
+			return
+		}
+		w.Header().Set("Retry-After", "5")
+		web.WriteJSON(w, http.StatusServiceUnavailable, web.ErrorBody{Error: "This cannot be done at the moment. Try again in a moment."})
+		return
+	}
 	detail := map[string]string{"client_id": c.ClientID(), "decision": f.Decision, "scopes": strings.Join(f.consent(), " ")}
 	// Remembered (model.Consent): the application signs the user in again without asking, signed out or not, until
 	// they or an administrator remove its access. A failure to remember only means being asked again next time.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -112,6 +113,57 @@ func TestAuditRefusedOncePerCallerAndReason(t *testing.T) {
 		if x.Detail["reason"] == "" || x.Target == "" {
 			t.Errorf("event %+v", x)
 		}
+	}
+}
+
+// An audit event's detail is bounded: each value at 4 KiB and all of them at 16 KiB, a clipped value marked, and the
+// clipped keys named with their full length and digest in the event's own "clipped" detail, which a caller cannot set.
+// The caller's map is left as it was.
+func TestAuditDetailClipped(t *testing.T) {
+	e := newEnv(t)
+	long, other := strings.Repeat("a", 10_000), strings.Repeat("b", 3_000)
+	detail := map[string]string{"redirect_uris": long, "clipped": "nothing", "short": "kept"}
+	for i := range 6 {
+		detail["other"+strconv.Itoa(i)] = other
+	}
+	e.svc.Audit(e.ctx, nil, e.primary.ID, "client.self_register", "app", detail)
+	ev := e.audited(e.primary.ID, "client.self_register")
+	if len(ev) != 1 {
+		t.Fatalf("events %d", len(ev))
+	}
+	d := ev[0].Detail
+	size := 0
+	for k, v := range d {
+		size += len(k) + len(v)
+	}
+	if size > 16<<10 || len(d["redirect_uris"]) > 4<<10 || !strings.HasSuffix(d["redirect_uris"], "…") || d["short"] != "kept" {
+		t.Fatalf("detail not bounded: %d bytes, redirect_uris %d", size, len(d["redirect_uris"]))
+	}
+	if !strings.Contains(d["clipped"], "redirect_uris (10000 bytes, sha256 ") || !strings.Contains(d["clipped"], "other") {
+		t.Fatalf("clipped values not named: %q", d["clipped"])
+	}
+	if len(detail["redirect_uris"]) != 10_000 || detail["clipped"] != "nothing" {
+		t.Fatal("the caller's detail was changed")
+	}
+	e.svc.Audit(e.ctx, nil, e.primary.ID, "client.update", "app", map[string]string{"name": "x"})
+	if d := e.audited(e.primary.ID, "client.update")[0].Detail; len(d) != 1 || d["name"] != "x" {
+		t.Fatalf("a small detail changed: %v", d)
+	}
+}
+
+// The "clipped" detail is the writer's alone, whether or not it clips anything: one a caller set (from whatever a
+// request sent) is removed from an event with nothing clipped too, where it would read as the writer's own account of
+// values cut that never were. The caller's map is left as it was.
+func TestAuditClippedDetailNeverTheCallers(t *testing.T) {
+	e := newEnv(t)
+	detail := map[string]string{"name": "x", "clipped": "redirect_uris (10000 bytes, sha256 0123456789abcdef)"}
+	e.svc.Audit(e.ctx, nil, e.primary.ID, "client.update", "app", detail)
+	d := e.audited(e.primary.ID, "client.update")[0].Detail
+	if _, set := d["clipped"]; set || d["name"] != "x" || len(d) != 1 {
+		t.Fatalf("an event with nothing clipped: %v", d)
+	}
+	if detail["clipped"] == "" {
+		t.Fatal("the caller's detail was changed")
 	}
 }
 

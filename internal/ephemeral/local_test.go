@@ -271,3 +271,126 @@ func TestLocalCounterKeyGivenAValue(t *testing.T) {
 		t.Fatal("the refused Set dropped the counter")
 	}
 }
+
+// A cache namespace's values never take the room of the sign-in state: they count against a cap of their own, at
+// which a new cache entry evicts the oldest ones rather than being refused, and the values Budget limits still fit,
+// however full the cache is. What a cache entry takes is given back as it goes.
+func TestLocalCachesDoNotSqueezeValues(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	l.Budget = 64 << 10
+	if l.CacheLimit() != minCacheBudget {
+		t.Fatalf("cache cap %d, want %d", l.CacheLimit(), minCacheBudget)
+	}
+	l.CacheBudget = 256 << 10 // above Budget: a cache that shared Budget would refuse values long before its own cap
+	const kept = 200          // far more than the cap holds
+	for i := range kept {
+		if err := l.Set(ctx, CachePrefix+"doc", fmt.Sprint(i), make([]byte, 5<<10), time.Minute); err != nil {
+			t.Fatalf("entry %d refused: %v", i, err)
+		}
+	}
+	if l.Used() != 0 || l.Cached() > l.CacheLimit() || l.Cached() <= l.Budget {
+		t.Fatalf("cache %d (cap %d), values %d", l.Cached(), l.CacheLimit(), l.Used())
+	}
+	held := 0
+	for range 10 {
+		if _, err := l.New(ctx, "flow", make([]byte, 1000), time.Minute); err == nil {
+			held++
+		}
+	}
+	if held != 10 {
+		t.Fatalf("values refused beside a full cache: %d of 10 kept", held)
+	}
+	for i := range kept {
+		_ = l.Delete(ctx, CachePrefix+"doc", fmt.Sprint(i))
+	}
+	if l.Cached() != 0 {
+		t.Fatalf("%d bytes of cache still counted after every entry went", l.Cached())
+	}
+}
+
+// A full cache makes room for a new entry by evicting the oldest kept, never by refusing the new one: the entry just
+// kept is the one the next caller looks for (a document read once a minute, shared through the cache). Only an entry
+// larger than the whole cap is refused, counted as "cache".
+func TestLocalFullCacheEvictsOldest(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	l.CacheBudget = 64 << 10
+	ns := CachePrefix + "doc"
+	before := metrics.EphemeralRefused.Value("cache")
+	const n = 100
+	for i := range n {
+		if err := l.Set(ctx, ns, fmt.Sprint(i), make([]byte, 4<<10), time.Minute); err != nil {
+			t.Fatalf("entry %d refused by a full cache: %v", i, err)
+		}
+		if _, err := l.Get(ctx, ns, fmt.Sprint(i)); err != nil {
+			t.Fatalf("entry %d not there just after it was kept", i)
+		}
+		if l.Cached() > l.CacheLimit() {
+			t.Fatalf("cache %d past its cap %d", l.Cached(), l.CacheLimit())
+		}
+	}
+	if _, err := l.Get(ctx, ns, "0"); err == nil {
+		t.Error("the oldest entry was kept, past the cap")
+	}
+	kept := 0
+	for i := n - 1; i >= 0; i-- {
+		if _, err := l.Get(ctx, ns, fmt.Sprint(i)); err != nil {
+			break
+		}
+		kept++
+	}
+	if kept < 10 || l.Cached() < l.CacheLimit()-2*(4<<10+200) {
+		t.Errorf("the newest %d entries kept, %d of %d bytes: evicted more than room was needed", kept, l.Cached(), l.CacheLimit())
+	}
+	if err := l.Set(ctx, ns, "huge", make([]byte, 65<<10), time.Minute); !errors.Is(err, ErrFull) {
+		t.Errorf("an entry larger than the whole cap: %v", err)
+	}
+	if got := metrics.EphemeralRefused.Value("cache") - before; got != 1 {
+		t.Errorf("refused cache entries counted %d times, want 1 (evictions are not refusals)", got)
+	}
+}
+
+// Eviction keeps the caches' accounting exact under concurrent use: kept, replaced, taken, deleted and evicted
+// entries all give back what they took, and leave the order of eviction, whatever the interleaving.
+func TestLocalCacheEvictionAccountingExact(t *testing.T) {
+	ctx := context.Background()
+	l := NewLocal("n")
+	defer l.Close()
+	l.CacheBudget = 32 << 10
+	ns := CachePrefix + "doc"
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 2000 {
+				k := fmt.Sprint((g*7 + i) % 64)
+				switch i % 5 {
+				case 0, 1, 2:
+					_ = l.Set(ctx, ns, k, make([]byte, (i%7+1)<<9), time.Minute)
+				case 3:
+					_, _ = l.Take(ctx, ns, k)
+				default:
+					_ = l.Delete(ctx, ns, k)
+				}
+				if c := l.Cached(); c > l.CacheLimit() {
+					t.Errorf("cache %d past its cap %d", c, l.CacheLimit())
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for k := range 64 {
+		_ = l.Delete(ctx, ns, fmt.Sprint(k))
+	}
+	l.cacheMu.Lock()
+	order := l.cacheOrder.Len()
+	l.cacheMu.Unlock()
+	if l.Cached() != 0 || order != 0 || l.Len() != 0 {
+		t.Fatalf("after every entry went: %d bytes counted, %d in the order of eviction, %d entries", l.Cached(), order, l.Len())
+	}
+}

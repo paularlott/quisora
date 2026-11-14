@@ -126,12 +126,15 @@ func (n *Node) handleClock(*gossip.Node, *gossip.Packet) (any, error) {
 
 // watchLoop reads every alive peer's clock every ClockInterval, and refreshes the membership view and this node's
 // published readiness every second at most (the partition protocol becomes ready, or stops being, without a gossip
-// event to say so); a node that holds no data set yet looks for one to join as often (joinDataSet).
+// event to say so); a node that holds no data set yet looks for one to join as often (joinDataSet), and one that has
+// not formed the cluster names the peers it cannot see, a minute after starting and every minute after
+// (warnMissingPeers).
 func (n *Node) watchLoop() {
 	defer n.wg.Done()
 	t := time.NewTicker(min(n.opt.ClockInterval, time.Second))
 	defer t.Stop()
 	var last time.Time
+	n.peersChecked = time.Now() // (forming takes seconds: nothing is said before a minute)
 	for {
 		if time.Since(last) >= n.opt.ClockInterval {
 			last = time.Now()
@@ -145,6 +148,7 @@ func (n *Node) watchLoop() {
 			if err := n.joinDataSet(); err != nil {
 				n.log.WithError(err).Error("could not start the partition protocol")
 			}
+			n.warnMissingPeers(time.Now())
 		}
 	}
 }

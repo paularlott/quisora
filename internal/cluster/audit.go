@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paularlott/gossip"
@@ -19,6 +20,51 @@ import (
 // auditWait bounds how long an audit page waits for the other nodes.
 const auditWait = 3 * time.Second
 
+// A node answers another's audit request (handleAudit) within the asker's wait (auditReq.Wait), and never longer than
+// auditServeWait: the asker has given up by then, and a query that ran on would be load nobody reads. It answers
+// auditServeMax requests at once, and auditServeMaxScope of one organization's log (or every organization's), and
+// refuses the rest at once as busy (errAuditBusy: the asker counts the node as not answering), not queued. A page
+// fans out to every node, and the asking nodes' places (admin's gate) are each node's own: without these, the pages
+// of every node together, each abandoned at auditWait, would pile up as queries on every other.
+const (
+	auditServeWait     = auditWait + time.Second
+	auditServeMax      = 8
+	auditServeMaxScope = auditServeMax / 2
+)
+
+// errAuditBusy refuses an audit request while the node already answers as many as it may (auditServeMax).
+var errAuditBusy = errors.New("cluster: this node is already answering as many audit queries as it may")
+
+// auditServing counts the audit requests a node is answering for others, in all and by scope.
+type auditServing struct {
+	mu    sync.Mutex
+	total int
+	scope map[string]int
+}
+
+// enter takes a place to answer a request of scope, and the function that gives it back; ok is false when there is
+// none.
+func (a *auditServing) enter(scope string) (leave func(), ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.total >= auditServeMax || a.scope[scope] >= auditServeMaxScope {
+		return nil, false
+	}
+	if a.scope == nil {
+		a.scope = map[string]int{}
+	}
+	a.total++
+	a.scope[scope]++
+	return func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.total--
+		if a.scope[scope]--; a.scope[scope] <= 0 {
+			delete(a.scope, scope)
+		}
+	}, true
+}
+
 type auditReq struct {
 	Scope   string // organization id, "" = all
 	Search  string
@@ -31,6 +77,9 @@ type auditReq struct {
 	Offset int
 	// CountMax bounds the node's count of matching events (store.ListQuery.CountMax; 0: none).
 	CountMax int
+	// Wait is how long the asker still waits for the answer, in milliseconds (0: not said, as from a node of an
+	// earlier version): the node gives the query no longer, nor ever more than auditServeWait.
+	Wait int64
 }
 
 // auditFilter is a store.Filter on the wire: a string value, a time (UnixMicro), or a bool (the readers below super
@@ -95,7 +144,8 @@ func (n *Node) sameDataSet(nd *gossip.Node) bool {
 }
 
 // handleAudit answers with this node's newest audit events matching the request: in a gossip cluster only to a node of
-// the same data set.
+// the same data set, within the asker's wait (auditServeWait at most), and while it answers no more than
+// auditServeMax others (auditServing), else busy at once.
 func (n *Node) handleAudit(sender *gossip.Node, pkt *gossip.Packet) (any, error) {
 	if n.gc != nil && !n.sameDataSet(sender) {
 		return nil, errOtherDataSet
@@ -104,7 +154,18 @@ func (n *Node) handleAudit(sender *gossip.Node, pkt *gossip.Packet) (any, error)
 	if err := pkt.Unmarshal(&req); err != nil {
 		return nil, err
 	}
-	recs, total, err := n.localAudit(n.ctx, req)
+	leave, ok := n.auditServing.enter(req.Scope)
+	if !ok {
+		return nil, errAuditBusy
+	}
+	defer leave()
+	wait := auditServeWait
+	if d := time.Duration(req.Wait) * time.Millisecond; d > 0 && d < wait {
+		wait = d
+	}
+	ctx, cancel := context.WithTimeout(n.ctx, wait)
+	defer cancel()
+	recs, total, err := n.localAudit(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +267,9 @@ func (n *Node) askAudit(ctx context.Context, nd *gossip.Node, req auditReq, want
 	for len(rp.recs) < want {
 		page := req
 		page.Offset, page.Limit = len(seen), want-len(seen)
+		if dl, ok := ctx.Deadline(); ok { // the node gives the query no longer than this ask waits for it
+			page.Wait = max(time.Until(dl).Milliseconds(), 1)
+		}
 		var resp auditResp
 		if err := n.gc.SendToWithResponseContext(ctx, nd, msgAudit, &page, &resp); err != nil {
 			return rp

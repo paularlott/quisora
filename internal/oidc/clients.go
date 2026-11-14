@@ -507,12 +507,34 @@ type remoteJWKS struct {
 	retryAt  time.Time // no fetch before this after a failure (exponential backoff)
 	fails    int
 	fetching chan struct{} // closed when the fetch under way ends: callers meanwhile wait for it, not fetch too
+	used     time.Time     // last asked for: past remoteKeyMax the entry asked for longest ago goes
 }
 
 const (
 	jwksTTL      = 10 * time.Minute
 	jwksMaxBytes = 64 << 10
+	// remoteKeyMax bounds the jwks_uri entries held. Past it the entry asked for longest ago is dropped to make room,
+	// one at a time: clients registering (or rewriting) jwks_uris by the thousand push out only entries nobody has
+	// used since, never every client's keys at once, and an entry in use keeps its keys and its failure backoff.
+	remoteKeyMax = 5000
 )
+
+// evictRemoteKeyLocked drops the least recently used entry of p.remoteKey (jwksMu held). It scans the map, which
+// is bounded and only scanned when a jwks_uri not yet held is asked for, a request that costs an outbound fetch
+// anyway. An entry whose fetch is under way may go: its fetch and its waiters keep their own pointer to it.
+func (p *Provider) evictRemoteKeyLocked() {
+	var oldest string
+	var at time.Time
+	first := true
+	for uri, rj := range p.remoteKey {
+		if first || rj.used.Before(at) {
+			oldest, at, first = uri, rj.used, false
+		}
+	}
+	if !first {
+		delete(p.remoteKey, oldest)
+	}
+}
 
 // Variables so tests can shorten them. Failed fetches back off jwksForceEvery * 2^(fails-1), capped at jwksBackoffMax.
 var (
@@ -524,6 +546,9 @@ func (p *Provider) remoteKeys(ctx context.Context, uri string, force bool) []pub
 	p.jwksMu.Lock()
 	rj := p.remoteKey[uri]
 	now := time.Now()
+	if rj != nil {
+		rj.used = now
+	}
 	if rj != nil && ((!force && now.Sub(rj.fetched) < jwksTTL) || (force && now.Sub(rj.forced) < jwksForceEvery)) {
 		keys := rj.keys
 		p.jwksMu.Unlock()
@@ -535,10 +560,10 @@ func (p *Provider) remoteKeys(ctx context.Context, uri string, force bool) []pub
 		return keys
 	}
 	if rj == nil {
-		if len(p.remoteKey) > 5000 {
-			clear(p.remoteKey)
+		for len(p.remoteKey) >= remoteKeyMax {
+			p.evictRemoteKeyLocked()
 		}
-		rj = &remoteJWKS{}
+		rj = &remoteJWKS{used: now}
 		p.remoteKey[uri] = rj
 	}
 	cached := func() []pubKey {
@@ -596,6 +621,12 @@ func (p *Provider) remoteKeys(ctx context.Context, uri string, force bool) []pub
 	return keys
 }
 
+// errFetchGone is fetch's error when the server of the URL itself answered 404 Not Found or 410 Gone: the document is
+// not there, said by whoever serves it, as no network error, timeout or other answer says.
+var errFetchGone = errors.New("gone")
+
+// fetch reads uri, at most limit bytes of it, within 8 seconds. Only a 200 is a document; a 404 or 410 from uri itself
+// (not from where a redirect led, should p.HTTP follow one: secure.OutboundClient does not) is errFetchGone.
 func (p *Provider) fetch(ctx context.Context, uri string, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
@@ -609,6 +640,10 @@ func (p *Provider) fetch(ctx context.Context, uri string, limit int64) ([]byte, 
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) && resp.Request != nil &&
+		resp.Request.URL.String() == req.URL.String() {
+		return nil, fmt.Errorf("%w: status %d", errFetchGone, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}

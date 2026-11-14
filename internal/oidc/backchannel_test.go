@@ -318,6 +318,39 @@ func TestBackchannelOrganizationsDoNotStarveEachOther(t *testing.T) {
 	h.p.Wait()
 }
 
+// A few organizations at their share of the queue at once do not fill it between them: each holds no more than the
+// room left for the others, so a fifth organization's logout still finds a place.
+func TestBackchannelQueueLeavesRoomForAnotherOrganization(t *testing.T) {
+	release := make(chan struct{})
+	tarpit, _ := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) { <-release })
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open()
+	h := setup(t, nil)
+	cl, _ := h.newClient(func(in *service.ClientInput) { in.BackchannelURI = ptr(tarpit.URL) })
+	ce, err := h.p.client(t.Context(), cl.OrgID, cl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	of := func(org string) *model.Client { c := *ce.c; c.OrgID = org; return &c }
+	var targets []bcTarget
+	for range bcOrgQueueMax {
+		for _, org := range []string{"o1", "o2", "o3", "o4"} {
+			targets = append(targets, bcTarget{client: of(org), sub: "user", sid: "s"})
+		}
+	}
+	targets = append(targets, bcTarget{client: of("o5"), sub: "user", sid: "s"})
+	h.p.dispatch(targets, nil)
+	h.p.bcMu.Lock()
+	o5 := h.p.bcOrgs["o5"]
+	h.p.bcMu.Unlock()
+	if o5 == nil {
+		t.Fatal("four organizations at their share left no room for a fifth's logout")
+	}
+	open()
+	h.p.Wait()
+}
+
 // A logout the relying party refuses is tried again from the retry queue until it is taken or the retries are used up,
 // and one for an application that stopped wanting notices (or went) before its retry is never sent.
 func TestBackchannelRetry(t *testing.T) {

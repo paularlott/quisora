@@ -471,8 +471,10 @@ func sameLinked(u *model.User, want []string, primaryChanging bool) bool {
 		return false
 	}
 	for _, w := range want {
+		// LinkedEmail matches by key (model.SameKey); the form counts too, so a directory that corrects how an
+		// address is written (full-width to ASCII) has the correction stored.
 		l, ok := u.LinkedEmail(w)
-		if !ok || !l.Verified {
+		if !ok || !l.Verified || !model.SameAddress(l.Address, w) {
 			return false
 		}
 	}

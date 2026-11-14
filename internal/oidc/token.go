@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -20,6 +21,7 @@ import (
 	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/web"
 )
 
 // userScopes are scopes that only make sense for a signed-in user, never for client_credentials.
@@ -56,6 +58,12 @@ type codeData struct {
 	// AppFence is the session's count of removals of the client's access when the code was issued
 	// (model.Session.AppFence): a removal since, and the code makes no grant (userGrant).
 	AppFence uint32 `json:"af,omitempty"`
+	// Exp is when the code expires (unix nanos): a code put back after a failure of ours is kept until then, not for
+	// another whole lifetime (exchangeCode). 0: a code made before this was kept.
+	Exp int64 `json:"x,omitempty"`
+	// Held is the charge for the code against what its user may hold (proceed), given back when it is redeemed. Nil
+	// when that budget was off, and for a device sign-in's (deviceToken).
+	Held *ephemeral.Held `json:"h,omitempty"`
 }
 
 // tokenFailuresPerClientMin bounds the token requests per confidential client, grant type and minute that fail on what
@@ -249,20 +257,51 @@ func pkceOK(verifier, challenge string) bool {
 // replayKey is the id of a code's records of use and of replay (nsUsed, nsReplayed): they are kept per client, so a
 // client that presents a code it was not issued to neither finds the grant made from it (and revokes it) nor leaves a
 // mark that makes the rightful client's redemption under way revoke its own grant.
+//
+// The code comes first, so that the key begins with the code's owner as an id made by Store.New does
+// (ephemeral.Owner): with gossip the records are then kept by the node that issued the code and holds it, whichever
+// nodes serve, like the code itself. Keyed the other way round they were routed by hash among the nodes that serve,
+// and a node starting or stopping to serve while a code was being redeemed moved them: the redemption wrote its mark
+// to one node, read it from another, found none, took that for a replay and ended the grant it had just made. Now
+// they are lost only with the node that held the code, when the code is lost too. A code never holds a NUL and a
+// client's id never does, so no two pairs make the same key.
 func replayKey(c *model.Client, code string) string {
-	return c.ID + "\x00" + code
+	return code + "\x00" + c.ID
+}
+
+// The marks of a code's redemption (nsReplayed): markTaking is written by the client's redemption before it takes the
+// code, markReplayed over it by a presentation that finds the code gone.
+var (
+	markTaking   = []byte{0}
+	markReplayed = []byte{1}
+)
+
+// usedCost is the bytes the records of a code's use take beyond the code itself (nsReplayed's mark and nsUsed's
+// grant, each under replayKey), for charging them to the user as the code is redeemed (exchangeCode).
+func usedCost(c *model.Client, cd *codeData) int {
+	const key, entry = 64, 96 // a code's id, and what an entry costs beyond its key and value
+	return 2*(len(c.ID)+1+key) + len(nsReplayed) + 1 + entry + len(cd.OrgID) + len(cd.UserID) + len(cd.GrantID) + 2
 }
 
 // codeReplayed answers the presentation of a code that is no longer there: unknown, expired or used. A code presented
 // twice by its client: everything issued from the first use must die (RFC 6749 §4.1.2). The mark goes first, then the
-// grant is looked for; the first use records its grant, then looks for the mark (both under the code's id, on one
-// node, in order): whichever comes second sees the other, so a replay racing the first use's grant still ends it.
-// Both are the client's own (replayKey): another client's presentation of the code finds no grant of its own to end,
-// and is refused alone. It is not audited either: it ends nothing, and anyone can make it, so it would only fill the
-// audit log.
+// grant is looked for; the first use records its grant, then looks for the mark: whichever comes second sees the
+// other, so a replay racing the first use's grant still ends it. Both are the client's own (replayKey): another
+// client's presentation of the code finds no grant of its own to end, and is refused alone. It is not audited either:
+// it ends nothing, and anyone can make it, so it would only fill the audit log.
+//
+// Nothing is kept for a code this client never began to redeem (no mark of its redemption, which exchangeCode
+// writes before it takes the code): anyone can present any string as a code, and a record of each would be state the
+// presenter chooses the key of and holds for nothing. A replay only ever replaces the mark a redemption made
+// (Store.Replace), the same size and with the expiry it had, so it needs no room, a full store cannot keep it from
+// being written, and presenting a code again and again keeps its records no longer.
 func (p *Provider) codeReplayed(ctx context.Context, c *model.Client, code string) *oauthError {
 	key := replayKey(c, code)
-	_ = p.s.Eph.Set(ctx, nsReplayed, key, []byte{1}, replayMarkTTL)
+	refused := oerr("invalid_grant", "the authorization code is invalid, expired or already used")
+	if _, err := p.s.Eph.Get(ctx, nsReplayed, key); errors.Is(err, ephemeral.ErrNotFound) {
+		return refused // never redeemed here by this client: nothing issued from it to end
+	}
+	_ = p.s.Eph.Replace(ctx, nsReplayed, key, markReplayed)
 	if used, err := p.s.Eph.Get(ctx, nsUsed, key); err == nil {
 		// The replay is refused either way; whether the grant could be ended is recorded as it happened.
 		if f := strings.Split(string(used), "\x00"); len(f) == 3 {
@@ -272,7 +311,7 @@ func (p *Provider) codeReplayed(ctx context.Context, c *model.Client, code strin
 			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})
 		}
 	}
-	return oerr("invalid_grant", "the authorization code is invalid, expired or already used")
+	return refused
 }
 
 func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redirectURI, verifier string, resource, ad []string, jkt string) (*tokenResponse, *oauthError) {
@@ -292,12 +331,52 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	if json.Unmarshal(raw, &cd) != nil || cd.ClientID != c.ID {
 		return nil, oerr("invalid_grant", "the authorization code was not issued to this client")
 	}
+	// The mark of its redemption goes before the code is taken: from then on a presentation that finds the code gone
+	// finds the mark, and leaves its own over it (codeReplayed). Without it nothing can be issued from the code: a
+	// store that cannot keep the mark (its room for these records is full) cannot notice a replay either, so the
+	// code is not redeemed, and is still there when the client tries again (503).
+	//
+	// The records of the code's use (the mark, and the grant kept for a replay to end) are charged to the code's user
+	// first, against the small part of limits.held_kb a requester may hold in guard records
+	// (ephemeral.Budget.ChargeGuard): their room is the one every tenant's redemptions need, and without a bound of
+	// its own an account redeeming codes as fast as it could would fill it in a few dozen accounts. Past it the code
+	// is not redeemed (429, and still there for a later try): a few dozen redemptions in twenty minutes at the least,
+	// about a hundred and sixty by default, which no person signing in reaches. Charged here, not when the code is
+	// issued: only its client can redeem a code, where any page can have one issued (proceed).
+	//
+	// A code that already has a mark was put back by a redemption that failed on our side (below), and this is its
+	// client trying again: the mark is left as it is, and nothing more is charged. Written again, it would erase the
+	// mark of a replay made meanwhile (markReplayed), which the end of this redemption looks for.
+	key := replayKey(c, code)
+	if _, err := p.s.Eph.Get(ctx, nsReplayed, key); errors.Is(err, ephemeral.ErrNotFound) {
+		held, err := p.s.Held.ChargeGuard(ctx, web.HolderUser(cd.UserID), nsUsed, usedCost(c, &cd), usedTTL)
+		if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
+			return nil, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
+				desc: "too many authorization codes were redeemed for this user; try again in a few minutes", retry: true}
+		}
+		if err != nil {
+			return nil, serverError(unavailable(err))
+		}
+		if err := p.s.Eph.Set(ctx, nsReplayed, key, markTaking, usedTTL); err != nil {
+			held.Refund(ctx, p.s.Eph) // nothing was kept
+			return nil, serverError(err)
+		}
+	} else if err != nil {
+		return nil, serverError(err)
+	}
 	if _, err := p.s.Eph.Take(ctx, nsCode, code); err != nil {
 		if errors.Is(err, ephemeral.ErrNotFound) { // another request took it since it was read
 			return nil, p.codeReplayed(ctx, c, code)
 		}
 		return nil, serverError(err)
 	}
+	// Taken: its user holds it no longer, unless it is put back (below).
+	spent := true
+	defer func() {
+		if spent {
+			cd.Held.Refund(ctx, p.s.Eph)
+		}
+	}()
 	if redirectURI != cd.RedirectURI {
 		return nil, oerr("invalid_grant", "redirect_uri does not match the authorization request")
 	}
@@ -328,11 +407,29 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 	switch {
 	case oe != nil && oe.status >= 500:
 		// Nothing was decided (a store that could not be read or written): the code is put back for the client's
-		// retry, rather than spent on our failure (its retry makes the same grant: codeData.GrantID).
-		_ = p.s.Eph.Set(ctx, nsCode, code, raw, p.codeTTL(c))
+		// retry, rather than spent on our failure (its retry makes the same grant: codeData.GrantID). Until the
+		// moment it was to expire at, not for another whole lifetime: a code whose every redemption failed would
+		// otherwise never expire, and it was charged to its user for one lifetime (proceed). Still charged while it
+		// is back: given back by the redemption that spends it.
+		left := p.codeTTL(c)
+		if cd.Exp != 0 {
+			left = time.Until(time.Unix(0, cd.Exp))
+		}
+		if left > 0 && p.s.Eph.Set(ctx, nsCode, code, raw, left) == nil {
+			spent = false
+		}
 	case oe == nil:
-		_ = p.s.Eph.Set(ctx, nsUsed, replayKey(c, code), []byte(cd.OrgID+"\x00"+cd.UserID+"\x00"+gid), usedTTL)
-		if _, err := p.s.Eph.Get(ctx, nsReplayed, replayKey(c, code)); err == nil { // presented again while this one ran
+		// The grant is recorded for a later replay to end, then the mark looked at for one made meanwhile. Neither
+		// fails open: a grant that could not be recorded could not be ended by a replay, so it is ended now and the
+		// client asked to start again; a mark that cannot be read, or is not the one this redemption left, counts as
+		// a replay.
+		if err := p.s.Eph.Set(ctx, nsUsed, key, []byte(cd.OrgID+"\x00"+cd.UserID+"\x00"+gid), usedTTL); err != nil {
+			rerr := p.revokeGrant(ctx, cd.OrgID, cd.UserID, c.SSHApp, gid)
+			p.log.Warn("oidc: the use of an authorization code could not be recorded; grant revoked", "client", c.ID,
+				"grant", gid, "error", err, "revoke_error", rerr)
+			return nil, serverError(err)
+		}
+		if m, err := p.s.Eph.Get(ctx, nsReplayed, key); err != nil || !bytes.Equal(m, markTaking) { // presented again while this one ran
 			rerr := p.revokeGrant(ctx, cd.OrgID, cd.UserID, c.SSHApp, gid)
 			p.log.Warn("oidc: authorization code replayed; grant revoked", "client", c.ID, "grant", gid, "revoke_error", rerr)
 			p.auditClient(ctx, c, nil, "oauth.code.replay", map[string]string{"grant": gid, "grant_revoked": revokedText(rerr)})

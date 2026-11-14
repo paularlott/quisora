@@ -125,7 +125,7 @@ func isUnavailable(err error) bool {
 }
 
 // faultEph wraps the ephemeral store. before answers an error to fail an operation ("new", "get", "take", "set",
-// "incr"), or pauses it; after runs once an operation has succeeded; answer replaces the result of a Get.
+// "replace", "incr"), or pauses it; after runs once an operation has succeeded; answer replaces the result of a Get.
 type faultEph struct {
 	ephemeral.Store
 	before func(op, ns string) error
@@ -189,6 +189,17 @@ func (e faultEph) Incr(ctx context.Context, ns, key string, delta int64, window 
 		return 0, err
 	}
 	return e.Store.Incr(ctx, ns, key, delta, window)
+}
+
+func (e faultEph) Replace(ctx context.Context, ns, id string, v []byte) error {
+	if err := e.fail("replace", ns); err != nil {
+		return err
+	}
+	err := e.Store.Replace(ctx, ns, id, v)
+	if err == nil {
+		e.done("replace", ns)
+	}
+	return err
 }
 
 func (e faultEph) Set(ctx context.Context, ns, id string, v []byte, ttl time.Duration) error {

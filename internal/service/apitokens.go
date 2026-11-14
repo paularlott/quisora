@@ -506,7 +506,7 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 	// token that still circulates after it was ended, is worth an administrator's attention. Once per token and
 	// reason per minute on each node (auditRefusal): anyone who learns a token's id can repeat it at will.
 	refuse := func(reason string) (*model.APIToken, *model.User, error) {
-		s.auditRefusal("token|"+t.ID+"|"+reason, func(detail map[string]string) {
+		s.auditRefusal(t.OrgID, "token|"+t.ID+"|"+reason, func(detail map[string]string) {
 			detail["reason"] = reason
 			// The token's owner is the event's user: the refusal of a super admin's token is a super admin's event, hidden from
 			// the administrators below them like every other (it names the token and what is wrong with it).

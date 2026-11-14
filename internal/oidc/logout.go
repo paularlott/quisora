@@ -2,6 +2,9 @@ package oidc
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,19 +14,50 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/queue"
+	"github.com/paularlott/quisora/internal/secure"
 	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
 const backchannelEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-// logoutReq is a pending RP-initiated logout awaiting the user's confirmation (ephemeral, ns "oauth.logout").
+// logoutReq is a pending RP-initiated logout awaiting the user's confirmation (ephemeral, ns "oauth.logout"). A
+// session has one at a time, kept under the session (logoutKey): asking again replaces it. Any page can send a
+// signed-in browser to the sign-out endpoint, as often as it likes and with a state of its choosing, so one kept
+// for every request would be state without bound held by an ordinary account; kept by session, an account holds
+// at most one small record for each of its sessions.
 type logoutReq struct {
 	Redirect string `json:"r,omitempty"` // fully built post_logout_redirect_uri (with state)
 	Client   string `json:"c,omitempty"` // client name for the confirmation page
+	// Nonce is the secret half of the id the confirmation page posts back (logoutID): the confirmation must be of
+	// the request the page showed, not of whichever the session holds now.
+	Nonce string `json:"n"`
+	// Held is the charge for the request against what its user may hold (limits.held_kb), given back when it is
+	// confirmed or replaced by the session's next one. Nil when that budget was off.
+	Held *ephemeral.Held `json:"h,omitempty"`
+}
+
+// logoutTTL is how long a sign-out waits for its confirmation.
+const logoutTTL = 10 * time.Minute
+
+// logoutKey is the id a session's pending sign-out is kept under: a digest of the session's id, so the id itself is
+// neither a key in the short-lived state nor shown in the confirmation page.
+func logoutKey(sessID string) string {
+	sum := sha256.Sum256([]byte("logout\x00" + sessID))
+	return base64.RawURLEncoding.EncodeToString(sum[:16])
+}
+
+// logoutID is what the confirmation page posts back for the pending sign-out kept under key with this nonce;
+// splitLogoutID takes it apart again.
+func logoutID(key, nonce string) string { return key + "." + nonce }
+
+func splitLogoutID(id string) (key, nonce string) {
+	key, nonce, _ = strings.Cut(id, ".")
+	return key, nonce
 }
 
 // errHintKeyGone: a well-formed ID token hint signed with one of our algorithms by a key that is no longer kept
@@ -135,7 +169,7 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 			p.logoutInvalid(w, r, "")
 			return
 		}
-		if st := q.Get("state"); st != "" && len(st) <= 2048 {
+		if st := q.Get("state"); st != "" && storedLen(st) <= 2048 {
 			v := u.Query()
 			v.Set("state", st)
 			u.RawQuery = v.Encode()
@@ -160,16 +194,37 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	if hint == nil || hint.Sub != user.ID || (hint.SID != "" && hint.SID != sess.ID) {
 		// Without a valid hint for this session anyone could sign the user out with a link: ask first.
-		lr := logoutReq{Redirect: redirect}
+		lr := logoutReq{Redirect: redirect, Nonce: secure.RandomToken(16)}
 		if client != nil {
 			lr.Client = client.Name
 		}
-		b, _ := json.Marshal(lr)
-		id, err := p.s.Eph.New(ctx, nsLogout, b, 10*time.Minute)
+		key := logoutKey(sess.ID)
+		// The session's request before this one goes, with its charge: a session holds one at a time, so a page that
+		// sends a signed-in browser here again and again holds no more of its user's budget than one request does.
+		if raw, err := p.s.Eph.Take(ctx, nsLogout, key); err == nil {
+			var old logoutReq
+			if json.Unmarshal(raw, &old) == nil {
+				old.Held.Refund(ctx, p.s.Eph)
+			}
+		}
+		// Charged to the user, as everything else kept for a signed-in account is: a request holds up to a state of
+		// two kilobytes for ten minutes.
+		held, err := p.s.Held.Charge(ctx, web.HolderUser(user.ID), nsLogout, len(ephemeral.JSON(lr)), logoutTTL)
+		if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
+			p.tooManyHeld(w, r)
+			return
+		}
 		if err != nil {
 			p.tryAgain(w, r)
 			return
 		}
+		lr.Held = held
+		if err := p.s.Eph.Set(ctx, nsLogout, key, ephemeral.JSON(lr), logoutTTL); err != nil {
+			held.Refund(ctx, p.s.Eph)
+			p.tryAgain(w, r)
+			return
+		}
+		id := logoutID(key, lr.Nonce)
 		pg := p.s.Page(w, r, "Sign out", "", LogoutData{ID: id, Username: user.FullName(), Client: lr.Client})
 		pg.CSRF = sess.CSRF // this route runs outside the session middleware: the form posts the session's token
 		p.s.Render.Render(w, http.StatusOK, "oauth-logout", pg)
@@ -233,14 +288,25 @@ func (p *Provider) handleLogoutConfirm(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	raw, err := p.s.Eph.Take(r.Context(), nsLogout, r.PostForm.Get("id"))
-	if err != nil {
+	expired := func() {
 		p.message(w, r, http.StatusBadRequest, "Request expired", "This sign-out request has expired",
 			"Return to the application you were using and sign out again.")
+	}
+	// Read, checked against the page's half of the id, and only then taken: a confirmation of a request the session
+	// has since replaced does not use up the one it holds now.
+	key, nonce := splitLogoutID(r.PostForm.Get("id"))
+	var lr logoutReq
+	raw, err := p.s.Eph.Get(r.Context(), nsLogout, key)
+	if err != nil || json.Unmarshal(raw, &lr) != nil || nonce == "" ||
+		subtle.ConstantTimeCompare([]byte(nonce), []byte(lr.Nonce)) != 1 {
+		expired()
 		return
 	}
-	var lr logoutReq
-	_ = json.Unmarshal(raw, &lr)
+	if _, err := p.s.Eph.Take(r.Context(), nsLogout, key); err != nil {
+		expired()
+		return
+	}
+	lr.Held.Refund(r.Context(), p.s.Eph) // taken: its user holds it no longer
 	if sess != nil && !p.endSession(r.Context(), w, r, sess) {
 		return
 	}
@@ -412,9 +478,11 @@ func (p *Provider) BackchannelLogoutUser(ctx context.Context, userID string) {
 // Back-channel logouts are sent from a bounded queue by at most bcWorkersMax senders, started as the queue fills and
 // gone when it is empty: an emergency sign-out of a whole server (or a bulk expiry) with hundreds of thousands of
 // sessions queues targets, not goroutines. The queue is fair between organizations: each holds at most
-// bcOrgQueueMax logouts in it and has at most bcOrgWorkersMax being sent, and the senders serve the organizations in
-// turn, so one whose applications answer slowly or never (it costs a sender for the 8 s timeout each time) cannot
-// delay the logouts of the others, only its own. A logout that finds its organization's share (or the whole queue)
+// bcOrgQueueMax logouts in it, and no more than the room the queue has left for the others (so a few organizations at
+// bcOrgQueueMax cannot fill it between them: each new one finds at least half of what they left), and has at most
+// bcOrgWorkersMax being sent, and the senders serve the organizations in turn, so one whose applications answer
+// slowly or never (it costs a sender for the 8 s timeout each time) cannot delay the logouts of the others, only its
+// own. A logout that finds its organization's share (or the whole queue)
 // full goes to this node's durable retry queue at once instead (OpenLogoutQueue; without one, or when that holds
 // logoutRetryOrgMax of the organization's, it is dropped and logged): the sessions and grants end on this server
 // either way, and the relying party is told a little later. So does the logout of a client whose record could not be
@@ -437,8 +505,9 @@ var bcShutdownWait = 10 * time.Second
 // logoutRetryOrgMax is how many logouts of one organization this node's retry queue holds. An organization whose applications
 // never answer (or an emergency sign-out of a big one) fills its share and then loses only its own further logouts,
 // where one cap for the whole queue would let it take every place and drop the failures of all the others. The share
-// is the size of the in-memory queue's (bcOrgQueueMax), a quarter of the retry queue: four such organizations at once
-// are needed to fill it.
+// is the size of the in-memory queue's (bcOrgQueueMax), a quarter of the retry queue, and an organization takes no more
+// than the room left for the others besides (queue.Options.MaxPerKey): four such organizations at once do not fill it,
+// and a new one finds at least half of the room they left.
 const logoutRetryOrgMax = bcOrgQueueMax
 
 // bcOrg is an organization's share of the back-channel logout queue.
@@ -507,7 +576,12 @@ func (p *Provider) dispatch(targets []bcTarget, unread []LogoutRetry) {
 	p.bcMu.Lock()
 	for _, t := range targets {
 		o := p.bcOrgs[t.client.OrgID]
-		if p.bcQueued >= bcQueueMax || o != nil && len(o.queue) >= bcOrgQueueMax {
+		held := 0
+		if o != nil {
+			held = len(o.queue)
+		}
+		// at most its share, and no more than the room left for the others (as the retry queue: queue.Options.MaxPerKey)
+		if p.bcQueued >= bcQueueMax || held >= bcOrgQueueMax || held >= bcQueueMax-p.bcQueued {
 			full = append(full, t.retry())
 			continue
 		}

@@ -185,6 +185,11 @@ redirects. Addresses on private networks (and loopback) are refused unless allow
 lab, set `server.allow_private_networks` to allow every private address. A provider whose certificate comes from an internal CA needs that CA in
 `server.extra_ca_file`.
 
+A provider's signing keys are kept for an hour. An ID token signed with a key ID Quisora has not seen makes it read
+the provider's keys again, at most once every 5 seconds for each provider however many sign-ins ask (and whether or
+not the provider answers): a provider that rotates its keys without publishing the new one first fails its sign-ins
+for those few seconds at most, and a token naming a key that is still unknown is refused, never accepted.
+
 ## Audit
 
 | Event | When |
@@ -199,7 +204,29 @@ lab, set `server.allow_private_networks` to allow every private address. A provi
 | `identity.refresh.refused` | A leaver: the provider refused the refresh token, sessions ended |
 | `account.provider.connect`, `account.provider.connect_refused`, `account.provider.disconnect` | A user connected or disconnected a provider |
 | `user.provider.disconnect` | An administrator disconnected one |
-| `login.failure` with reason `upstream …` | A provider sign-in was refused (`not_linked`, `unverified`, `domain`, `exists`, `disabled`…) |
+| `login.failure` with reason `upstream …` | A provider sign-in was refused (`not_linked`, `unverified`, `domain`, `exists`, `disabled`…). Anyone can repeat these (a state they started, sent back with a made-up code), so each kind is recorded at most once a minute per organization (per account once one is known) on each node, the next with `detail.suppressed` counting the repeats held back |
+
+Each sign-in with a provider exchanges the code its callback brings at the provider's token endpoint, with the
+organization's client secret. Anyone may start a sign-in and send its callback a made-up code, which the provider then
+refuses; so that a flood of them cannot get the organization's client limited or flagged at the provider, failed
+exchanges are limited on each node:
+
+- One address (an IPv6 /64) may fail at most 10 exchanges with a provider a minute, and one IPv6 /48 at most 40, however
+  many /64s they come from.
+- A provider takes 60 failed exchanges a minute from every address together. Past that, an address whose /64 or /48
+  failed an exchange with the provider in the last hour or so (one to two hours) is refused; an address that has not
+  is never refused for it. A flood from many addresses therefore costs the provider at most the minute's 60 and one
+  exchange per new address an hour, while a user whose sign-ins work is never turned away because someone else's do
+  not. (A cap that refused everyone past it, with a part kept for addresses new to the minute, made the limit a switch:
+  a few dozen addresses, each failing once, turned off sign-in with the provider for the whole organization.) The
+  cost falls on an address that failed an exchange itself (a code used twice, a sign-in left too long) while the
+  provider's minute is full: it waits for the minute to clear.
+
+Only an exchange actually made counts: a callback with no code (no request is made to the provider), a state that is
+not valid, or a failure of this server's own after a good exchange (an account not linked, a domain not allowed) do not.
+Each callback takes its place in the limits before its exchange and gives it back when the exchange works, so
+callbacks from one address at the same moment cannot all pass. Past a limit the callback answers 429 before the
+exchange, and the sign-in can be finished a minute later (its state is kept).
 
 ## Users of another organization (guest accounts)
 

@@ -14,9 +14,122 @@ import (
 // Hash-routed and node-owned ephemeral state on one healthy cluster (BadgerDB). The last scenario stops a node.
 func TestEphemeralOnOneCluster(t *testing.T) {
 	runOn(t, started(t, badgerBackend()),
+		scenario{"a held budget is the cluster's", testHeldBudgetIsTheClusters},
 		scenario{"counters fail closed", testCountersFailClosed},
 		scenario{"counter reads use the owner's last answer", testCounterReadsUseTheOwnersLastAnswer},
+		scenario{"replace is the owner's", testReplaceIsTheOwners},
 		scenario{"forwarded to the owner", testEphemeralForwardedToOwner})
+}
+
+// What a requester may have kept (ephemeral.Budget) is counted once for the cluster, on the node that owns the
+// requester's counter, whichever nodes its requests reach: three nodes do not give it three budgets, and what one node
+// charged another gives back. The records protections rest on are kept by a node whose sign-in state is full, also
+// when the write came through another node.
+func testHeldBudgetIsTheClusters(t *testing.T, c *tcluster) {
+	// Once every node sees the others serving: until then their views of who owns a counter differ, and a counter
+	// starts again on each owner (as any counter does when its owner changes).
+	agreed := func() bool {
+		for i := range 64 {
+			k := fmt.Sprintf("probe-%d", i)
+			first, _, _ := c.nodes[0].n.OwnerOf(ephemeral.HeldNS, k)
+			for _, tn := range c.nodes[1:] {
+				if o, _, _ := tn.n.OwnerOf(ephemeral.HeldNS, k); o != first || o == "" {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	for deadline := time.Now().Add(15 * time.Second); !agreed(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the nodes never agreed on who owns the counters")
+		}
+	}
+	limit := int64(4 << 10)
+	h := ephemeral.Holder{Key: "ip|192.0.2.77", Wide: "net|192.0.2.0/24"}
+	var held []*ephemeral.Held
+	var last error
+	for i := range 12 {
+		n := c.nodes[i%len(c.nodes)].n
+		b := &ephemeral.Budget{Store: n.Ephemeral(), Limit: func() int64 { return limit }}
+		hd, err := b.Charge(bg, h, "ns", 1000, 10*time.Minute)
+		if err != nil {
+			last = err
+			continue
+		}
+		held = append(held, hd)
+	}
+	if len(held) != 3 || !errors.Is(last, ephemeral.ErrHeld) {
+		t.Fatalf("%d charges of 1.4 KB within 4 KiB through three nodes (last refusal %v), want 3", len(held), last)
+	}
+	held[0].Refund(bg, c.nodes[2].n.Ephemeral()) // charged through node 0, given back through node 2
+	b := &ephemeral.Budget{Store: c.nodes[1].n.Ephemeral(), Limit: func() int64 { return limit }}
+	if _, err := b.Charge(bg, h, "ns", 1000, 10*time.Minute); err != nil {
+		t.Fatalf("after a refund through another node: %v", err)
+	}
+	if _, err := b.Charge(bg, h, "ns", 1000, 10*time.Minute); !errors.Is(err, ephemeral.ErrHeld) {
+		t.Fatalf("one refund made room for two: %v", err)
+	}
+
+	owner := c.nodes[1].n
+	id := owner.eph.local.NewID()
+	budget := owner.eph.local.Budget
+	owner.eph.local.Budget = 1
+	defer func() { owner.eph.local.Budget = budget }()
+	ea := c.nodes[0].n.Ephemeral()
+	if err := ea.Set(bg, "ns", id, []byte("v"), time.Minute); !errors.Is(err, ephemeral.ErrFull) {
+		t.Fatalf("a value for a full owner: %v", err)
+	}
+	if err := ea.Set(bg, ephemeral.GuardPrefix+"ns", id, []byte("v"), time.Minute); err != nil {
+		t.Fatalf("a guard record for an owner whose sign-in state is full: %v", err)
+	}
+}
+
+// Replace is done by the node that holds the entry, in one step there, whichever node the request reached: an entry
+// is given a new value with the expiry it had, and one that another node's request took meanwhile is not found and
+// not made again. A key that begins with an id made by New (as the records of an authorization code's use do) is
+// kept by the node that made the id.
+func testReplaceIsTheOwners(t *testing.T, c *tcluster) {
+	a, b, d := c.nodes[0].n, c.nodes[1].n, c.nodes[2].n
+	id, err := b.Ephemeral().New(bg, "ns", []byte("v0"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Ephemeral().Replace(bg, "ns", id, []byte("v1")); err != nil {
+		t.Fatalf("remote replace: %v", err)
+	}
+	if v, err := b.eph.local.Get(bg, "ns", id); err != nil || string(v) != "v1" {
+		t.Fatalf("on the owner after a remote replace: %q %v", v, err)
+	}
+	if _, err := d.Ephemeral().Take(bg, "ns", id); err != nil {
+		t.Fatalf("remote take: %v", err)
+	}
+	if err := a.Ephemeral().Replace(bg, "ns", id, []byte("v2")); !errors.Is(err, ephemeral.ErrNotFound) {
+		t.Fatalf("a remote replace of an entry another node took: %v", err)
+	}
+	if _, err := b.eph.local.Get(bg, "ns", id); !errors.Is(err, ephemeral.ErrNotFound) {
+		t.Fatalf("a taken entry was made again on its owner by a remote replace: %v", err)
+	}
+	// the expiry is the entry's, not the replace's
+	id, err = b.Ephemeral().New(bg, "ns", []byte("v0"), 400*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := a.Ephemeral().Replace(bg, "ns", id, []byte("v1")); err != nil {
+		t.Fatalf("remote replace: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := a.Ephemeral().Get(bg, "ns", id); !errors.Is(err, ephemeral.ErrNotFound) {
+		t.Fatalf("an entry replaced through another node outlived its expiry: %v", err)
+	}
+	// a key that begins with an id of b's is b's, whoever asks
+	key := b.eph.local.NewID() + "\x00client"
+	for _, n := range []*Node{a, b, d} {
+		if owner, _, dead := n.OwnerOf(ephemeral.GuardPrefix+"used", key); owner != b.ID() || dead {
+			t.Fatalf("on %s a key that begins with an id of %s is owned by %q (dead %v)", n.ID(), b.ID(), owner, dead)
+		}
+	}
 }
 
 // Ephemeral state is forwarded to the node that owns it; a node that is gone owns nothing any more.
@@ -323,8 +436,15 @@ func TestHandleEphOperations(t *testing.T) {
 	if r := call(ephReq{Op: opIncr, NS: "rl", ID: "k", Delta: 3, TTL: 60000}); r.Code != codeOK || r.N != 3 {
 		t.Fatalf("incr: %+v", r)
 	}
-	if r := call(ephReq{Op: opTake, NS: "ns", ID: id}); r.Code != codeOK || string(r.Val) != "v1" {
+	if r := call(ephReq{Op: opReplace, NS: "ns", ID: id, Val: []byte("v2")}); r.Code != codeOK {
+		t.Fatalf("replace: %+v", r)
+	}
+	if r := call(ephReq{Op: opTake, NS: "ns", ID: id}); r.Code != codeOK || string(r.Val) != "v2" {
 		t.Fatalf("take: %+v", r)
+	}
+	// replacing what is gone answers not found (the sender's request ends), and makes nothing
+	if r := call(ephReq{Op: opReplace, NS: "ns", ID: id, Val: []byte("v3")}); r.Code != codeNotFound {
+		t.Fatalf("replace of a taken entry: %+v", r)
 	}
 	if r := call(ephReq{Op: opTake, NS: "ns", ID: id}); r.Code != codeNotFound {
 		t.Fatalf("take again: %+v", r)

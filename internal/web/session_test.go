@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -187,5 +189,43 @@ func TestSessionCacheBoundedByItsTTL(t *testing.T) {
 	m.mu.Unlock()
 	if got, _ := m.Lookup(ctx, s.ID); got != nil {
 		t.Fatal("a cached session was served past the cache's bound")
+	}
+}
+
+// Every sign-in is accepted past the cap of sessions per user (limits.sessions_per_user), and the least recently used
+// sessions end in its place: the user is never locked out by their own, and never holds more than the cap.
+func TestCreateCapsSessionsPerUser(t *testing.T) {
+	ctx := context.Background()
+	svc, u, _ := sessionFixture(t, memstore.New(), time.Now())
+	l := svc.Cfg.LiveLimits()
+	l.SessionsPerUser = 2
+	svc.Cfg.SetLiveLimits(l)
+	org, err := svc.Orgs.Get(ctx, u.OrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewSessions(svc)
+	var made []*model.Session
+	for range 4 {
+		s, err := m.Create(ctx, httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), u, org, []string{"pwd"})
+		if err != nil {
+			t.Fatalf("sign-in %d refused: %v", len(made)+1, err)
+		}
+		made = append(made, s)
+		svc.WaitBackground()
+	}
+	all, err := svc.Sessions.All(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range all {
+		ids = append(ids, s.ID)
+	}
+	slices.Sort(ids)
+	want := []string{made[2].ID, made[3].ID}
+	slices.Sort(want)
+	if !slices.Equal(ids, want) {
+		t.Fatalf("sessions left %v, want the two newest %v", ids, want)
 	}
 }

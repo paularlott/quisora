@@ -51,7 +51,7 @@ A token that exists but is refused (a wrong secret, or used after an emergency s
 disabled or lost the role its scopes need) is audited as `apitoken.refused` in its organization; a request a valid
 token may not make is audited as `api.request.refused`. Both are recorded at most once a minute per token (or
 caller) and reason on each node, with `suppressed` counting the repeats held back since the last one (refusals held back because the node was already
-tracking 10,000 refusing keys at once are counted in `quisora_audit_refusals_dropped_total`): a refusal can be
+tracking 10,000 refusing keys at once, or 2,500 of one organization, are counted in `quisora_audit_refusals_dropped_total`): a refusal can be
 repeated at will, and must not flood the audit log. Failed bearer authentications (management API and SCIM
 together) are limited to 60 per address and organization (the one the path names) and minute: past that, every bearer
 request from the address for that organization gets `429 Too Many Requests` with `Retry-After` for the rest of the
@@ -83,7 +83,11 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" "$QUISORA/api/orgs/acme/users/<
 # follow changes in your organization as they happen (server-sent events; -N turns off curl's buffering);
 # a super admin can add ?org=<name> to watch another organization. These are the admin console's live updates (a
 # browser opens one per organization, shared by its tabs); a user may hold 4 at once on each node. Super admins are hidden below super admin here as everywhere: only a
-# super admin's stream carries events about a super admin (their user record, sessions, memberships, certificates, audit events)
+# super admin's stream carries events about a super admin (their user record, sessions, memberships, certificates, access
+# to tenants, audit events). A stream tells only of what its viewer may read through the API: a manager's carries users,
+# groups and memberships (and the security records of the users they manage), not tenants, access entries,
+# applications, providers, SSH keys or certificates, or the audit log, which are administrators'. A stream whose
+# viewer changes (a new role, a token's scopes) ends with `event: ended` within 5 seconds: reconnect to be judged afresh
 curl -N -H "Authorization: Bearer $TOKEN" "$QUISORA/api/events"
 ```
 

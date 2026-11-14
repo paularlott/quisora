@@ -44,7 +44,7 @@ indexes), so that lists and filters run without decoding `data`.
 | `sign_ins`           | A user's sign-in stamps (last sign-in, the TOTP step last used), kept apart from the user so that a sign-in never overwrites an administrator's change. |
 | `leases`             | Leases with a holder and an end time, for example each node's report of its master keys and an organization's deletion guard.     |
 | `single_use_values`  | Single-use values seen (a client assertion's or a DPoP proof's `jti`), kept until they expire so that a value is refused a second time. |
-| `ephemeral_state`    | Short-lived sign-in state (codes, flows, challenges, rate-limit counters), shared by the nodes of a shared database. Not backed up or replicated. |
+| `ephemeral_state`    | Short-lived sign-in state (codes, flows, challenges, rate-limit counters), shared by the nodes of a shared database. Not backed up or replicated. Each node counts the rows it writes against `limits.ephemeral_mb` and the counters' and caches' caps, as it would its memory ([RUNNING.md](RUNNING.md#health-and-monitoring)), so the table holds at most about the number of nodes times those, plus rows expired and not purged yet. |
 | `retry_queue`        | Each node's retry queue (emails waiting for SMTP, back-channel logouts waiting for their application). Node-local: not backed up or replicated. |
 
 ## Other tables

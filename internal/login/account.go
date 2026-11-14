@@ -241,7 +241,7 @@ func (m *Module) patchAccount(w http.ResponseWriter, r *http.Request, a acct) {
 		web.WriteError(w, err)
 		return
 	}
-	if in.Email != nil && !strings.EqualFold(strings.TrimSpace(*in.Email), before.Email) {
+	if in.Email != nil && !model.SameAddress(strings.TrimSpace(*in.Email), before.Email) {
 		// Nobody changes their own address (it redirects password resets and every application's email claim):
 		// another manager or administrator does. Refused before asking to re-authenticate for nothing.
 		writeErr(w, http.StatusUnprocessableEntity, "Your email address is changed by an administrator, not here.", "email")
@@ -925,7 +925,8 @@ func (m *Module) reauthPasskeyBegin(w http.ResponseWriter, r *http.Request, a ac
 		web.WriteError(w, err)
 		return
 	}
-	id, opts, err := m.Passkeys.BeginLogin(r.Context(), u, map[string]string{"reauth": a.sess.ID, passkey.PurposeKey: purposeReauth})
+	// Kept for the user: a signed-in account asking for challenges it never answers holds no more than it may.
+	id, opts, err := m.Passkeys.BeginLogin(m.heldByUser(r, u.ID), u, map[string]string{"reauth": a.sess.ID, passkey.PurposeKey: purposeReauth})
 	if errors.Is(err, passkey.ErrUnknownCredential) {
 		writeErr(w, http.StatusUnprocessableEntity, "You have no passkeys.", "")
 		return
@@ -1086,7 +1087,7 @@ func (m *Module) registerPasskeyBegin(w http.ResponseWriter, r *http.Request, a 
 	if !m.passkeyRoom(w, r, u) {
 		return
 	}
-	id, opts, err := m.Passkeys.BeginRegistration(r.Context(), u, map[string]string{passkey.PurposeKey: purposeRegister})
+	id, opts, err := m.Passkeys.BeginRegistration(m.heldByUser(r, u.ID), u, map[string]string{passkey.PurposeKey: purposeRegister})
 	if err != nil {
 		m.internalError(w, r, "passkey registration", err)
 		return

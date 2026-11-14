@@ -1152,8 +1152,14 @@ func (s *Service) SSHCertsOf(ctx context.Context, u *model.User) ([]*SSHCertView
 
 // SSHCertsOfUser lists user u's certificates that have not expired, across the organization's tenants, for the user's
 // page in the console: SSHCertsOf, for those who administer SSH in u's organization (its administrators, and service
-// accounts with the ssh scope). ErrForbidden for anyone else, managers included.
+// accounts with the ssh scope). ErrForbidden for anyone else, managers included. A user the actor may not see at all
+// (Visibility: a super admin, below super admin) is ErrNotFound, as GetUser has it, and their certificates are not
+// listed, as ListSSHCertsCounted leaves them out: the handler reaches here only through GetUser, which already
+// refuses, but the rule is the service's to keep, whoever calls.
 func (s *Service) SSHCertsOfUser(ctx context.Context, a *Actor, u *model.User) ([]*SSHCertView, error) {
+	if s.Visibility(a, u) == Hidden {
+		return nil, ErrNotFound
+	}
 	if !s.sshAdmin(a, u.OrgID, ScopeSSH) {
 		return nil, ErrForbidden
 	}

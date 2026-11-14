@@ -34,6 +34,29 @@ administrator creating or editing a user learns that a value is taken even when 
 not see (an administrator to a manager, a super admin to everyone below them). Only that the value is in use, not who
 holds it; reads, listings and searches still withhold the account.
 
+Uniqueness ignores letter case and compatibility forms (Unicode NFKC: full-width letters, ligatures), so
+`ｂｏｂ@example.com` and `Bob@example.com` are one address, which only one account can hold. Values are stored as
+given (a directory's full-width address stays full-width) and every lookup compares both sides by the same rule:
+password sign-in, password resets, and an administrator naming a user's address all find that account by any form of
+it.
+
+Two forms that claim one key may still be two mailboxes, so whatever **proves, vouches for or changes** an address
+compares it as written, with ASCII letters in either case and nothing else folded (not full-width letters, not the
+Kelvin sign `K` that Unicode case folding takes for `k`, nor the long `ſ` it takes for `s`; a non-ASCII letter in
+another case is another address too, which fails closed). By that rule:
+
+- A verification link proves only the form it was mailed to, and is issued only for an address written as the account
+  stores it; an invitation or reset link is bound to the primary address the same way.
+- Marking an address verified without the link vouches for the form named, so it takes the address as stored:
+  naming `bob@example.com` does not verify a stored `ｂｏｂ@example.com`.
+- A provider vouching for an address links a sign-in only to the account that verified that very form (in any ASCII
+  case): a provider's `ｂｏｂ@example.com` does not sign in to the account that verified `bob@example.com`, nor the
+  reverse.
+- Changing an address to another form of it counts as a change: the primary address is verified again, a linked
+  list that names another form of a verified linked address adds one (stored as named, and verified, since the
+  administrator vouches for it), and for an established manager or administrator either is a sign-in reset, a super
+  admin's to make.
+
 The audit log follows the same rule: an organization's administrators read its events without those whose actor or
 target user is a super admin (their sign-ins, with address and methods, and the changes made to them), and the page,
 its total and its search leave them out. Each event is marked when it is written, by the accounts it names (their ids,
@@ -314,6 +337,10 @@ whatever the number of addresses, while the address budget only ever refuses mor
 address per account can still lock every account (no server can tell their wrong passwords from its users' own);
 the audit log then shows `org.spray.start` (with the failures in the minute that started it) and, at the first
 sign-in after it is over, `org.spray.end` (when it started and ended), both with outcome `failure`. Block the
-addresses upstream (`login.failure` events name them), and tell people to sign in from a browser they have used
+addresses upstream (`login.failure` events name them: every address that sends a wrong password or is refused is
+named by an event in that minute, for each account it tries up to 20 a minute and then once more with
+`detail.address_limit`, until the organization's 200 such events a minute are spent; an address cannot hide behind another
+that tried first, and every account tried is named once a minute per sign-in step even past those allowances:
+[what is recorded](RUNNING.md#what-is-recorded)), and tell people to sign in from a browser they have used
 before or with a passkey. Raise the limit for an organization whose people mistype more than 100 passwords a minute
 on a busy morning: below it nothing changes.

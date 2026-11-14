@@ -27,6 +27,11 @@ func (s *Service) SweepAll(ctx context.Context) (int, error) {
 // SelfRegRedirect reports whether a self-registered application may use uri as a redirect URI.
 var SelfRegRedirect = selfRegRedirect
 
+// EvictUnusedSelfRegistered is what a registration at the cap does to make room (evictUnusedSelfRegistered).
+func (s *Service) EvictUnusedSelfRegistered(ctx context.Context, orgID string) error {
+	return s.evictUnusedSelfRegistered(ctx, orgID)
+}
+
 // WeakPassword is passwordcheck's test of a password against what it must not contain.
 var WeakPassword = weakPassword
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,6 +164,136 @@ func TestWriteAuditTimedOutEventIsStillSpooled(t *testing.T) {
 	c.Start() // the disk answers
 	defer c.Close()
 	waitFor(t, "the event to reach VictoriaLogs", func() bool { return vl.took(event(7).ID) })
+}
+
+// hungFile is a segment whose fsync does not return until hang is closed: a hung disk.
+type hungFile struct {
+	segmentFile
+	hang chan struct{}
+}
+
+func (f hungFile) Sync() error { <-f.hang; return f.segmentFile.Sync() }
+
+// A hung spool disk costs the first audited request spoolWait, not every one: once an event has waited in vain, the
+// events after it are logged at once (and still queued for the spool) until the spooler finishes a write in time
+// again; from then on events wait for their fsync again. Every event is logged or spooled, and all reach VictoriaLogs
+// once the disk answers.
+func TestWriteAuditFailsFastWhileTheSpoolDiskIsHung(t *testing.T) {
+	fastTimers(t)
+	wait, open := spoolWait, openSegment
+	t.Cleanup(func() { spoolWait, openSegment = wait, open })
+	spoolWait = 200 * time.Millisecond
+	hang := make(chan struct{})
+	var first sync.Once
+	openSegment = func(path string) (segmentFile, error) {
+		f, err := open(path)
+		hung := false
+		first.Do(func() { hung = true })
+		if err != nil || !hung {
+			return f, err
+		}
+		return hungFile{f, hang}, nil
+	}
+	vl := newFakeVL(t)
+	vl.set(true)
+	log := newCapture()
+	c, err := New(vl.srv.URL, "n1", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Spool(t.TempDir(), 1); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Close()
+	var released sync.Once
+	release := func() { released.Do(func() { close(hang) }) }
+	defer release() // before Close, which waits for the spooler, also when the test fails
+
+	start := time.Now()
+	c.WriteAudit(event(1)) // waits spoolWait for the hung fsync
+	if d := time.Since(start); d < spoolWait {
+		t.Fatalf("the first event waited only %s", d)
+	}
+	start = time.Now()
+	for i := 2; i <= 6; i++ {
+		c.WriteAudit(event(i))
+	}
+	if d := time.Since(start); d >= spoolWait {
+		t.Fatalf("five events took %s on a disk known to be hung: each waited again", d)
+	}
+	if ids := log.undeliveredIDs(); len(ids) != 6 {
+		t.Fatalf("logged %v, want all six", ids)
+	}
+
+	release() // the disk answers: the hung write ends late, the backlog's write in time
+	waitFor(t, "the disk to be taken as answering", func() bool { return !c.diskStuck.Load() })
+	c.WriteAudit(event(7))
+	if ids := log.undeliveredIDs(); ids[event(7).ID] {
+		t.Fatal("an event was logged although the disk answers again")
+	}
+	waitFor(t, "every event to reach VictoriaLogs", func() bool {
+		d, _ := vl.count()
+		return d == 7
+	})
+}
+
+// slowFile is a segment whose fsync takes delay: a disk that answers, slowly.
+type slowFile struct {
+	segmentFile
+	delay time.Duration
+}
+
+func (f slowFile) Sync() error { time.Sleep(f.delay); return f.segmentFile.Sync() }
+
+// A disk that is slow but answers must not flap between the fast path and waiting. An event queued while one write
+// is under way waits for that write and its own: longer than spoolWait, though each write is shorter. That raises
+// the flag, and the write that carried the event, short as it was, must not lower it again (it kept an event
+// waiting too long: the next would wait in vain again, and each round would log a warning, an all-clear and a run
+// of false audit.undelivered). The fast path ends when an event is on disk within spoolWait of being queued.
+func TestSlowSpoolDiskDoesNotFlap(t *testing.T) {
+	fastTimers(t)
+	wait, open := spoolWait, openSegment
+	t.Cleanup(func() { spoolWait, openSegment = wait, open })
+	spoolWait = 400 * time.Millisecond
+	openSegment = func(path string) (segmentFile, error) {
+		f, err := open(path)
+		if err != nil {
+			return f, err
+		}
+		return slowFile{f, 300 * time.Millisecond}, nil
+	}
+	vl := newFakeVL(t)
+	vl.set(true)
+	log := newCapture()
+	c, err := New(vl.srv.URL, "n1", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Spool(t.TempDir(), 1); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Close()
+
+	var first sync.WaitGroup
+	defer first.Wait()
+	first.Go(func() { c.WriteAudit(event(1)) }) // its write takes 300 ms: in time
+	time.Sleep(100 * time.Millisecond)          // queued behind it: 200 ms of that write, then 300 ms of its own
+	c.WriteAudit(event(2))
+	if !c.diskStuck.Load() || !log.undeliveredIDs()[event(2).ID] {
+		t.Fatal("an event that waited longer than spoolWait did not start the fast path")
+	}
+	time.Sleep(300 * time.Millisecond) // its write has ended by now, within spoolWait of starting
+	if !c.diskStuck.Load() {
+		t.Fatal("the write that kept an event waiting too long ended the fast path: the disk would flap")
+	}
+	c.WriteAudit(event(3)) // not waited for; on disk 300 ms after it was queued, which is in time
+	waitFor(t, "the disk to be taken as answering", func() bool { return !c.diskStuck.Load() })
+	c.WriteAudit(event(4))
+	if log.undeliveredIDs()[event(4).ID] {
+		t.Fatal("an event was logged although the disk answers in time again")
+	}
 }
 
 // A spool that stops being writable after startup does not lose the batch silently: it is logged in full.

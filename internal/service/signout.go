@@ -216,6 +216,92 @@ func (s *Service) endSessions(ctx context.Context, userID string, sessions []*mo
 	return ended, errors.Join(errs...)
 }
 
+// SessionsPerUser is how many browser sessions one user may hold at once: limits.sessions_per_user (100 by default).
+func (s *Service) SessionsPerUser() int { return s.Cfg.LiveLimits().SessionsPerUser }
+
+// maxEvictions is how many sessions one CapSessions run ends at most: a cap lowered below what users hold is reached
+// over their next few sign-ins, a bounded amount of work each, instead of by one sign-in's background work running past
+// its time.
+const maxEvictions = 100
+
+// CapSessions ends user u's browser sessions past the cap (SessionsPerUser), the least recently used first, and
+// returns how many it ended. Each sign-in in a browser without a session makes one, and every listing of the user's
+// sessions (their account page, sign out everywhere, an administrator's revoke) reads them all: without a cap a script
+// signing in over and over would leave the account with thousands, until they expire. A sign-in is never refused for
+// the cap: the newest sessions are kept, so nobody is locked out by sessions of their own they forgot.
+//
+// It never ends keep (the session the sign-in just made), nor any session signed in at the same moment or later
+// (AuthTime): those are other sign-ins', each capped by its own run. So sign-ins at once, more of them than the cap,
+// cannot end each other's sessions, leaving none: the latest is always kept, and the user may stay a few past the cap
+// until their next sign-in counts again.
+//
+// Only live sessions count (model.Session.Valid: neither expired nor idle too long); dead ones sign nobody in, and the
+// store drops them at their end of life. Those past the cap end one at a time as a sign-out ends a session
+// (SignOutSession, after the OnSessionsEnding hook tells their applications by back-channel logout, as the sign-out
+// page does): their refresh grants without offline_access go with them, as when a session expires, while those
+// granted offline access and the SSH certificates go on; nothing else of the user is touched. Each session ended is
+// audited (login.session.evict). At most maxEvictions end in one run, and the run stops when ctx ends: the rest end at
+// the user's next sign-in, and no application is told of a session that is not then being ended.
+//
+// The count is the store's as this node reads it: in a gossip cluster, sign-ins on several nodes at once can take the
+// user a few past the cap until the next sign-in counts again. Each deletion holds only while the session is as read
+// (EndSessions), so a refresh grant made on it meanwhile is found and ended with it.
+func (s *Service) CapSessions(ctx context.Context, u *model.User, keep *model.Session) (int, error) {
+	limit := s.SessionsPerUser()
+	if limit <= 0 {
+		return 0, nil
+	}
+	all, err := s.Sessions.All(ctx, u.ID)
+	if err != nil {
+		return 0, mapStore(err)
+	}
+	now := time.Now()
+	live := slices.DeleteFunc(all, func(x *model.Session) bool { return !x.Valid(now) })
+	if len(live) <= limit {
+		return 0, nil
+	}
+	slices.SortFunc(live, func(a, b *model.Session) int { // least recently used first; then the earliest signed in
+		if c := a.LastSeen.Compare(b.LastSeen); c != 0 {
+			return c
+		}
+		return a.AuthTime.Compare(b.AuthTime)
+	})
+	excess := min(len(live)-limit, maxEvictions)
+	var victims []*model.Session
+	for _, x := range live {
+		if len(victims) == excess {
+			break
+		}
+		if x.ID != keep.ID && x.AuthTime.Before(keep.AuthTime) {
+			victims = append(victims, x)
+		}
+	}
+	ended := 0
+	var errs []error
+	for _, x := range victims {
+		if ctx.Err() != nil {
+			errs = append(errs, ctx.Err())
+			break
+		}
+		s.sessionsEnding(ctx, u.ID, []string{x.ID}) // back-channel logout, before the record goes
+		n, err := s.endSessions(ctx, u.ID, []*model.Session{x}, true)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if n == 0 {
+			continue
+		}
+		ended++
+		detail := map[string]string{"ip": x.IP, "signed_in": x.AuthTime.UTC().Format(time.RFC3339),
+			"last_seen": x.LastSeen.UTC().Format(time.RFC3339), "cap": strconv.Itoa(limit), "result": "ended"}
+		if err != nil {
+			detail["error"] = err.Error() // the session ended; a refresh grant of it did not
+		}
+		s.AuditUser(ctx, System, u, "login.session.evict", detail)
+	}
+	return ended, errors.Join(errs...)
+}
+
 // UserUsable is the one test of whether a user may be signed in or act (a browser session, a refresh grant, an access
 // or API token): enabled (active, within its dates) and its organization still there. Deleting an organization (or a
 // user) deletes that one record: everything that belonged to it stops counting at once, as it stands on its parent,

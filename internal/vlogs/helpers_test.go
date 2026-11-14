@@ -26,14 +26,17 @@ func fastTimers(t *testing.T) {
 	t.Cleanup(func() { flushEvery, firstRetryWait = flush, retry })
 }
 
-// fakeVL is a VictoriaLogs insert endpoint. It can be switched off (it then answers downStatus, 503 unless set), and
-// refuses a request holding the event id reject with rejectStatus, as VictoriaLogs refuses content it will never
-// take. It counts the requests and the events it took.
+// fakeVL is a VictoriaLogs insert endpoint. It can be switched off (it then answers downStatus, 503 unless set), or
+// set to go down after a number of requests (goDownAfter), and refuses a request holding the event id reject (or one of
+// rejects; "*": every request) with rejectStatus, as VictoriaLogs refuses content it will never take. It counts the
+// requests and the events it took.
 type fakeVL struct {
 	mu           sync.Mutex
 	up           bool
 	downStatus   int
+	downAt       int // >0: the last request answered before it goes down
 	reject       string
+	rejects      map[string]bool
 	rejectStatus int
 	requests     int
 	ids          map[string]int
@@ -46,8 +49,12 @@ func newFakeVL(t *testing.T) *fakeVL {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.requests++
-		if !f.up {
+		if !f.up || (f.downAt > 0 && f.requests > f.downAt) {
 			http.Error(w, "down", f.downStatus)
+			return
+		}
+		if f.reject == "*" {
+			http.Error(w, "rejected: everything", f.rejectStatus)
 			return
 		}
 		var got []string
@@ -59,7 +66,7 @@ func newFakeVL(t *testing.T) *fakeVL {
 			}
 		}
 		for _, id := range got {
-			if f.reject != "" && id == f.reject {
+			if (f.reject != "" && id == f.reject) || f.rejects[id] {
 				http.Error(w, "rejected: "+strings.Repeat("x", 400), f.rejectStatus) // longer than a log line takes
 				return
 			}
@@ -72,7 +79,20 @@ func newFakeVL(t *testing.T) *fakeVL {
 	return f
 }
 
-func (f *fakeVL) set(up bool) { f.mu.Lock(); f.up = up; f.mu.Unlock() }
+func (f *fakeVL) set(up bool) { f.mu.Lock(); f.up, f.downAt = up, 0; f.mu.Unlock() }
+
+// setRejects refuses (with status) every request holding one of ids.
+func (f *fakeVL) setRejects(status int, ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejects, f.rejectStatus = map[string]bool{}, status
+	for _, id := range ids {
+		f.rejects[id] = true
+	}
+}
+
+// goDownAfter answers n more requests as it does now, then goes down.
+func (f *fakeVL) goDownAfter(n int) { f.mu.Lock(); f.downAt = f.requests + n; f.mu.Unlock() }
 
 func (f *fakeVL) setDownStatus(status int) { f.mu.Lock(); f.downStatus = status; f.mu.Unlock() }
 

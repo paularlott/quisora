@@ -348,9 +348,11 @@ func TestGenericFailures(t *testing.T) {
 	res, out = b.post("/o/acme/api-internal/login/password", `{"email":"pat@example.com","password":"x","extra":1}`)
 	wantStatus(t, res, out, 400)
 
-	// Failures are audited with a reason, never the password.
+	// Failures are audited with a reason, never the password: at most one a minute per account and reason (pat's
+	// two wrong passwords are one event, the second held back), and per login that names no account in each
+	// organization.
 	fails := e.audits(t, "login.failure")
-	if len(fails) != 5 {
+	if len(fails) != 4 {
 		t.Fatalf("failure audits: %d", len(fails))
 	}
 	reasons := map[string]int{}
@@ -362,7 +364,7 @@ func TestGenericFailures(t *testing.T) {
 			}
 		}
 	}
-	if reasons["bad password"] != 2 || reasons["unknown user"] != 2 || reasons["inactive"] != 1 {
+	if reasons["bad password"] != 1 || reasons["unknown user"] != 2 || reasons["inactive"] != 1 {
 		t.Fatalf("reasons %v", reasons)
 	}
 }
@@ -484,12 +486,13 @@ func TestUsernameCannotSignIn(t *testing.T) {
 			t.Errorf("%q: no session: %v", who, out)
 		}
 	}
-	// A failed username attempt is audited as an unknown user, like any unknown account.
+	// A failed username attempt is audited as an unknown user, like any unknown account: once a minute per login,
+	// whatever its case (the username in capitals is the same login, held back).
 	reasons := map[string]int{}
 	for _, a := range e.audits(t, "login.failure") {
 		reasons[a.Detail["reason"]]++
 	}
-	if reasons["unknown user"] != 4 {
+	if reasons["unknown user"] != 3 {
 		t.Errorf("audit reasons %v", reasons)
 	}
 }

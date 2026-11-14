@@ -65,7 +65,7 @@ func (m *Module) inviteBegin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, msgNoPasskeyLogin, "")
 		return
 	}
-	id, opts, err := m.Passkeys.BeginRegistration(r.Context(), u, map[string]string{passkey.PurposeKey: purposeInvite})
+	id, opts, err := m.Passkeys.BeginRegistration(m.heldByIP(r), u, map[string]string{passkey.PurposeKey: purposeInvite})
 	if err != nil {
 		m.internalError(w, r, "passkey registration", err)
 		return

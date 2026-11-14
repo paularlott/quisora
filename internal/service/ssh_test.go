@@ -3271,6 +3271,35 @@ func TestSSHSuperAdminCertsHiddenBelowThem(t *testing.T) {
 	}
 }
 
+// SSHCertsOfUser (the user page's certificates) hides a super admin's from those below them as the tenant's listing
+// does, whoever calls it: the user is not found, whatever the caller had of them.
+func TestSSHCertsOfUserHidesSuperAdmins(t *testing.T) {
+	e := newEnv(t)
+	ten := e.tenant(e.primary.ID, "prod")
+	open := ten.Settings
+	open.MembersOnly = false
+	ten, err := e.svc.UpdateTenant(e.ctx, service.System, ten.ID, service.TenantInput{Settings: &open})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &sshWorld{env: e, org: e.primary, tenant: ten, admin: e.user(e.primary.ID, "padmin", model.RoleAdmin)}
+	w.enable(service.SSHSettingsInput{AllowPrivileged: ptr(true)})
+	su := w.mustSign(e.super).Cert
+	pat := e.user(e.primary.ID, "pat", model.RoleUser)
+	plain := w.mustSign(pat).Cert
+
+	admin := actor(w.admin)
+	if views, err := w.svc.SSHCertsOfUser(w.ctx, admin, e.super); !errors.Is(err, service.ErrNotFound) || len(views) != 0 {
+		t.Errorf("admin lists the super admin's certificates: %d, %v", len(views), err)
+	}
+	if views, err := w.svc.SSHCertsOfUser(w.ctx, admin, pat); err != nil || len(views) != 1 || views[0].ID != plain.ID {
+		t.Errorf("admin, a user's: %v", err)
+	}
+	if views, err := w.svc.SSHCertsOfUser(w.ctx, actor(e.super), e.super); err != nil || len(views) != 1 || views[0].ID != su.ID {
+		t.Errorf("super admin, their own: %v", err)
+	}
+}
+
 // Turning host certificates off stops publishing the host key, but does not undo a revocation: a host certificate
 // revoked by hand stays on the revocation list (whichever came first), so a client with RevokedHostKeys goes on
 // refusing it. A host key with nothing revoked still gets no section.

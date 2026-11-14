@@ -310,7 +310,7 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 	if (input.Role != nil && *input.Role != u.Role && input.Role.Rank() >= model.RoleAdmin.Rank() || curbs) && !m.stepUp(w, r) {
 		return
 	}
-	if input.Email != nil && !strings.EqualFold(*input.Email, u.Email) && *input.Email != "" && m.s.Site.Mail && !m.mailBudget(w, r, org, a, u.ID) {
+	if input.Email != nil && !model.SameAddress(strings.TrimSpace(*input.Email), u.Email) && *input.Email != "" && m.s.Site.Mail && !m.mailBudget(w, r, org, a, u.ID) {
 		return // a new address is mailed a verification link, below
 	}
 	upd, err := m.s.Svc.UpdateUser(r.Context(), a, u.ID, input)
@@ -318,7 +318,7 @@ func (m *Module) updateUser(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, err)
 		return
 	}
-	if !strings.EqualFold(upd.Email, u.Email) && !upd.EmailVerified && m.s.Site.Mail {
+	if !model.SameAddress(upd.Email, u.Email) && !upd.EmailVerified && m.s.Site.Mail {
 		// A new primary address starts unverified: its owner is mailed a link, as for an added address. The change
 		// stands either way; a failed mail is logged and the profile's "Send verification email" tries again.
 		if err := m.Mailer.SendVerifyAddress(r.Context(), org, upd, upd.Email); err != nil {
@@ -396,7 +396,12 @@ func (m *Module) removeUserPicture(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, m.userView(r.Context(), upd))
 }
 
-// removePassword deletes the user's password; they sign in again only through a new invitation.
+// removePassword deletes the user's password; they sign in again only through a new invitation. Never one's own: unlike
+// the other changes to a user, which one may make to oneself here as on the account page (selfCtx, after a recent
+// re-authentication), this one the account page does not offer at all, so it is refused at once with the service's
+// reason (service.ErrOwnPassword, which the service keeps for every caller), before any re-authentication is asked for
+// a change that cannot be made. That is for the organization's staff, whose console shows their own user page; anyone
+// else is answered as the service answers them (a plain user manages nobody: not found).
 func (m *Module) removePassword(w http.ResponseWriter, r *http.Request) {
 	org, a, found := m.orgFor(w, r)
 	if !found {
@@ -406,7 +411,11 @@ func (m *Module) removePassword(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	if u.ID != a.UserID && !m.stepUp(w, r) {
+	if u.ID == a.UserID && m.s.Svc.CanManageUsers(a, org.ID) {
+		web.WriteError(w, service.ErrOwnPassword)
+		return
+	}
+	if !m.stepUp(w, r) {
 		return
 	}
 	if err := m.s.Svc.RemovePassword(r.Context(), a, u.ID); err != nil {

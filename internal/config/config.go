@@ -192,11 +192,21 @@ const (
 	MaxGrantsPerUser = 100000
 )
 
+// Bounds of limits.sessions_per_user.
+const (
+	MinSessionsPerUser = 1
+	MaxSessionsPerUser = 10000
+)
+
 type Limits struct {
-	MaxInFlight     int `toml:"max_in_flight" flag:"max-in-flight" usage:"Concurrent requests per node before 503"`
-	LoginPerIPMin   int `toml:"login_per_ip_min" flag:"login-per-ip-min" usage:"Sign-in attempts per organization and IP per minute (0 = no limit)"`
-	LockoutAttempts int `toml:"lockout_attempts" flag:"lockout-attempts" usage:"Failed passwords before an account is locked (0 = never locked)"`
-	LockoutMinutes  int `toml:"lockout_minutes" flag:"lockout-minutes" usage:"Account lockout duration, minutes"`
+	MaxInFlight int `toml:"max_in_flight" flag:"max-in-flight" usage:"Concurrent requests per node before 503"`
+	// MaxInFlightPerIP is how many of MaxInFlight one client address (an IPv6 /64 counting as one) may hold at once
+	// (0: a sixteenth of MaxInFlight, at least 1): a request holds its place from before its body is read, so without
+	// a share one address sending slow bodies could hold every place and keep every other client out.
+	MaxInFlightPerIP int `toml:"max_in_flight_per_ip" flag:"max-in-flight-per-ip" usage:"Concurrent requests per node one IP address (an IPv6 /64) may have before 429 (0 = a sixteenth of max_in_flight)"`
+	LoginPerIPMin    int `toml:"login_per_ip_min" flag:"login-per-ip-min" usage:"Sign-in attempts per organization and IP per minute (0 = no limit)"`
+	LockoutAttempts  int `toml:"lockout_attempts" flag:"lockout-attempts" usage:"Failed passwords before an account is locked (0 = never locked)"`
+	LockoutMinutes   int `toml:"lockout_minutes" flag:"lockout-minutes" usage:"Account lockout duration, minutes"`
 	// OrgFailuresPerMin is how many failed passwords an organization's sign-in takes in a minute before it counts as
 	// under a password spray: until a lockout time passes without such a minute, each address may then fail only as
 	// often as one account, across the whole organization, so that guessing every account's password from a few
@@ -209,11 +219,25 @@ type Limits struct {
 	// GrantsPerUser is how many refresh grants one user may hold at once (each sign-in of an application makes one);
 	// past it the least likely to be missed are ended. An organization may set its own (model.OrgSettings).
 	GrantsPerUser int `toml:"grants_per_user" flag:"grants-per-user" usage:"Refresh grants one user may hold, 10 to 100000; past it the oldest unused are ended (an organization may set its own)"`
-	EphemeralMB   int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
+	// SessionsPerUser is how many browser sessions one user may hold at once (each sign-in in a browser without one
+	// makes one); past it the least recently used are ended (service.CapSessions), at most 100 a sign-in, never the
+	// sign-in's own session nor one signed in since. A sign-in is never refused for it: a person cannot be locked out by
+	// their own forgotten sessions.
+	SessionsPerUser int `toml:"sessions_per_user" flag:"sessions-per-user" usage:"Browser sessions one user may hold, 1 to 10000; past it the least recently used are ended (a sign-in is never refused for it)"`
+	EphemeralMB     int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
 	// FlowsPerIP is how many authorization flows (sign-ins started at an authorization endpoint and not finished yet)
-	// one client address may hold at once, an IPv6 /64 counting as one address: so that a few addresses cannot fill
-	// ephemeral_mb with flows they never finish. Approximate, like the other limits (oidc.holdFlow says how).
-	FlowsPerIP int `toml:"flows_per_ip" flag:"flows-per-ip" usage:"Sign-ins in progress one IP address (an IPv6 /64) may hold at once; past it new ones get 429 (0 = no limit)"`
+	// one client address may hold at once, an IPv6 /64 counting as one address (its /48 allowed sixteen times as
+	// many, its /32 sixty-four times): so that a few addresses cannot fill ephemeral_mb with flows they never finish.
+	// Approximate, like the other limits (oidc.startFlow says how).
+	FlowsPerIP int `toml:"flows_per_ip" flag:"flows-per-ip" usage:"Sign-ins in progress one IP address (an IPv6 /64; its /48 sixteen times as many, its /32 sixty-four times) may hold at once; past it new ones get 429 (0 = no limit)"`
+	// HeldKB is how much short-lived state (sign-in flows, provider sign-ins under way, passkey challenges, sign-in
+	// tickets, device sign-ins, authorization codes), in KiB, one requester may have this server hold at once: a client
+	// address (an IPv6 /64 counting as one, its /48 allowed sixteen times as much and its /32 sixty-four times) for
+	// requests nobody has signed in for, the user for a signed-in one's. A rate limit bounds how fast such state is
+	// written, not how much of it is held: this does, in bytes, so that a few addresses cannot fill ephemeral_mb
+	// (ephemeral.Budget says how). At most MaxHeldShare of ephemeral_mb (Validate): the limit is there so that no one
+	// requester holds more than a small part of the node's room.
+	HeldKB int `toml:"held_kb" flag:"held-kb" usage:"Short-lived sign-in state one IP address (an IPv6 /64; its /48 sixteen times as much, its /32 sixty-four times) or signed-in user may hold at once, KiB, at least 64, and used as at most 8 for each MiB of ephemeral-mb; past it requests that would add to it get 429 (0 = no limit)"`
 }
 
 type Log struct {
@@ -249,14 +273,49 @@ func Default() *Config {
 		Session:  Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:     Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:    Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
-		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, PasswordMinLength: 15, GrantsPerUser: 1000},
+		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, HeldKB: 2048, PasswordMinLength: 15, GrantsPerUser: 1000, SessionsPerUser: 100},
 		Log:      Log{Level: "info", Format: "console", Access: true},
 		reloaded: new(atomic.Pointer[Limits]),
 	}
 }
 
+// MinHeldKB is the least limits.held_kb may be when it is set: room for a few sign-in flows of the largest size (a
+// flow's own parameters and what it keeps of a client metadata document come to about 12 KiB).
+const MinHeldKB = 64
+
+// MaxHeldShare is the largest part of limits.ephemeral_mb that limits.held_kb may be: one 128th, or 8 KiB for each
+// MiB. A requester holds up to twice its budget (across the turn of a window: ephemeral.Hold) and the widest key of
+// an IPv6 address sixty-four times that (ephemeral.WidestFactor), so at this share one provider's whole allocation
+// can at most just fill the node, one /48 a quarter of it, and one address or account a 64th. The budget for guard
+// records is a sixteenth of held_kb against room a quarter of ephemeral_mb (ephemeral.GuardShare), so the same
+// share keeps that room from being filled by fewer than a few hundred requesters.
+const MaxHeldShare = 128
+
+// HeldBytes is the held budget in force, in bytes (0: no limit): limits.held_kb, but at most 1/MaxHeldShare of
+// limits.ephemeral_mb (never below MinHeldKB), so that the default, or a held_kb set for a larger node, still holds one
+// address or user to a small part of a smaller node's short-lived state rather than refusing to start.
+func (l Limits) HeldBytes() int64 {
+	if l.HeldKB <= 0 {
+		return 0
+	}
+	kb := l.HeldKB
+	if l.EphemeralMB > 0 {
+		kb = min(kb, max(l.EphemeralMB<<10/MaxHeldShare, MinHeldKB))
+	}
+	return int64(kb) << 10
+}
+
 // LiveLimits returns the limits in force: Limits, until a configuration reload replaces them (SetLiveLimits). Every
 // limit read while the server runs is read here, at each use, so a reload changes it without a restart.
+// InFlightPerIP is how many requests in progress one client address may have on a node: limits.max_in_flight_per_ip,
+// or a sixteenth of limits.max_in_flight (at least 1) when it is 0.
+func (l Limits) InFlightPerIP() int {
+	if l.MaxInFlightPerIP > 0 {
+		return l.MaxInFlightPerIP
+	}
+	return max(l.MaxInFlight/16, 1)
+}
+
 func (c *Config) LiveLimits() Limits {
 	if l := c.reloaded.Load(); l != nil {
 		return *l
@@ -649,13 +708,21 @@ func limitErrors(l Limits) []error {
 			"and 15 where a password may be the only factor), not %d", n))
 	}
 	positive("limits.max_in_flight", l.MaxInFlight)
+	nonNegative("limits.max_in_flight_per_ip", l.MaxInFlightPerIP)
 	nonNegative("limits.login_per_ip_min", l.LoginPerIPMin)
 	nonNegative("limits.flows_per_ip", l.FlowsPerIP)
+	if l.HeldKB != 0 && l.HeldKB < MinHeldKB {
+		errs = append(errs, fmt.Errorf("limits.held_kb must be 0 (no limit) or at least %d: less would refuse a single "+
+			"sign-in with a long state", MinHeldKB))
+	}
 	nonNegative("limits.lockout_attempts", l.LockoutAttempts)
 	nonNegative("limits.org_failures_per_minute", l.OrgFailuresPerMin)
 	nonNegative("limits.password_workers", l.PasswordWorkers)
 	if l.GrantsPerUser < MinGrantsPerUser || l.GrantsPerUser > MaxGrantsPerUser {
 		errs = append(errs, fmt.Errorf("limits.grants_per_user must be between %d and %d", MinGrantsPerUser, MaxGrantsPerUser))
+	}
+	if l.SessionsPerUser < MinSessionsPerUser || l.SessionsPerUser > MaxSessionsPerUser {
+		errs = append(errs, fmt.Errorf("limits.sessions_per_user must be between %d and %d", MinSessionsPerUser, MaxSessionsPerUser))
 	}
 	if l.LockoutAttempts > 0 {
 		positive("limits.lockout_minutes", l.LockoutMinutes)

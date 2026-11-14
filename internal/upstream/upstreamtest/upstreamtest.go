@@ -55,7 +55,9 @@ type FakeOIDC struct {
 	RotateRefresh bool
 	RefreshFail   int
 	RefreshCalls  int
+	CodeExchanges int             // code exchanges asked for at the token endpoint, valid or not
 	RefreshDelay  time.Duration   // how long a refresh request waits before it is answered (a slow provider)
+	CodeDelay     time.Duration   // how long a code exchange waits before it is answered (a slow provider)
 	GrantScope    string          // the scope a code exchange's token response names ("": it names none)
 	refresh       map[string]bool // live refresh tokens
 	refreshSeq    int
@@ -146,9 +148,16 @@ func NewFakeOIDC(t *testing.T) *FakeOIDC {
 			return
 		}
 		f.Mu.Lock()
+		f.CodeExchanges++
 		pc := f.pending[r.Form.Get("code")]
 		delete(f.pending, r.Form.Get("code"))
+		delay := f.CodeDelay
 		f.Mu.Unlock()
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
 		if pc == nil || r.Form.Get("redirect_uri") == "" {
 			http.Error(w, `{"error":"invalid_grant"}`, 400)
 			return

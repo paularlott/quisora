@@ -229,7 +229,7 @@ func (m *Module) emailVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	if !good {
 		wrong = true
-		m.failed(w, r, n, org, u, u.Username, "email_code")
+		m.failed(w, r, n, org, u, u.Username, "email_code", key)
 		return
 	}
 	if err := m.useTicket(ctx, in.Ticket); err != nil {

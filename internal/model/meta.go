@@ -210,6 +210,44 @@ func NewClientID() string { return ClientIDPrefix + NewID() }
 // itself is stored as given.
 func Lower(s string) string { return strings.ToLower(norm.NFKC.String(strings.TrimSpace(s))) }
 
+// SameKey reports whether a and b are the same name or address by the rule that keeps them unique (Lower): how an
+// address or username given at sign-in, by a provider or in a request is matched with the one stored, which may have
+// been stored in another form (a directory that sent it full-width, in capitals). The stored values are kept as
+// given and normalised only when compared, on both sides, so values stored before this rule need no migration, and
+// no two accounts can match one value: the unique key already keeps their values apart. strings.EqualFold is not the
+// same rule (it folds neither full-width letters nor ligatures, and folds σ with ς, which Lower keeps apart), so it
+// is not used to find an account or an address of one. A check that something was proven for or changed from an
+// address (a link mailed to it, an address being replaced) compares more strictly, and fails closed.
+func SameKey(a, b string) bool { return a == b || Lower(a) == Lower(b) }
+
+// SameAddress is that stricter rule: whether a and b are the same address as written, once the ASCII letters of
+// both are lowercased, and only those. Mail is delivered by the address as written, and two forms that claim one key
+// (SameKey: a full-width ｖictim@corp.com and victim@corp.com) may be two mailboxes, so what was proven for one form
+// (a link mailed to it, a provider's or an administrator's word for it) is never taken for the other.
+// strings.EqualFold is not this rule either: it folds the Kelvin sign K (U+212A) with k, and ſ (U+017F) with s, so
+// kate@corp.com and Kate@corp.com would count as one address. A non-ASCII letter in another case is another
+// address here: the comparison fails closed. Used wherever an address is checked for being proven, vouched for or
+// changed (verification links, invitations, marking an address verified, linking a provider by a verified
+// address, whether an update changes an address).
+func SameAddress(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
 // UpstreamAMRMax is the most authentication method references kept from an upstream provider's ID token.
 const UpstreamAMRMax = 16
 

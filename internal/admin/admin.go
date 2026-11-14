@@ -60,6 +60,7 @@ type Module struct {
 	// nodes' reports, and an error when nothing or not everything was applied.
 	ReloadCluster func(ctx context.Context) (any, error)
 	s             *web.Server
+	audits        auditGate // the audit pages read at once on this node (auditBudget)
 }
 
 // New returns the admin module with a no-op mailer.

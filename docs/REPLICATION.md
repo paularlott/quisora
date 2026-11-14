@@ -354,6 +354,8 @@ start, into an index in memory that its own writes keep from then on). With goss
   per node, encrypted and authenticated with the cluster key like every message; a node's answer is cut to what fits one
   message, 3 MB, and asked for again from where it ended, so a page of large events is complete), merges them in the page's order and
   says how many nodes answered within 3 seconds: a node that is down or slow is missing from the page, not an error.
+  A node gives another's request no longer than the asker waits (4 seconds at most), and answers at most 8 at once (4
+  of one organization's log), the rest busy at once, so abandoned pages do not pile up as queries on it.
   Each node purges its own events after `audit.retention_days`. With VictoriaLogs configured (production), every node
   sends its events there instead, and the pages read them from it.
 
@@ -712,12 +714,21 @@ tokens until it has caught up.
 ### Short-lived state
 
 Sign-in steps, codes and challenges stay in the memory of the node that made them (their ids carry its prefix) and
-the others forward to it. Hash-routed state — rate-limit and lockout counters — lives on the rendezvous-hash owner
+the others forward to it: reads, takes, and the change of an entry that is still there (*replace*, done by the owner
+in one step under its lock with the entry's expiry kept, so a sign-in step that another request ended meanwhile is
+never made again by a request that read it before; a node of a build without the operation answers it as unknown,
+and the request is refused with 503 rather than falling back to a blind write). The records of an authorization
+code's use are keyed by the code, so they stay with the node that issued it too, and a change of membership while a
+code is redeemed does not move them. Hash-routed state — rate-limit and lockout counters — lives on the rendezvous-hash owner
 **among the nodes that are ready and alive** (each publishes `quisora.ready` in gossip metadata; a node gossip
 suspects owns nothing, so its counters move at once rather than every request waiting on it). It **fails closed**:
 when no ready node is in view, or the owner cannot be reached, the operation fails (the rate limit or lockout
 refuses) instead of counting on one node. It is in the owner's memory only: when the owner changes (a node stops
 serving, restarts, leaves or is suspected) the new owner starts from nothing, so a counter's window starts again.
+The counters of what a requester holds (`limits.held_kb`, `limits.flows_per_ip`) start again with it: what was
+charged before the change is no longer counted, and what it gives back afterwards comes off the charges made since,
+so each change of a counter's owner within a 20-minute window lets its requester hold up to one more budget until
+that window's entries have expired.
 A limit checked before anything else (client authentication, a bearer token) reads the counter from the owner's
 last answer to this node when that is under a second old, so the requests that pass a limit cost no round trip;
 every attempt that counts goes to the owner and refreshes it, so a node lets at most one attempt past a limit reached
@@ -746,7 +757,8 @@ message carries the sender's `ClusterSize`, and a receiver configured differentl
 | Commit | one way | partition, epoch, committed position (the owner's commit notice) |
 | Claim, Relinquish | request, one way | a higher-ranked node asks the owner to hand a partition back; an owner says it stepped down |
 
-**Quisora's own** (`UserMsg+n`): `+5` an ephemeral operation on the node that owns the state; `+11` a change notice
+**Quisora's own** (`UserMsg+n`): `+5` an ephemeral operation on the node that owns the state (set, get, take,
+delete, count, replace); `+11` a change notice
 (shared-database `cluster.notify` gossip only); `+12` a configuration reload (check, or apply); `+14` this node's clock
 (the peer clock check); `+10` an audit page (this node's own events, answered only to a node of the same data set).
 `+1` to `+4`, `+6` to `+9` and `+13` were the earlier gossip mode's (record broadcast, push, change feed, quorum

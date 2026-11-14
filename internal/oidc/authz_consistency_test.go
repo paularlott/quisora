@@ -364,7 +364,7 @@ func TestLogoutConfirmationFailsClosed(t *testing.T) {
 	c, _ := h.session(h.user)
 	// no hint: the confirmation page needs a place to keep the request
 	h.useEph(func(op, ns string) error {
-		if op == "new" && ns == nsLogout {
+		if op == "set" && ns == nsLogout {
 			return errors.New("ephemeral down")
 		}
 		return nil

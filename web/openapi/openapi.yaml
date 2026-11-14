@@ -957,7 +957,9 @@ paths:
       description: "Mark one of the user's unverified addresses (primary or linked) verified without the mailed link, for an
         address you know to be right: it then links sign-ins from providers and reaches applications as email_verified.
         Managers and up, for users they manage; never your own; a manager's or administrator's who can already sign in
-        only by a super admin. Audited as user.email.verify. 409 when already verified"
+        only by a super admin. The address must be written as the account stores it (in any case): another form of it
+        (full-width letters, say) is 404. Audited as user.email.verify, with the address as stored. 409 when already
+        verified"
       operationId: post_orgs_org_users_id_emails_address_mark-verified
       security:
         - session: []
@@ -2948,7 +2950,12 @@ paths:
       summary: List audit events
       description: "List audit events, newest first by default. total counts the matching events up to 10,000 (or to the end
         of a page past that), and total_more says there are more. Also: source (store, cluster or victorialogs) and, in a
-        gossip cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page)"
+        gossip cluster, nodes and nodes_answered (a node that did not answer in time is missing from the page). The
+        organization's administrators share a budget of 120 pages a minute (the console, this API and the MCP server's
+        query_audit_log together; a super admin has one of their own), of which each administrator or service account
+        may read 60, and each server reads at most 2 of the organization's pages at once (12 for every organization
+        together): past any of these, 429 with Retry-After. Only pages that are read are counted. A page that takes
+        longer than 15 seconds is given up with 503 and Retry-After"
       operationId: get_orgs_org_audit
       security:
         - session: []
@@ -2983,6 +2990,7 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429": {$ref: "#/components/responses/AuditTooManyRequests"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/audit:
     parameters:
@@ -2991,7 +2999,10 @@ paths:
       tags: [Audit]
       summary: List the audit events of every organization
       description: List the audit events of every organization (super admins), newest first by default; ?org=<name> for one.
-        Items carry org_name; total, total_more, source, nodes and nodes_answered as for an organization's audit log
+        Items carry org_name; total, total_more, source, nodes and nodes_answered as for an organization's audit log.
+        Each super admin has a budget of 120 pages a minute of their own, and each server reads at most 2 of their pages
+        at once (16 in all, 4 of them kept for super admins); past either, 429 with Retry-After. A page that takes
+        longer than 15 seconds is given up with 503 and Retry-After
       operationId: get_audit
       security:
         - session: []
@@ -3030,6 +3041,7 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429": {$ref: "#/components/responses/AuditTooManyRequests"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/keys:
     parameters:
@@ -4171,6 +4183,17 @@ components:
       schema:
         type: string
   responses:
+    AuditTooManyRequests:
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+      description: The audit log budget is spent (120 pages a minute per organization, 60 of them per administrator or
+        service account, or 120 per super admin; Retry-After 60), or this server already reads as many audit pages at
+        once as it may (2 of one budget, 12 of every organization's, 16 in all; Retry-After 2)
+      headers:
+        Retry-After:
+          description: seconds to wait
+          schema: {type: integer}
     BadRequest:
       content:
         application/json:

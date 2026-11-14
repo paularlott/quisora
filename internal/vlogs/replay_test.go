@@ -1,7 +1,9 @@
 package vlogs
 
 import (
+	"encoding/json"
 	"fmt"
+	"math/bits"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,6 +171,244 @@ func TestReplayRejectedSegmentDoesNotBlockLaterOnes(t *testing.T) {
 				t.Fatalf("a rejection was taken for an outage: empty %v spooling %v backoff %v", c.spool.empty(), c.spooling, c.backoff)
 			}
 		})
+	}
+}
+
+// spoolLines stores events id-000 … id-(n-1) as one segment, as the spooler writes a moment's events of every
+// organization together, and returns their ids.
+func spoolLines(t *testing.T, c *Client, n int) []string {
+	t.Helper()
+	var body []byte
+	var out []string
+	for i := range n {
+		id := fmt.Sprintf("id-%03d", i)
+		body, out = append(body, line(id)...), append(out, id)
+	}
+	if _, err := c.spool.store(body); err != nil {
+		t.Fatal(err)
+	}
+	c.spool.seal()
+	return out
+}
+
+// One line VictoriaLogs refuses must not take the rest of its segment with it: the segment is sifted, every other
+// line is delivered, and only the refused ones are logged (as audit.undelivered, with VictoriaLogs' answer). The
+// sifting is bounded: a couple of bad lines among hundreds cost a few dozen requests, not one per line.
+func TestReplayRejectedSegmentKeepsItsGoodLines(t *testing.T) {
+	vl := newFakeVL(t)
+	vl.set(true)
+	vl.setRejects(http.StatusBadRequest, "id-050", "id-151")
+	log := newCapture()
+	c := spooled(t, vl.srv.URL, log)
+	all := spoolLines(t, c, 200)
+	c.replay()
+	for _, id := range all {
+		if bad := id == "id-050" || id == "id-151"; vl.took(id) == bad {
+			t.Fatalf("%s: delivered %v", id, vl.took(id))
+		}
+	}
+	got := log.undelivered()
+	if len(got) != 2 || got[0].event["id"] != "id-050" || got[1].event["id"] != "id-151" ||
+		!strings.Contains(got[0].reason, "rejected") {
+		t.Fatalf("logged %v", got)
+	}
+	if n := vl.requestCount(); n > 1+siftPosts {
+		t.Fatalf("%d requests to sift one segment", n)
+	}
+	if !c.spool.empty() || c.spooling || c.backoff != 0 {
+		t.Fatalf("empty %v spooling %v backoff %v", c.spool.empty(), c.spooling, c.backoff)
+	}
+}
+
+// A segment VictoriaLogs refuses wholesale is not sent line by line: no part of it is taken, so it earns no more
+// than the siftPosts requests it starts with; the parts left then get one last request each (at most one per
+// halving), and the rest is logged as a rejected segment always was, every line exactly once.
+func TestReplaySiftingIsBounded(t *testing.T) {
+	vl := newFakeVL(t)
+	vl.set(true)
+	vl.setReject("*", http.StatusUnprocessableEntity)
+	log := newCapture()
+	c := spooled(t, vl.srv.URL, log)
+	all := spoolLines(t, c, 500)
+	c.replay()
+	if n := vl.requestCount(); n < 1+siftPosts || n > 1+siftPosts+bits.Len(uint(len(all)))+1 {
+		t.Fatalf("%d requests, want %d and a last one for each part left", n, 1+siftPosts)
+	}
+	got := log.undelivered()
+	if ids := log.undeliveredIDs(); len(got) != len(all) || len(ids) != len(all) {
+		t.Fatalf("logged %d lines, %d distinct, of %d", len(got), len(ids), len(all))
+	}
+	if !c.spool.empty() || c.spooling {
+		t.Fatal("a refused segment stayed in the spool")
+	}
+}
+
+// spoolScattered stores n events as one segment, bad of them (spread evenly through it) ones VictoriaLogs refuses,
+// and returns how many it refuses.
+func spoolScattered(t *testing.T, c *Client, vl *fakeVL, n, bad int) int {
+	t.Helper()
+	var body []byte
+	var refused []string
+	for i := range n {
+		id := fmt.Sprintf("ev-%05d", i)
+		if i%(n/bad) == n/bad/2 && len(refused) < bad {
+			refused = append(refused, id)
+		}
+		body = append(body, line(id)...)
+	}
+	vl.setRejects(http.StatusBadRequest, refused...)
+	if _, err := c.spool.store(body); err != nil {
+		t.Fatal(err)
+	}
+	c.spool.seal()
+	return len(refused)
+}
+
+// A full segment with a few refused lines scattered through it loses those lines and no others: every part
+// VictoriaLogs takes earns the requests that finding the next bad line costs, so the sifting does not run out part
+// way and give up hundreds of good events with each bad one (with a fixed 64 requests, 4 bad lines among 3,000 lost
+// 374 good events, and 12 lost 2,116). It stays far from a request per line.
+func TestReplaySiftsScatteredRefusedLinesToTheEnd(t *testing.T) {
+	const lines = 3000 // a full 1 MB segment holds some 2,000 to 3,500 events
+	for _, bad := range []int{1, 4, 12, 20} {
+		vl := newFakeVL(t)
+		vl.set(true)
+		log := newCapture()
+		c := spooled(t, vl.srv.URL, log)
+		refused := spoolScattered(t, c, vl, lines, bad)
+		c.replay()
+		if lost := len(log.undeliveredIDs()) - refused; lost != 0 {
+			t.Fatalf("%d refused lines of %d: %d good events not delivered", refused, lines, lost)
+		}
+		if got, _ := vl.count(); got != lines-refused {
+			t.Fatalf("%d refused lines of %d: %d delivered", refused, lines, got)
+		}
+		if n := vl.requestCount(); n > 1+siftMaxPosts {
+			t.Fatalf("%d refused lines of %d: %d requests", refused, lines, n)
+		}
+	}
+}
+
+// Once the requests are spent, the parts left are posted once each and never halved again, even when one of that
+// last pass is taken and earns its credit: the search is over, so it ends within the parts left. (A part taken in
+// the last pass once earned requests that halved the next part again, past the bound.) Here, with one request to
+// start with, 8 lines with id-000 and id-007 refused: the batch, then 0-3 (rejected, halved), then the last pass:
+// 0-1 refused whole, 2-3 taken, 4-7 refused whole, not halved.
+func TestReplaySiftingLastPassIsNotHalved(t *testing.T) {
+	posts := siftPosts
+	t.Cleanup(func() { siftPosts = posts })
+	siftPosts = 1
+	vl := newFakeVL(t)
+	vl.set(true)
+	vl.setRejects(http.StatusBadRequest, "id-000", "id-007")
+	log := newCapture()
+	c := spooled(t, vl.srv.URL, log)
+	all := spoolLines(t, c, 8)
+	c.replay()
+	if n := vl.requestCount(); n != 5 {
+		t.Fatalf("%d requests, want 5", n)
+	}
+	logged := log.undeliveredIDs()
+	for i, id := range all {
+		if refused := i != 2 && i != 3; logged[id] != refused || vl.took(id) == refused {
+			t.Fatalf("%s: logged %v, delivered %v", id, logged[id], vl.took(id))
+		}
+	}
+}
+
+// The sifting is bounded whatever it earns: a segment with more refused lines than it has requests to find (one in
+// every four here) runs out, and one whose search reaches siftMaxPosts (lowered here) stops there; either way with
+// one last request for each part left. What that last request delivers is kept; only the parts that hold a refused
+// line are given up, and every line is delivered or logged, none both.
+func TestReplaySiftingRunsOutCleanly(t *testing.T) {
+	const lines = 3000
+	limit := siftMaxPosts
+	t.Cleanup(func() { siftMaxPosts = limit })
+	for _, tc := range []struct{ bad, ceiling int }{{lines / 4, limit}, {12, 40}} {
+		siftMaxPosts = tc.ceiling
+		vl := newFakeVL(t)
+		vl.set(true)
+		log := newCapture()
+		c := spooled(t, vl.srv.URL, log)
+		refused := spoolScattered(t, c, vl, lines, tc.bad)
+		c.replay()
+		if n := vl.requestCount(); n > 1+siftMaxPosts+bits.Len(uint(lines))+1 || (tc.ceiling < limit && n < tc.ceiling) {
+			t.Fatalf("%d refused lines: %d requests with a ceiling of %d", refused, n, tc.ceiling)
+		}
+		logged := log.undeliveredIDs()
+		got, total := vl.count()
+		if got != total || got+len(logged) != lines || len(logged) <= refused {
+			t.Fatalf("%d refused lines: delivered %d (%d sent), logged %d, of %d", refused, got, total, len(logged), lines)
+		}
+		for id := range logged {
+			if vl.took(id) {
+				t.Fatalf("%s was delivered and logged as undelivered", id)
+			}
+		}
+		if !c.spool.empty() || c.spooling {
+			t.Fatal("the segment stayed in the spool")
+		}
+	}
+}
+
+// VictoriaLogs going down while a segment is sifted is an outage, not a refusal: the sifting stops at once (no more
+// requests to a server that is down), nothing is logged, and the segment stays for the back-off; once VictoriaLogs is
+// back the segment is sent again (the lines already taken twice: at least once) and only the bad line is logged.
+func TestReplayOutageWhileSiftingKeepsTheSegment(t *testing.T) {
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			vl := newFakeVL(t)
+			vl.set(true)
+			vl.setDownStatus(status)
+			vl.setRejects(http.StatusBadRequest, "id-010")
+			log := newCapture()
+			c := spooled(t, vl.srv.URL, log)
+			all := spoolLines(t, c, 100)
+			vl.goDownAfter(3) // the whole segment and two halves, then down
+			c.replay()
+			if n := vl.requestCount(); n != 4 {
+				t.Fatalf("%d requests, want 4 (the sifting must stop at the first outage answer)", n)
+			}
+			if got := log.undelivered(); len(got) != 0 {
+				t.Fatalf("an outage logged %v", got)
+			}
+			if c.spool.empty() || !c.spooling || c.backoff == 0 {
+				t.Fatalf("not taken for an outage: empty %v spooling %v backoff %v", c.spool.empty(), c.spooling, c.backoff)
+			}
+			vl.set(true)
+			c.retryAt = time.Time{}
+			c.replay()
+			for _, id := range all {
+				if vl.took(id) == (id == "id-010") {
+					t.Fatalf("%s: delivered %v", id, vl.took(id))
+				}
+			}
+			if ids := log.undeliveredIDs(); len(ids) != 1 || !ids["id-010"] || !c.spool.empty() {
+				t.Fatalf("logged %v, spool empty %v", ids, c.spool.empty())
+			}
+		})
+	}
+}
+
+// Without a spool (commands) a rejected batch is sifted the same way: only the refused line is logged.
+func TestSendRejectedBatchKeepsItsGoodLines(t *testing.T) {
+	vl := newFakeVL(t)
+	vl.set(true)
+	vl.setRejects(http.StatusBadRequest, "ev-00003")
+	log := newCapture()
+	c, _ := New(vl.srv.URL, "n1", log)
+	defer c.cancel()
+	var batch [][]byte
+	for i := range 10 {
+		b, _ := json.Marshal(c.row(event(i)))
+		batch = append(batch, b)
+	}
+	c.send(batch)
+	if d, _ := vl.count(); d != 9 || vl.took("ev-00003") {
+		t.Fatalf("delivered %d", d)
+	}
+	if ids := log.undeliveredIDs(); len(ids) != 1 || !ids["ev-00003"] {
+		t.Fatalf("logged %v", ids)
 	}
 }
 

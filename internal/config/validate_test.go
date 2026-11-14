@@ -31,6 +31,8 @@ func TestValidateMessages(t *testing.T) {
 		"public url scheme":                      {func(c *Config) { c.Server.PublicURL = "http://x" }, "server.public_url"},
 		"grants per user low":                    {func(c *Config) { c.Limits.GrantsPerUser = 9 }, "limits.grants_per_user"},
 		"grants per user high":                   {func(c *Config) { c.Limits.GrantsPerUser = 100001 }, "limits.grants_per_user"},
+		"sessions per user none":                 {func(c *Config) { c.Limits.SessionsPerUser = 0 }, "limits.sessions_per_user"},
+		"sessions per user high":                 {func(c *Config) { c.Limits.SessionsPerUser = 10001 }, "limits.sessions_per_user"},
 		"theme":                                  {func(c *Config) { c.UI.DefaultTheme = "blue" }, "ui.default_theme"},
 		"backend":                                {func(c *Config) { c.Storage.Backend = "mongo" }, "storage.backend"},
 		"half tls":                               {func(c *Config) { c.Server.TLSCert = "x" }, "tls_cert and server.tls_key"},
@@ -77,6 +79,8 @@ func TestValidateMessages(t *testing.T) {
 		"drain":          {func(c *Config) { c.Server.ShutdownDrain = -1 }, "shutdown_drain"},
 		"eph mb":         {func(c *Config) { c.Limits.EphemeralMB = 0 }, "limits.ephemeral_mb"},
 		"flows per ip":   {func(c *Config) { c.Limits.FlowsPerIP = -1 }, "limits.flows_per_ip"},
+		"held kb":        {func(c *Config) { c.Limits.HeldKB = -1 }, "limits.held_kb"},
+		"held kb small":  {func(c *Config) { c.Limits.HeldKB = 63 }, "limits.held_kb"},
 		"pw min low":     {func(c *Config) { c.Limits.PasswordMinLength = 7 }, "limits.password_min_length"},
 		"pw min high":    {func(c *Config) { c.Limits.PasswordMinLength = 65 }, "limits.password_min_length"},
 		"trust all v4":   {func(c *Config) { c.Server.TrustProxy = []string{"0.0.0.0/0"} }, "trusts every address"},
@@ -205,5 +209,26 @@ func TestNotifyConfig(t *testing.T) {
 		if s.Path == "cluster.notify.bind" && s.Env != EnvPrefix+"CLUSTER_NOTIFY_BIND" {
 			t.Errorf("env name %s", s.Env)
 		}
+	}
+}
+
+// limits.held_kb larger than its share of limits.ephemeral_mb (the default on a small node) is lowered to that share,
+// never below MinHeldKB, rather than refusing the configuration.
+func TestHeldBytesClampedToItsShare(t *testing.T) {
+	c := Default()
+	c.Limits.EphemeralMB = 64
+	if err := c.Validate(); err != nil {
+		t.Fatalf("the default held_kb on a 64 MiB node: %v", err)
+	}
+	if got := c.Limits.HeldBytes(); got != 512<<10 {
+		t.Fatalf("held bytes %d, want %d", got, 512<<10)
+	}
+	c.Limits.EphemeralMB = 3
+	if got := c.Limits.HeldBytes(); got != MinHeldKB<<10 {
+		t.Fatalf("held bytes on a 3 MiB node %d, want %d", got, MinHeldKB<<10)
+	}
+	c.Limits.HeldKB = 0
+	if c.Limits.HeldBytes() != 0 {
+		t.Fatal("0 is no limit")
 	}
 }

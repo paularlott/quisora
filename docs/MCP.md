@@ -69,24 +69,68 @@ in with PKCE, naming the MCP server as `resource`.
 - **Redirect URIs** (RFC 8252): https; http on `localhost`, `127.0.0.1` or `[::1]`, where any port is accepted at
   sign-in (a desktop app listens on whichever port is free); or a private-use scheme named after a domain the app
   owns, such as `com.example.app:/callback` (a scheme without a dot, like `myapp:`, is refused). Never a fragment or
-  credentials in the URI.
+  credentials in the URI. Each at most 512 characters and all of them together at most 2,048 (the same in a metadata
+  document): every registration is audited with them, and anyone may register. This is a deliberate limit, and it
+  applies each time a stored app's metadata document is read again too: an app whose document goes over it (or was
+  stored before the caps applied) is no longer refreshed, which the log records as `oidc: client metadata document
+  refused: its redirect URIs are over the length caps` with the app's `client_id` and both caps, and it becomes
+  unknown once its stored copy is a week old (see **Document changes**).
 - **Consent is always asked**, with a warning that the app is not verified by the organization and where it sends
   the result (a host, or the app scheme for a desktop app): its name is only what it calls itself.
 - **Registration is open only where it can be used**: an organization with no tenant that allows self-registered apps
   for a resource it owns answers `/oauth/register` with `403 access_denied`.
-- **Abuse limits**: 10 registration requests per address and minute, 100 per address and organization a day, 60
-  registrations made per organization and minute from every address together (refused requests do not count toward
-  it, so bad requests from a few addresses cannot block others) (`429 slow_down` past any of them), at most 10,000 registrations
+- **Abuse limits**: 10 registration requests per address and minute, 100 registrations made per address and
+  organization a day, 60 registrations made per organization and minute from every address together, the last 20 of
+  them only for addresses that have made none at the organization that day, so a few addresses registering again and
+  again cannot keep everyone else's apps from registering (refused requests count toward none but the first, so bad
+  requests from a few addresses cannot block others, and leave nothing behind that lasts a day) (`429 slow_down` past
+  any of them). An IPv6 address counts as its /64, and its /48 is counted as well: 40 requests a minute and 400
+  registrations a day per /48, and an address is new to the organization only if its /48 is too, so the /64s of one
+  allocation cannot pass for many new addresses. At most 10,000 registrations
   per organization nobody has used yet (apps people use never count; at the cap, a new registration removes one of
-  the unused ones picked at random, so a flood cannot stop others registering), and a registration never used to sign
-  anyone in is removed after a day. An app nobody has signed in with yet is given no
+  the unused ones picked at random among those registered over an hour ago, so a flood cannot stop others
+  registering, nor remove an app that has just registered before its first sign-in; that removal ends any access
+  users hold to the app, as **Revoke** does), and a registration never used to sign anyone in is removed after a day.
+  An app counts as used from its first authorization, which is recorded before its code is issued: when that cannot
+  be recorded, the user is asked to try again. An app nobody has signed in with yet is given no
   CORS origin (its https redirect URIs count once it has been used), so a browser app's first request through
   pushed authorization (`/oauth/par`, which it calls from script) is refused by the browser until its first
   authorization: such an app starts its first sign-in with a plain authorization request (a redirect, which needs no
   CORS), and may use PAR from then on. A metadata
   document is read only for a resource whose tenant accepts self-registered apps, at most 20 new documents per address
-  and minute and once a minute per URL, with the same SSRF guard as JWKS (no private or loopback addresses unless
-  listed in `server.allowed_networks` or `server.allow_private_networks` is set), at most 5 KB; the app is stored only once a user lets it sign in.
+  and minute and once a minute per URL and organization, with the same SSRF guard as JWKS (no private or loopback
+  addresses unless listed in `server.allowed_networks` or `server.allow_private_networks` is set), at most 5 KB; the
+  app is stored only once a user lets it sign in. Until then what the document said (its name, redirect URIs and
+  scope, not the document as it was written) is kept in the sign-in that read it (which counts toward the address's
+  `limits.flows_per_ip` and `limits.held_kb`), and what was read in the last minute is shared, so requests at
+  the same time for one URL make one read, and one organization's requests cannot keep another's app from being read.
+  In a cluster a request that finds the minute's read taken by another node waits for what that node shares (up to 9
+  seconds: the read's 8-second timeout and a second to share it), and is answered at once when that read found no
+  valid document (a note an earlier minute's read left is removed when the next minute's read begins). That shared
+  copy is a cache with a memory cap of its own (see [RUNNING.md](RUNNING.md)), apart from sign-in state: documents
+  read for requests that never start a sign-in cannot fill the memory sign-ins need, and at the cap the newest reads
+  take the room of the oldest, so a full cache refuses no sign-in. Should the minute's read be over and its copy gone
+  from the cache (reads from hundreds of addresses at once, each within its 20 a minute, turning the whole cap over),
+  the next sign-in that minute does not wait for it: it reads the document again, at most 5 times a minute per URL and
+  organization (past them it is told the app is unknown, at once). The cap is a node's own
+  memory's: with a shared database the cache is kept in the database, under the same cap for the rows each node
+  writes. Every sign-in to an app not stored yet counts toward its address's 20 a minute, whether the document was
+  read for it or found shared.
+- **Document changes**: a stored app's document is read again once a day, in the background: requests naming the app
+  are answered from the stored copy at once while it is read (once at a time per node, at most once a minute per
+  organization), so a slow or stalled document server holds no request. A stored app is as old as the read that
+  stored it, made when its first sign-in began, not when the user consented. The stored copy is used for up to a week
+  while its URL cannot be read (a network error, a timeout, any other answer than the ones below, or a document
+  refused, such as one over the redirect URI caps); past that the document is read for the request, as for an app not
+  stored (within the address's 20 a minute), and the app is unknown until it is read. A document whose own URL answers
+  `404 Not Found` or `410 Gone` has been withdrawn by its author: the app ends then, as **Revoke** ends one (every
+  user's access to it, then the app), recorded as `client.self_registered.revoke` by the system with the answer as its
+  `reason`. Only Quisora's own read of that exact URL decides it (no redirect is followed), so nobody but whoever serves
+  the URL can end an app this way; a later sign-in naming the URL reads it again and asks the user, as for a new app.
+  If the new copy changes the redirect URIs, codes issued before the change are no longer
+  redeemed (the user signs in again and is asked again, as always), and a sign-in under way whose redirect URI the
+  new copy no longer names ends without a code. The same holds for an administrator's application whose redirect
+  URIs are changed during a sign-in.
 
 ## Seeing and removing them
 
@@ -168,7 +212,7 @@ their server on. Each client a person approved is listed with the organization's
 | `list_user_sessions` | A user's signed-in browser sessions | read-only |
 | `list_groups` | The groups, with their number of members | read-only |
 | `list_group_members` | A group's members | read-only |
-| `query_audit_log` | The audit log, filtered by name, action, outcome and time | read-only |
+| `query_audit_log` | The audit log, filtered by name, action, outcome and time (on the organization's audit budget, shared with the console: [RUNNING.md](RUNNING.md#audit-log)) | read-only |
 | `create_user` | Creates a user with the default role, optionally emailing an invitation | not destructive |
 | `enable_user` | Enables a disabled user | not destructive, idempotent |
 | `add_group_member` | Adds a user to a group | not destructive, idempotent |

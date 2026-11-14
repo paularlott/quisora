@@ -20,6 +20,7 @@ import (
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/queue"
 	"github.com/paularlott/quisora/internal/secure"
@@ -31,20 +32,22 @@ import (
 
 // Ephemeral namespaces.
 const (
-	nsFlow     = "oauth.flow"
-	nsCode     = "oauth.code"
-	nsUsed     = "oauth.used"     // client and code id (replayKey) -> organization, user and grant id (NUL-separated), to revoke on replay
-	nsReplayed = "oauth.replayed" // client and code id (replayKey) presented again: a redemption still under way revokes what it makes
-	nsRateOIDC = "oauth.rate"     // failed client authentications per IP
-	nsHeld     = "oauth.held"     // flows each client address holds (holdFlow)
-	nsLogout   = "oauth.logout"
+	nsFlow = "oauth.flow"
+	nsCode = "oauth.code"
+	// nsUsed and nsReplayed are what replay detection rests on, so they are guard namespaces (ephemeral.GuardPrefix):
+	// sign-in state that fills this node never takes their room, and when their own is full the code is not redeemed.
+	// What one user's codes may keep there is bounded as they are redeemed (exchangeCode: ephemeral.Budget.ChargeGuard).
+	nsUsed     = ephemeral.GuardPrefix + "oauth.used"     // client and code id (replayKey) -> organization, user and grant id (NUL-separated), to revoke on replay
+	nsReplayed = ephemeral.GuardPrefix + "oauth.replayed" // client and code id (replayKey) -> markTaking while its client redeems it, markReplayed once it was presented again
+	nsRateOIDC = "oauth.rate"                             // failed client authentications per IP
+	nsHeld     = "oauth.held"                             // flows each client address holds (startFlow)
+	nsLogout   = "oauth.logout"                           // session id (logoutKey) -> the sign-out waiting for its confirmation
 	flowTTL    = 20 * time.Minute
-	usedTTL    = time.Hour
-	// replayMarkTTL keeps the mark of a code presented after it was taken (nsReplayed) for as long as the redemption
-	// that took it can still be running: that redemption looks for the mark once it has made its grant. A request
-	// runs within the server's write timeout (60 s), so five minutes is ample. Anyone can present an unknown code, so
-	// the mark is kept no longer than that, not usedTTL.
-	replayMarkTTL = 5 * time.Minute
+	// usedTTL is how long a code's records of use are kept: every code has expired well before (tokens.code_ttl is at
+	// most ten minutes), and a code presented again within it ends what its first use issued. Longer would only keep
+	// more of these records for every tenant's redemptions to share room with; a code replayed later than this is
+	// refused all the same (it is gone), without ending the grant.
+	usedTTL = 20 * time.Minute
 	// cacheTTL bounds every cache of stored data here (clients, users, organizations, tenants, groups, the public
 	// clients' origins, the signing keys): a change made elsewhere counts here within it, whatever the store; a change
 	// this node hears of (cache eviction hooks) counts at once.
@@ -95,6 +98,12 @@ type Provider struct {
 	originsMu    sync.Mutex
 	originsLoads map[string]*originsLoad
 
+	// metadataReads are the reads of client metadata documents under way on this node, by organization and URL: a
+	// caller that needs a document being read waits for that read rather than going without it (selfreg.go,
+	// readMetadataOnce).
+	metadataMu    sync.Mutex
+	metadataReads map[string]*metadataRead
+
 	jwksMu    sync.Mutex
 	remoteKey map[string]*remoteJWKS
 
@@ -114,7 +123,8 @@ func New(s *web.Server) *Provider {
 		clients: ttlcache.New[*clientEntry](cacheTTL, 50_000), origins: ttlcache.New[*originSet](cacheTTL, 20_000), users: ttlcache.New[*model.User](cacheTTL, 200_000),
 		tenants: ttlcache.New[*model.Tenant](cacheTTL, 20_000), grants: ttlcache.New[grantState](grantTTL, 200_000), groups: ttlcache.New[groupEntry](cacheTTL, 200_000),
 		grantRoom: ttlcache.New[*atomic.Int64](grantRoomTTL, 100_000),
-		remoteKey: map[string]*remoteJWKS{}, bcOrgs: map[string]*bcOrg{}, originsLoads: map[string]*originsLoad{}}
+		remoteKey: map[string]*remoteJWKS{}, bcOrgs: map[string]*bcOrg{}, originsLoads: map[string]*originsLoad{},
+		metadataReads: map[string]*metadataRead{}}
 	p.roots, _ = secure.RootPool(s.Cfg.Server.ExtraCAFile) // checked by config.Validate
 	p.HTTP = p.safeClient()
 	return p

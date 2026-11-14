@@ -161,9 +161,10 @@ func TestStepTicketBurnsAfterFiveWrongTries(t *testing.T) {
 				wrong: []burnTry{try(""), try("12345"), try("1234567"), try("abcdef"), try(wrong)},
 				right: try(code),
 				after: func(t *testing.T, _ map[string]any) {
-					// the sixth is refused before it is judged: only the five wrong tries are audited
-					if n := len(e.audits(t, "login.failure")); n != 5 {
-						t.Fatalf("failures audited: %d", n)
+					// the sixth is refused before it is judged, and of the five wrong tries only the first is
+					// audited, the others held back for the account's next event in a minute (detail.suppressed)
+					if f := e.audits(t, "login.failure"); len(f) != 1 || f[0].Detail["reason"] != "email_code" {
+						t.Fatalf("failures audited: %d", len(f))
 					}
 				}}
 		}},

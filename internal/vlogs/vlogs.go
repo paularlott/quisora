@@ -69,6 +69,10 @@ type Client struct {
 	started bool
 	dropped int64
 	mu      sync.Mutex
+	// diskStuck says an event waited spoolWait for the spool's fsync in vain, and the spooler has not had an event
+	// on disk within spoolWait of its being queued since: the disk is hung (or too slow for events to wait for), so
+	// WriteAudit does not wait for it (see WriteAudit, spooler).
+	diskStuck atomic.Bool
 
 	// The delivery state below belongs to the writer (without a spool) or the deliverer (with one).
 	spool    *spool
@@ -150,10 +154,11 @@ func (c *Client) Close() {
 	})
 }
 
-// commit is an event waiting for the spooler; done is closed once it is on disk (or logged as undelivered).
+// commit is an event waiting for the spooler since at; done is closed once it is on disk (or logged as undelivered).
 type commit struct {
 	line []byte
 	done chan struct{}
+	at   time.Time
 }
 
 // WriteAudit queues an event (service.AuditWriter). With a spool it returns once the event is fsynced to disk, so a
@@ -163,6 +168,13 @@ type commit struct {
 // accepted, never silent loss). A batch the spool cannot write (store undoes the failed append, so nothing of it is
 // replayed) is logged in full by the spooler. An event the queue has no room for (VictoriaLogs unreachable for long,
 // without a spool), or that comes after Close, is logged in full instead.
+//
+// One wait in vain is enough to know the disk is hung: until the spooler next has an event on disk within spoolWait
+// of its being queued (diskStuck), every event goes the way the one that waited went, without the wait. It is queued
+// for the spool (the queue is bounded: past it, "queue full" as ever) and logged in full at once, so a hung disk
+// costs the first request spoolWait and the rest nothing, and no event is lost or uncounted on the way (each one
+// logged is counted in quisora_audit_undelivered_total, though it reaches VictoriaLogs as well once the disk answers;
+// the log says when the disk stops and starts answering).
 func (c *Client) WriteAudit(e *model.Audit) {
 	b, _ := json.Marshal(c.row(e)) // numbered here: every event accepted has its place in the sequence
 	defer func() {
@@ -171,14 +183,23 @@ func (c *Client) WriteAudit(e *model.Audit) {
 		}
 	}()
 	if c.spool != nil {
-		cm := commit{line: append(b, '\n'), done: make(chan struct{})}
+		cm := commit{line: append(b, '\n'), done: make(chan struct{}), at: time.Now()}
 		select {
 		case c.commits <- cm:
+			if c.diskStuck.Load() {
+				c.undelivered("the audit spool disk has not answered in time since an earlier event (the event is "+
+					"spooled once it does)", [][]byte{b})
+				return
+			}
 			t := time.NewTimer(spoolWait)
 			defer t.Stop()
 			select {
 			case <-cm.done:
 			case <-t.C:
+				if c.diskStuck.CompareAndSwap(false, true) {
+					c.log.Warn("the audit spool disk did not answer in time: audit events are logged as "+
+						"audit.undelivered without waiting for it until it does", "dir", c.spool.dir, "wait", spoolWait)
+				}
 				c.undelivered("the audit spool disk did not answer in time (the event is spooled once it does)",
 					[][]byte{b})
 			}
@@ -195,13 +216,20 @@ func (c *Client) WriteAudit(e *model.Audit) {
 }
 
 // spooler writes queued events to the spool: every event waiting when it starts a write goes into that one write
-// and fsync (group commit), and each writer is released once its event is on disk. It stops once Close has closed
-// the queue and the rest is written.
+// and fsync (group commit), and each writer is released once its event is on disk. A write that ends (written or
+// failed: the disk answers) within spoolWait of the queueing of the oldest event in it ends a hung disk's fast path
+// (diskStuck): that is the wait WriteAudit gives up on, so the fast path ends exactly when an event that waited would
+// have been answered in time. The time the write itself took is not the measure: an event queued while one write is
+// under way waits for that one and for its own, so a disk whose writes each take a little under spoolWait still
+// keeps events waiting longer than it, and the flag would be raised by each such event and cleared by the write
+// that carried it, over and over, with a pair of log lines and a run of false audit.undelivered each time. It stops
+// once Close has closed the queue and the rest is written.
 func (c *Client) spooler() {
 	var body []byte
 	var waiting []chan struct{}
 	for cm := range c.commits {
 		body, waiting = append(body[:0], cm.line...), append(waiting[:0], cm.done)
+		oldest := cm.at // the queue is in order: the first event of a write has waited longest
 	more:
 		for len(waiting) < batchSize {
 			select {
@@ -215,6 +243,9 @@ func (c *Client) spooler() {
 			}
 		}
 		c.toSpool(body)
+		if time.Since(oldest) < spoolWait && c.diskStuck.CompareAndSwap(true, false) {
+			c.log.Info("the audit spool disk answers again: audit events wait for it again", "dir", c.spool.dir)
+		}
 		for _, w := range waiting {
 			close(w)
 		}
@@ -324,7 +355,17 @@ func (c *Client) send(batch [][]byte) {
 		if err == nil {
 			return
 		}
-		if rejectedErr(err) || try == maxRetries || c.ctx.Err() != nil {
+		if rejectedErr(err) {
+			// Only the lines VictoriaLogs refuses are given up (sift). One it stops answering for part-way is an
+			// outage, and what it has not taken by then is given up as after the last try (a command does not wait).
+			refused, why, rest, err := c.sift(jsonLines(body), err)
+			c.undelivered(errText(why), refused)
+			if err != nil {
+				c.undelivered("VictoriaLogs did not take them: "+err.Error(), rest)
+			}
+			return
+		}
+		if try == maxRetries || c.ctx.Err() != nil {
 			c.undelivered("VictoriaLogs did not take them: "+err.Error(), jsonLines(body))
 			return
 		}
@@ -348,10 +389,13 @@ func (c *Client) toSpool(body []byte) {
 }
 
 // replay sends spooled segments, oldest first, while VictoriaLogs takes them. A segment VictoriaLogs rejects for its
-// content (rejected), and a segment's lines that are not JSON (corrupt on disk), can never be delivered: they are
-// logged in full as audit.undelivered and the segment leaves the spool, so they do not hold back the events after
-// them. Anything else (unreachable, a server error, wrong credentials) is an outage: the segment stays, and is tried
-// again after a back-off.
+// content (rejected) is sifted (sift): the lines it takes are delivered, and only the lines it refuses, with the
+// segment's lines that are not JSON (corrupt on disk), can never be delivered. Those are logged in full as
+// audit.undelivered and the segment leaves the spool, so they do not hold back the events after them; a segment holds
+// every organization's events of its moment, so one bad line must not take the others with it. Anything else
+// (unreachable, a server error, wrong credentials), before the sifting or during it, is an outage: the segment stays,
+// and is tried again in full after a back-off (what the sifting delivered is then sent twice: delivery is at least
+// once).
 func (c *Client) replay() {
 	if c.spool == nil || time.Now().Before(c.retryAt) || c.ctx.Err() != nil {
 		return
@@ -369,11 +413,14 @@ func (c *Client) replay() {
 			}
 			return
 		}
-		var refused error
+		var refused [][]byte
+		var why error
 		if len(body) > 0 {
-			if err := c.post(c.insertURL(), body); rejectedErr(err) {
-				refused = err
-			} else if err != nil {
+			err := c.post(c.insertURL(), body)
+			if rejectedErr(err) {
+				refused, why, _, err = c.sift(jsonLines(body), err)
+			}
+			if err != nil {
 				if c.ctx.Err() == nil { // not just Close ending the request
 					c.failed(err)
 				}
@@ -381,9 +428,7 @@ func (c *Client) replay() {
 			}
 		}
 		// Logged before the segment goes: a crash between the two logs them twice, never not at all.
-		if refused != nil {
-			c.undelivered(refused.Error(), jsonLines(body))
-		}
+		c.undelivered(errText(why), refused)
 		c.undelivered("the line in the VictoriaLogs spool is not JSON (corrupt on disk)", bad)
 		if err := c.spool.remove(name); err != nil {
 			c.failed(err)
@@ -391,6 +436,85 @@ func (c *Client) replay() {
 		}
 		c.delivered()
 	}
+}
+
+// siftPosts and siftMaxPosts bound the requests sift makes for one batch VictoriaLogs rejected. siftPosts is what it
+// starts with, and every part VictoriaLogs takes earns siftCredit more. Each part it rejects is halved into two
+// requests, and each part it takes pays for two, so a batch with k refused lines ends 2k-2 requests short of what
+// it earned, wherever the lines lie and however large the batch: the 64 are enough to find 33 bad lines scattered
+// through a full segment (some 2,000 to 3,500 events), and only those lines are lost. A batch VictoriaLogs refuses
+// wholesale (a field it will not index in every line, say) earns nothing, since no part of it is taken, and is not
+// sent line by line: what is still unsifted once the requests are spent is given one last request per part (sift)
+// and given up where that is rejected, as a rejected batch always was (logged in full). siftMaxPosts is the ceiling
+// on the search whatever it earned (33 bad lines far apart in a large batch take about 2·33·log2 of it). Variables
+// so tests can lower them.
+var (
+	siftPosts    = 64
+	siftMaxPosts = 512
+)
+
+const siftCredit = 2
+
+// sift finds the lines VictoriaLogs refuses among lines, a batch it rejected for its content (first is that answer),
+// by halves: each half is posted on its own, a half it takes is delivered, and a half it rejects is halved again,
+// down to single lines, which are the ones it refuses (refused, with its last answer why). Only a rejection is sifted:
+// any other answer (unreachable, a server error, wrong credentials, Close) stops the sifting at once (err, with rest
+// the lines neither delivered nor refused yet), since an outage says nothing about the lines and splitting the batch
+// would only multiply the requests to a server that is down. The requests are bounded (siftPosts, siftMaxPosts). Once
+// they are spent, each part left is posted once more, whole, and not halved again, even when a part of that last pass
+// is taken (what it would earn is not spent: the search is over): one VictoriaLogs takes is delivered, so only the
+// parts that do hold a line it refuses are refused whole, with the answer that rejected them.
+// The parts left are at most one per halving on the way down, log2 of the batch and a few, so that last pass adds a
+// dozen requests, not another search; and no line is sent more often than the batch can be halved, however the
+// requests fall.
+func (c *Client) sift(lines [][]byte, first error) (refused [][]byte, why error, rest [][]byte, err error) {
+	if len(lines) <= 1 {
+		return lines, first, nil, nil
+	}
+	type part struct {
+		lines  [][]byte
+		reason error // VictoriaLogs' answer to the part this one is half of
+	}
+	// Last in, first out, the first half pushed last: the lines are sent, and refused, in their order.
+	var stack []part
+	halve := func(lines [][]byte, reason error) {
+		h := len(lines) / 2
+		stack = append(stack, part{lines[h:], reason}, part{lines[:h], reason})
+	}
+	halve(lines, first)
+	why = first
+	last := false // the requests are spent: no part is halved again, whatever the last pass earns
+	for posts, spent := siftPosts, 0; len(stack) > 0; spent++ {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		last = last || posts == 0 || spent >= siftMaxPosts
+		if !last {
+			posts--
+		}
+		switch e := c.post(c.insertURL(), append(bytes.Join(p.lines, []byte("\n")), '\n')); {
+		case e == nil:
+			posts += siftCredit
+		case !rejectedErr(e):
+			rest = append(rest, p.lines...)
+			for i := len(stack) - 1; i >= 0; i-- {
+				rest = append(rest, stack[i].lines...)
+			}
+			return refused, why, rest, e
+		case len(p.lines) == 1 || last:
+			refused, why = append(refused, p.lines...), e
+		default:
+			halve(p.lines, e)
+		}
+	}
+	return refused, why, nil, nil
+}
+
+// errText is err's message, "" for nil.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (c *Client) delivered() { c.retryAt, c.backoff = time.Time{}, 0 }

@@ -21,7 +21,9 @@ const (
 	discoveryRetry = 30 * time.Second
 	cacheMax       = 1000 // entries of each discovery and JWKS cache
 	jwksTTL        = time.Hour
-	jwksMinRefetch = time.Minute // unknown-kid refetches are rate limited
+	// jwksMinRefetch is the least time between two fetches of a provider's keys (see keysFor): the same as for this
+	// server's own keys (oidc's unknownKIDRefresh), so a key rotation at the provider stalls its sign-ins for seconds.
+	jwksMinRefetch = 5 * time.Second
 	clockLeeway    = time.Minute
 )
 
@@ -95,12 +97,19 @@ func (s *Service) discover(ctx context.Context, base, issuer string) (*discovery
 	if c == nil {
 		c = &discoveryCall{done: make(chan struct{})}
 		// An organization administrator rewriting a provider's issuer, or an upstream rotating its URLs, leaves
-		// entries nobody asks for again: past the cap they are all dropped and fetched again when asked for.
+		// entries nobody asks for again: past the cap the oldest goes (evictOldest), the document fetched longest
+		// ago and the failure remembered longest, and a fetch still under way (its callers wait for it) only when
+		// every entry is one.
 		if len(s.discCalls) >= cacheMax {
-			clear(s.discCalls)
+			evictOldest(s.discCalls, func(c *discoveryCall) time.Time {
+				if c.at.IsZero() { // under way
+					return time.Unix(1<<62, 0)
+				}
+				return c.at
+			})
 		}
 		if len(s.disc) >= cacheMax {
-			clear(s.disc)
+			evictOldest(s.disc, func(d *discovery) time.Time { return d.fetched })
 		}
 		s.discCalls[base] = c
 		go s.fetchDiscovery(context.WithoutCancel(ctx), base, issuer, c)
@@ -141,36 +150,110 @@ func (s *Service) fetchDiscovery(ctx context.Context, base, issuer string, c *di
 
 type keyCache struct {
 	keys    []verifyKey
-	fetched time.Time
+	fetched time.Time // when keys were last fetched (zero: never)
+	// tried is when a fetch was last started, whatever came of it: a provider is asked at most once per
+	// jwksMinRefetch, a failing one too (each sign-in in between gets the keys already held, or err).
+	tried    time.Time
+	err      error         // the last fetch's failure, while no keys were ever fetched
+	fetching chan struct{} // closed when the fetch under way ends: callers meanwhile wait for it, not fetch too
+	used     time.Time     // last asked for: past cacheMax the entry asked for longest ago goes (evictOldest)
 }
 
-// keysFor returns the provider's signing keys; force refetches (rate limited) when a kid was not found.
+// keysFor returns the provider's signing keys; force refetches when a kid was not found.
+//
+// A provider is asked for its keys at most once per jwksMinRefetch, however many sign-ins ask and whatever kids
+// their tokens name: a refetch is started by the first caller after the interval, the callers that come while it
+// runs wait for it, and the ones after it get its keys until the interval is over (a token naming a kid still unknown
+// is refused at once). The interval is short, as it is for this server's own keys (unknownKIDRefresh), so a provider
+// that rotates its keys stalls its sign-ins for seconds, not a minute; it is per jwks_uri, so a provider whose
+// tokens name unknown kids (a misconfigured one, or one an organization administrator points at a server of their
+// own) costs no other provider its refetches. The fetch is every caller's, so it is not tied to the one that
+// started it (a browser that gives up), and it ends at discoveryRetry if the HTTP client has no timeout.
 func (s *Service) keysFor(ctx context.Context, uri string, force bool) ([]verifyKey, error) {
 	s.mu.Lock()
+	now := s.Now()
 	kc := s.cache[uri]
-	s.mu.Unlock()
-	age := time.Duration(1<<62 - 1)
-	if kc != nil {
-		age = s.Now().Sub(kc.fetched)
-	}
-	if kc != nil && age < jwksTTL && (!force || age < jwksMinRefetch) {
-		return kc.keys, nil
-	}
-	var set jwks
-	if err := s.getJSON(ctx, uri, &set, nil); err != nil {
-		if kc != nil {
-			return kc.keys, nil // keep serving the last good set through a provider blip
+	if kc == nil {
+		if len(s.cache) >= cacheMax {
+			evictOldest(s.cache, func(k *keyCache) time.Time { return k.used })
 		}
-		return nil, err
+		kc = &keyCache{}
+		s.cache[uri] = kc
 	}
-	nk := &keyCache{keys: parseKeys(set), fetched: s.Now()}
-	s.mu.Lock()
-	if _, ok := s.cache[uri]; !ok && len(s.cache) >= cacheMax {
-		clear(s.cache)
+	kc.used = now
+	due := kc.fetched.IsZero() || force || now.Sub(kc.fetched) >= jwksTTL
+	if wait := kc.fetching; wait != nil { // a fetch is under way: its answer is this caller's too
+		s.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return s.heldKeys(kc)
 	}
-	s.cache[uri] = nk
+	if !due || (!kc.tried.IsZero() && now.Sub(kc.tried) < jwksMinRefetch) {
+		s.mu.Unlock()
+		return s.heldKeys(kc)
+	}
+	done := make(chan struct{})
+	kc.tried, kc.fetching = now, done
 	s.mu.Unlock()
-	return nk.keys, nil
+	// The fetch ends however it ends, a panic in it or in parseKeys too: a jwks_uri left marked as being fetched would
+	// make every later caller wait for a fetch that never ends.
+	defer func() {
+		s.mu.Lock()
+		kc.fetching = nil
+		s.mu.Unlock()
+		close(done)
+	}()
+
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryRetry)
+	defer cancel()
+	var set jwks
+	var keys []verifyKey
+	err := s.getJSON(fctx, uri, &set, nil)
+	if err == nil {
+		keys = parseKeys(set) // (not under s.mu: a panic in it must not leave the lock held)
+	}
+	s.mu.Lock()
+	if err == nil {
+		kc.keys, kc.fetched, kc.err = keys, s.Now(), nil
+	} else if kc.fetched.IsZero() {
+		kc.err = err
+	} // else: keep serving the last good set through a provider blip
+	s.mu.Unlock()
+	return s.heldKeys(kc)
+}
+
+// heldKeys returns the keys kc holds, or the failure of the fetches that never got any.
+func (s *Service) heldKeys(kc *keyCache) ([]verifyKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if kc.fetched.IsZero() {
+		if kc.err != nil {
+			return nil, kc.err
+		}
+		return nil, fmt.Errorf("%w: signing keys not fetched", ErrUpstream)
+	}
+	return kc.keys, nil
+}
+
+// evictOldest drops the entry of m whose time (when it was last asked for) is the earliest: a cache at its cap makes
+// room one entry at a time, so a churn of new URLs (an organization administrator rewriting a provider's issuer, an
+// upstream rotating its URLs) pushes out only the entries nobody has asked for since, never every provider's at once.
+// It scans the map, which is bounded (cacheMax) and only scanned when a URL not yet held is asked for.
+func evictOldest[V any](m map[string]V, at func(V) time.Time) {
+	var oldest string
+	var t time.Time
+	first := true
+	for k, v := range m {
+		if a := at(v); first || a.Before(t) {
+			oldest, t, first = k, a, false
+		}
+	}
+	if !first {
+		delete(m, oldest)
+	}
 }
 
 // pickKey selects the key named by kid; without a kid it only accepts an unambiguous single-key set.

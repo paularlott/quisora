@@ -463,15 +463,39 @@ func (a *App) registerMetrics() {
 		perPartition(func(p cluster.PartitionStatus) float64 { return metrics.Bool(p.Diverged) }))
 	m.Gauge("quisora_master_key_rotation", "1 while previous master keys are configured (a rotation in progress).", nil,
 		metrics.Value(func() float64 { return metrics.Bool(a.Svc.Sealer.Previous()) }))
-	eph := a.Node.LocalEphemeral()
+	// With a shared database the state is rows there, and the gauges are what this node wrote, by the same estimates
+	// and against the same budgets.
+	var eph interface {
+		Used() int64
+		Counters() int64
+		CounterLimit() int64
+		Cached() int64
+		CacheLimit() int64
+		Limit() int64
+		Len() int
+	} = a.Node.LocalEphemeral()
+	if sh := a.Node.SharedEphemeral(); sh != nil {
+		eph = sh
+	}
 	m.Gauge("quisora_ephemeral_bytes", "Memory this node's short-lived state (sign-in flows, codes, challenges; not the "+
-		"rate-limit counters) takes, by the estimate limits.ephemeral_mb is checked against (0 with a shared database: it keeps them).", nil,
+		"rate-limit counters) takes, by the estimate limits.ephemeral_mb is checked against (with a shared database: "+
+		"the rows this node wrote there).", nil,
 		metrics.Value(func() float64 { return float64(eph.Used()) }))
 	m.Gauge("quisora_ephemeral_counter_bytes", "Memory this node's rate-limit counters take, by the estimate their cap "+
 		"(limits.ephemeral_mb, at least 16 MiB) is checked against: past it, limits on new keys refuse.", nil,
 		metrics.Value(func() float64 { return float64(eph.Counters()) }))
+	m.Gauge("quisora_ephemeral_counter_limit_bytes", "The cap this node's rate-limit counters are checked against, in "+
+		"bytes (limits.ephemeral_mb, at least 16 MiB): past it, limits on new keys refuse.", nil,
+		metrics.Value(func() float64 { return float64(eph.CounterLimit()) }))
 	m.Gauge("quisora_ephemeral_budget_bytes", "limits.ephemeral_mb in bytes: past it, requests that would add to this "+
 		"node's short-lived state get 503.", nil, metrics.Value(func() float64 { return float64(eph.Limit()) }))
-	m.Gauge("quisora_ephemeral_entries", "Entries in this node's short-lived state (flows, codes, challenges, counters), "+
-		"expired ones not yet removed included.", nil, metrics.Value(func() float64 { return float64(eph.Len()) }))
+	m.Gauge("quisora_ephemeral_cache_bytes", "Memory this node's short-lived caches (client metadata documents read in "+
+		"the last minute) take, by the estimate their cap is checked against: at it, the oldest entries make room for "+
+		"new ones (with a shared database: the cache rows this node wrote there).", nil,
+		metrics.Value(func() float64 { return float64(eph.Cached()) }))
+	m.Gauge("quisora_ephemeral_cache_limit_bytes", "The cap this node's short-lived caches are checked against, in bytes "+
+		"(a sixteenth of limits.ephemeral_mb, at least 4 MiB): at it, the oldest entries make room for new ones.", nil,
+		metrics.Value(func() float64 { return float64(eph.CacheLimit()) }))
+	m.Gauge("quisora_ephemeral_entries", "Entries in this node's short-lived state (flows, codes, challenges, counters, "+
+		"cache entries), expired ones not yet removed included.", nil, metrics.Value(func() float64 { return float64(eph.Len()) }))
 }

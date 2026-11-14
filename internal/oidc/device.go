@@ -34,8 +34,11 @@ import (
 const (
 	nsDevice     = "oauth.device"      // device_code -> deviceGrant
 	nsDeviceUser = "oauth.device.user" // normalised user code -> device_code
-	nsDevicePoll = "oauth.device.poll" // device_code -> devicePoll
-	nsDeviceTurn = "oauth.device.turn" // device_code -> the right to decide it, taken by the first decision
+	// What slow_down rests on, so a guard namespace (ephemeral.GuardPrefix): sign-in state that fills this node never
+	// takes its room. One record for each device sign-in under way, whose address was charged for it as it started,
+	// against the small part of its budget an address may hold in guard records (ephemeral.Budget.ChargeGuard).
+	nsDevicePoll = ephemeral.GuardPrefix + "oauth.device.poll" // device_code -> devicePoll
+	nsDeviceTurn = "oauth.device.turn"                         // device_code -> the right to decide it, taken by the first decision
 
 	deviceTTL          = 10 * time.Minute
 	deviceInterval     = 5 // seconds between polls
@@ -44,6 +47,11 @@ const (
 	deviceGuessesPerIP = 20
 	deviceGuessWindow  = 15 * time.Minute
 	deviceStartsPerIP  = 30 // device authorization requests per address and minute
+	// deviceExtraCost is what a device sign-in holds beyond its own record, charged with it as it starts: the user
+	// code's and the turn's entries, and what an approval adds to the sign-in (the user, their session and how they
+	// signed in). devicePollCost is the record of its polls, charged apart (nsDevicePoll).
+	deviceExtraCost = 1024
+	devicePollCost  = 128
 )
 
 // deviceGrant is a device sign-in waiting for its user (ephemeral, ns oauth.device, keyed by the device_code).
@@ -71,6 +79,11 @@ type deviceGrant struct {
 	GrantID    string                 `json:"g,omitempty"`    // codeData.GrantID
 	ConsentGen int64                  `json:"cg,omitempty"`   // codeData.ConsentGen: the client's when the user approved
 	AppFence   uint32                 `json:"af,omitempty"`   // codeData.AppFence: the session's when the user approved
+	// Held and Polls are the charges for the sign-in against what the address that started it may hold (its record
+	// and what goes with it; the record of its polls), given back when it ends: its tokens issued, or its refusal
+	// collected (endDevice). Nil when that budget was off.
+	Held  *ephemeral.Held `json:"h,omitempty"`
+	Polls *ephemeral.Held `json:"hp,omitempty"`
 }
 
 // devicePoll is when the device last polled, and how far apart its polls must be (it grows with every slow_down).
@@ -212,7 +225,33 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	}
 	d := deviceGrant{GrantID: model.NewID(), ClientID: c.ID, Scopes: scopes, Resources: res, ADTypes: ad, UserCode: userCode, Expires: time.Now().Add(deviceTTL).Unix(),
 		MFA: demandsMFA(strings.Fields(form.Get("acr_values"))), MaxAge: maxAge}
-	b, _ := json.Marshal(d)
+	// A public client's request is anyone's: what it has this server keep until the sign-in is decided or expires
+	// (the sign-in, its user code, the right to decide it, the times it is polled at, and what the decision adds) is
+	// charged to its address (limits.held_kb), as a sign-in flow is, so that the number of device sign-ins an
+	// address has waiting is bounded by what they hold, not only by how fast it may start them. A confidential
+	// client's is charged the same way: the request is cheap to make with any client's credentials. The record of
+	// its polls is a guard record, charged against the address's far smaller part of those (ChargeGuard), so that
+	// the device sign-ins of a few addresses cannot fill the room every tenant's code redemptions need. Both are
+	// given back when the sign-in ends (endDevice): devices signing in one after another from an address many
+	// people share are bounded by how many wait at once, not by how many there were in twenty minutes.
+	holder := web.HolderIP(r)
+	held, err := p.s.Held.Charge(ctx, holder, nsDevice, len(ephemeral.JSON(d))+deviceExtraCost, deviceTTL)
+	if err == nil {
+		if d.Polls, err = p.s.Held.ChargeGuard(ctx, holder, nsDevicePoll, devicePollCost, deviceTTL); err != nil {
+			held.Refund(ctx, p.s.Eph)
+		}
+	}
+	d.Held = held
+	b := ephemeral.JSON(d)
+	if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
+		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down",
+			desc: "too many device sign-ins from this address are waiting; finish one, or try again in a few minutes", retry: true})
+		return
+	}
+	if err != nil {
+		writeOAuthError(w, serverError(unavailable(err)))
+		return
+	}
 	deviceCode, err := p.s.Eph.New(ctx, nsDevice, b, deviceTTL)
 	if err == nil { // kept by the node that holds the sign-in (the device code names it)
 		err = p.s.Eph.Set(ctx, nsDeviceTurn, deviceCode, []byte{1}, deviceTTL)
@@ -221,11 +260,24 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		err = p.s.Eph.Set(ctx, nsDeviceUser, userCode, []byte(deviceCode), deviceTTL)
 	}
 	if err != nil {
+		held.Refund(ctx, p.s.Eph)
+		d.Polls.Refund(ctx, p.s.Eph)
 		writeOAuthError(w, serverError(err))
 		return
 	}
 	if p.cfg.Audit.Tokens {
-		p.auditClient(ctx, c, nil, "oauth.device.start", map[string]string{"scopes": strings.Join(scopes, " ")})
+		record := func(detail map[string]string) {
+			detail["scopes"] = strings.Join(scopes, " ")
+			p.auditClient(ctx, c, nil, "oauth.device.start", detail)
+		}
+		if c.Public() {
+			// Anyone can start a public client's device sign-ins, thirty a minute from each address: an event for
+			// each would make the audit log the target. One per client and address a minute, the next saying how
+			// many were held back (service.AuditDeviceStart).
+			p.svc.AuditDeviceStart(c.OrgID, c.ID+"|"+web.RateKeyIP(r), record)
+		} else {
+			record(map[string]string{})
+		}
 	}
 	o := newObj(512)
 	o.str("device_code", deviceCode)
@@ -262,7 +314,9 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 	case "":
 		return nil, p.devicePending(ctx, deviceCode, &d)
 	case "deny":
-		_ = p.s.Eph.Delete(ctx, nsDevice, deviceCode)
+		if _, err := p.s.Eph.Take(ctx, nsDevice, deviceCode); err == nil { // the one poll that collects the refusal
+			p.endDevice(ctx, deviceCode, &d)
+		}
 		return nil, oerr("access_denied", "the user denied the sign-in")
 	}
 	// Checked before the approval is taken: a request that asks for more than the device did is refused, and the
@@ -276,13 +330,15 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 	if _, err := p.s.Eph.Take(ctx, nsDevice, deviceCode); err != nil {
 		return nil, expired
 	}
+	// Put back by the poll that took it (nobody else can have it meanwhile), until the moment it was to expire at.
+	// A sign-in that is back is still its address's: its charges are given back by the poll that ends it.
 	restore := func(oe *oauthError) *oauthError {
-		if left := d.ttl(); oe != nil && oe.status >= 500 && left > 0 {
-			_ = p.s.Eph.Set(ctx, nsDevice, deviceCode, raw, left)
+		if left := d.ttl(); oe != nil && oe.status >= 500 && left > 0 && p.s.Eph.Set(ctx, nsDevice, deviceCode, raw, left) == nil {
+			return oe
 		}
+		p.endDevice(ctx, deviceCode, &d)
 		return oe
 	}
-	_ = p.s.Eph.Delete(ctx, nsDevicePoll, deviceCode)
 	// The approver's role is checked on the user as they are now (userGrant then checks the rest about them); a
 	// user that cannot be read decides nothing, and a user that is gone is refused by userGrant.
 	u, err := p.user(ctx, d.UserID)
@@ -290,13 +346,21 @@ func (p *Provider) deviceToken(ctx context.Context, c *model.Client, deviceCode 
 		return nil, restore(serverError(unavailable(err)))
 	}
 	if err == nil && u.Role.Privileged() && !c.DevicePrivileged {
-		return nil, oerr("access_denied", "managers and administrators may not approve this application's device sign-ins")
+		return nil, restore(oerr("access_denied", "managers and administrators may not approve this application's device sign-ins"))
 	}
 	cd := codeData{ClientID: c.ID, SessionID: d.SessionID, UserID: d.UserID, OrgID: d.OrgID, AuthTime: d.AuthTime,
 		AMR: d.AMR, IdP: d.IdP, UpstreamAMR: d.Upstream, Upstream: d.Account, Scopes: d.Scopes, Resources: d.Resources, ADTypes: d.ADTypes, GrantID: d.GrantID, ConsentGen: d.ConsentGen,
 		AppFence: d.AppFence}
 	tr, _, oe := p.userGrant(ctx, c, &cd, nil, ad, jkt, "device_code") // the approved resources, grantResources
 	return tr, restore(oe)
+}
+
+// endDevice is called once for a device sign-in d that has ended, by the poll that took it: the record of its polls
+// goes, and what its address was charged for it is given back (handleDeviceAuthorization).
+func (p *Provider) endDevice(ctx context.Context, deviceCode string, d *deviceGrant) {
+	_ = p.s.Eph.Delete(context.WithoutCancel(ctx), nsDevicePoll, deviceCode)
+	d.Held.Refund(ctx, p.s.Eph)
+	d.Polls.Refund(ctx, p.s.Eph)
 }
 
 // devicePending answers a poll of a sign-in the user has not decided: slow_down when it came sooner than the device's
@@ -317,7 +381,11 @@ func (p *Provider) devicePending(ctx context.Context, deviceCode string, d *devi
 	}
 	pl.Last = now.UnixNano()
 	b, _ := json.Marshal(pl)
-	_ = p.s.Eph.Set(ctx, nsDevicePoll, deviceCode, b, max(d.ttl(), time.Second))
+	// A poll whose time cannot be kept (the room for these records is full) is told to slow down: the next one could
+	// not be told from a first, and a device polling as fast as it likes would never be.
+	if err := p.s.Eph.Set(ctx, nsDevicePoll, deviceCode, b, max(d.ttl(), time.Second)); err != nil {
+		slow = true
+	}
 	if slow {
 		return oerr("slow_down", "polling too fast: wait longer between requests")
 	}
@@ -440,8 +508,9 @@ func (p *Provider) decideDevice(ctx context.Context, f *flow, allow bool, sess *
 		d.IdP, d.Upstream, d.Account = idp, sess.UpstreamAMR, upstreamAccount(idp, sess)
 		d.ConsentGen, d.AppFence = gen, sess.AppFence(d.ClientID)
 	}
-	b, _ := json.Marshal(d)
-	return p.s.Eph.Set(ctx, nsDevice, f.Device, b, d.ttl())
+	// Only if the sign-in is still there, and until the moment it was to expire at (Store.Replace): one that expired
+	// since it was read is not made again by its decision.
+	return p.s.Eph.Replace(ctx, nsDevice, f.Device, ephemeral.JSON(d))
 }
 
 // deviceRespond ends a device flow in the browser, where an authorization flow would answer at the redirect URI:

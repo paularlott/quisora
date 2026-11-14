@@ -102,6 +102,67 @@ func TestDueItemDoesNotWaitForSlowDelivery(t *testing.T) {
 	})
 }
 
+// With every worker held by a few keys at PerKey, the next free worker serves a key with no delivery under way, not
+// the older backlog of the key it came from: another organization's item waits for a worker, not behind the busy
+// organizations' backlogs.
+func TestFreeWorkerServesAnIdleKeyFirst(t *testing.T) {
+	eachBackend(t, func(t *testing.T, b backend) {
+		st, _ := b.open(t)
+		started := make(chan string, 100)
+		var mu sync.Mutex
+		release := map[string]chan struct{}{}
+		gate := func(it string) chan struct{} {
+			mu.Lock()
+			defer mu.Unlock()
+			if release[it] == nil {
+				release[it] = make(chan struct{})
+			}
+			return release[it]
+		}
+		o := options(t, st, func(ctx context.Context, it string) error {
+			started <- it
+			select {
+			case <-gate(it):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		})
+		o.Workers, o.Key, o.PerKey = 4, keyOf, 2
+		q := start(t, o)
+		defer func() {
+			for _, it := range []string{"A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4", "C1"} {
+				select {
+				case <-gate(it):
+				default:
+					close(gate(it))
+				}
+			}
+		}()
+		addAll(t, q, "A1", "A2", "A3", "A4", "B1", "B2", "B3", "B4")
+		next := func() string {
+			t.Helper()
+			select {
+			case it := <-started:
+				return it
+			case <-time.After(5 * time.Second):
+				t.Fatal("nothing was delivered")
+				return ""
+			}
+		}
+		got := []string{next(), next(), next(), next()}
+		slices.Sort(got)
+		if !slices.Equal(got, []string{"A1", "A2", "B1", "B2"}) {
+			t.Fatalf("started %v", got)
+		}
+		addAll(t, q, "C1")
+		close(gate("A1"))
+		if it := next(); it != "C1" {
+			t.Fatalf("a free worker started %s, want C1 (its key has none under way) before A's backlog", it)
+		}
+	})
+}
+
 // A queue of one worker (the mail queue) delivers one item at a time, oldest first, even with more due at once.
 func TestSerialQueueOldestFirst(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {

@@ -78,8 +78,11 @@ func TestFullEphemeralStoreAnswers503(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "Please try again") {
 		t.Fatalf("a sign-in on a full node: %d %q %q", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
-	if n, _ := h.env.Server.Eph.Incr(context.Background(), nsHeld, "198.51.100.20", 0, flowTTL); n != 0 {
+	if n, _ := ephemeral.Holding(context.Background(), h.env.Server.Eph, nsHeld, "198.51.100.20", flowTTL); n != 0 {
 		t.Fatalf("the refused flow still holds a slot: %d", n)
+	}
+	if n, _ := ephemeral.Holding(context.Background(), h.env.Server.Eph, ephemeral.HeldNS, "ip|198.51.100.20", flowTTL); n != 0 {
+		t.Fatalf("the refused flow's bytes are still charged to its address: %d", n)
 	}
 	r := h.post(h.orgBase+"/oauth/device_authorization", url.Values{"client_id": {dev.ID}, "scope": {"openid"}}, "", "")
 	if r.status != http.StatusServiceUnavailable || r.str("error") != "temporarily_unavailable" || r.hdr.Get("Retry-After") == "" {

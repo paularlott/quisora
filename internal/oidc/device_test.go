@@ -473,7 +473,7 @@ func TestDevicePollDuringApprovalStaysPending(t *testing.T) {
 	// the approval pauses just before it records the decision: the window in which a poll must not see the sign-in gone
 	g := newGate(t)
 	p := &Provider{s: &web.Server{Eph: faultEph{Store: local, before: func(op, ns string) error {
-		if op == "set" && ns == nsDevice {
+		if op == "replace" && ns == nsDevice {
 			g.hold()
 		}
 		return nil

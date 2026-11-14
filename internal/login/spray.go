@@ -37,7 +37,12 @@ import (
 // the audit log (org.spray.start, org.spray.end) and can block the addresses upstream.
 
 const (
-	nsSpray = "spray" // failed passwords per organization and minute, and the spray an organization is under
+	// nsSpray holds the failed passwords per organization and minute (counters), and the record of the spray an
+	// organization is under. The limit rests on that record, so it is a guard namespace (ephemeral.GuardPrefix):
+	// sign-in state that fills this node never takes its room, which a spray's author could otherwise arrange first
+	// so that the limit never engaged. One small record for each organization under spray; when even that cannot be
+	// kept, a counter here remembers the spray instead (putSpray), so the limit holds.
+	nsSpray = ephemeral.GuardPrefix + "spray"
 
 	// sprayRecordTTL is how long the record of a spray outlives its last minute over the limit: its end is audited
 	// by the first sign-in to find it over (spray), so an organization nobody signs in to for this long goes without.
@@ -54,15 +59,18 @@ type sprayState struct {
 // more failed passwords than limits.org_failures_per_minute (sprayFailed). The first request to find a spray over
 // takes its record and audits the end (org.spray.end). A spray whose record is lost (this node's short-lived state
 // restarted, or its owner node changed) is over from then on without an org.spray.end: the record is all there is to
-// remember it by, and keeping it on several nodes would need coordination for a rare, harmless gap. A record that cannot be read is an error: the caller refuses
-// the attempt as charge does when its counter fails.
+// remember it by, and keeping it on several nodes would need coordination for a rare, harmless gap. A record that
+// cannot be read is an error: the caller refuses the attempt as charge does when its counter fails. A spray whose
+// record could not be kept (putSpray) is still one: the organization is under it for as long as sprayUnkept says,
+// with no start to report.
 func (m *Module) spray(ctx context.Context, org *model.Org) (sprayState, bool, error) {
 	if m.s.Cfg.LiveLimits().OrgFailuresPerMin <= 0 {
 		return sprayState{}, false, nil
 	}
 	st, err := readSpray(m.s.Eph.Get(ctx, nsSpray, org.ID))
 	if errors.Is(err, ephemeral.ErrNotFound) {
-		return sprayState{}, false, nil
+		on, err := m.sprayUnkept(ctx, org)
+		return sprayState{}, on, err
 	}
 	if err != nil {
 		return sprayState{}, false, err
@@ -96,9 +104,40 @@ func readSpray(b []byte, err error) (sprayState, error) {
 	return st, err
 }
 
+// putSpray keeps the record of org's spray. One that cannot be kept must not switch the limit off (its room is apart
+// from the sign-in state's, and a record is small and one for each organization, so this is that room full of
+// codes' and device sign-ins' records, or a store that cannot be written at all): the spray is then remembered by a
+// counter instead (sprayUnkeptKey), which has the counters' room, not the guard records', and the organization
+// stays under spray by it (sprayUnkept): each address is held to its budget as under a recorded one. Only when that
+// cannot be counted either is the limit not in force, and said so.
 func (m *Module) putSpray(ctx context.Context, org *model.Org, st sprayState) {
 	b, _ := json.Marshal(st)
-	_ = m.s.Eph.Set(ctx, nsSpray, org.ID, b, sprayRecordTTL)
+	err := m.s.Eph.Set(ctx, nsSpray, org.ID, b, sprayRecordTTL)
+	if err == nil {
+		return
+	}
+	n, cerr := m.s.Eph.Incr(ctx, nsSpray, sprayUnkeptKey(org), 1, max(m.lockWindow(org), time.Minute))
+	if cerr != nil || n >= ephemeral.Contended { // not counted either: nothing remembers the spray
+		m.s.Log.Warn("the record of a password spray could not be kept: the organization's spray limit is not in force",
+			"org", org.ID, "error", err, "counter_error", cerr)
+		return
+	}
+	m.s.Log.Warn("the record of a password spray could not be kept: the organization's spray limit stays in force "+
+		"without it, and the spray's end will not be audited", "org", org.ID, "error", err)
+}
+
+// sprayUnkeptKey is the counter that remembers a spray of org whose record could not be kept.
+func sprayUnkeptKey(org *model.Org) string { return "unkept|" + org.ID }
+
+// sprayUnkept reports whether org is under a spray whose record could not be kept (putSpray). The counter lasts a
+// lockout time from the first minute over the limit whose record could not be kept, so the organization is under
+// spray for that long, and again from the next such minute (a spray that goes on passes the limit again within a
+// minute of the counter's end). A counter the store could not make (its counters are at their cap) was reported as
+// one over any limit when it was counted, and nothing remembers the spray then: said by putSpray's warning. One
+// that cannot be read is an error, and the caller refuses the attempt.
+func (m *Module) sprayUnkept(ctx context.Context, org *model.Org) (bool, error) {
+	n, err := m.s.Eph.Incr(ctx, nsSpray, sprayUnkeptKey(org), 0, max(m.lockWindow(org), time.Minute))
+	return n > 0, err
 }
 
 // sprayFailed counts a password attempt at org's sign-in that was checked and found wrong (not one refused as
@@ -120,8 +159,10 @@ func (m *Module) sprayFailed(r *http.Request, org *model.Org) {
 		return
 	}
 	now := time.Now()
-	if !on {
+	if st.Start.IsZero() { // none recorded: a new spray, or one whose record could not be kept (sprayUnkept)
 		st.Start = now
+	}
+	if !on {
 		m.s.Svc.Audit(ctx, nil, org.ID, "org.spray.start", org.Name, map[string]string{
 			"failures": strconv.FormatInt(n, 10), "per_minute": strconv.FormatInt(limit, 10),
 			"minutes": strconv.Itoa(int(m.lockWindow(org).Minutes()))})

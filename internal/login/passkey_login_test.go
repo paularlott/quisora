@@ -410,7 +410,15 @@ func TestPasskeyLoginRefused(t *testing.T) {
 			}
 		})
 	}
-	if n := len(e.audits(t, "login.failure")); n < 4 {
-		t.Fatalf("failures audited: %d", n)
+	// One event per account (or none) and reason a minute (auditFailure): the attempts of one reason after the first are
+	// counted in the next event. Each is in the organization of the page that was used.
+	failures := e.audits(t, "login.failure")
+	if len(failures) < 2 {
+		t.Fatalf("failures audited: %d", len(failures))
+	}
+	for _, a := range failures {
+		if a.OrgID == "" {
+			t.Fatalf("a failure in no organization: %+v", a)
+		}
 	}
 }

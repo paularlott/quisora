@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/url"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -127,7 +126,7 @@ func (s *Service) PeekLink(ctx context.Context, token string, purposes ...string
 	// It is also bound to the address it was issued for: an invitation mailed to a mistyped address, which an
 	// administrator then corrected, must not set the credentials of the account whose address it no longer is. A
 	// break-glass invitation is handed to whoever runs the command, not to an address.
-	if (l.Purpose == LinkInvite || l.Purpose == LinkReset) && !l.BreakGlass && !strings.EqualFold(l.For, u.Email) {
+	if (l.Purpose == LinkInvite || l.Purpose == LinkReset) && !l.BreakGlass && !model.SameAddress(l.For, u.Email) {
 		return nil, nil, ErrLink
 	}
 	if l.Purpose == LinkInvite && (l.IssuedBy != "" || l.IssuedByClient != "") && !s.issuerMayInvite(ctx, l, u) {
@@ -227,7 +226,7 @@ func (s *Service) UseSignInLink(ctx context.Context, token, purpose, password st
 			u.SetUpBy = ""        // the credentials are now those the invitation set
 			u.SetCredEpoch(epoch) // and every credential, but the passkey stored for epoch
 		}
-		if l.Email != "" && strings.EqualFold(l.Email, u.Email) {
+		if l.Email != "" && model.SameAddress(l.Email, u.Email) {
 			u.EmailVerified = true // the link went to this address: it is proven
 		}
 		if l.BreakGlass && !u.Enabled(now) {
@@ -410,8 +409,12 @@ func (s *Service) CreateInvite(ctx context.Context, a *Actor, userID string) (st
 	return s.LinkURL(u.OrgID, "/invite", token), l.Expires, nil
 }
 
+// ErrOwnPassword refuses removing one's own password (RemovePassword): nothing offers it, as it would leave the account
+// with no way back in but an invitation someone else sends. The account page changes it.
+var ErrOwnPassword = Invalid("password", "you cannot remove your own password; change it on your account page")
+
 // RemovePassword deletes a user's password: they can no longer sign in with email and password until they set a
-// new one through an invitation. Their sessions and refresh tokens end.
+// new one through an invitation. Their sessions and refresh tokens end. Never one's own (ErrOwnPassword).
 func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) error {
 	u, err := s.Users.Get(ctx, userID)
 	if err != nil {
@@ -421,7 +424,7 @@ func (s *Service) RemovePassword(ctx context.Context, a *Actor, userID string) e
 		return s.denied(a, u)
 	}
 	if a.UserID == u.ID {
-		return Invalid("password", "remove your own password from your account page")
+		return ErrOwnPassword
 	}
 	if err := s.mayResetSignIn(ctx, a, u, "password"); err != nil {
 		return err

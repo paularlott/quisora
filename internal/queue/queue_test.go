@@ -124,35 +124,46 @@ func TestSurvivesKeyRotation(t *testing.T) {
 	})
 }
 
-// Add refuses an item past Max, and one of a key past MaxPerKey without taking what other keys need: an organization
-// whose application never answers fills its own share of the queue, not the queue, and its share survives a restart.
+// Add refuses an item past Max, and one of a key past MaxPerKey or past the room left for the others, without taking
+// what other keys need: an organization whose application never answers fills its own share of the queue, not the
+// queue, a few of them do not fill it between them, and their shares survive a restart.
 func TestCaps(t *testing.T) {
 	eachBackend(t, func(t *testing.T, b backend) {
 		st, _ := b.open(t)
 		stuck := func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() } // never delivers
 		o := options(t, st, stuck)
-		o.Max, o.MaxPerKey, o.Key = 7, 3, keyOf
+		o.Max, o.MaxPerKey, o.Key = 12, 4, keyOf
 		q := Open(o)
-		addAll(t, q, "A1", "A2", "A3")
-		if err := q.Add("A4", 0, 0); !errors.Is(err, ErrFull) {
-			t.Fatalf("a fourth item of A: %v, want ErrFull", err)
+		addAll(t, q, "A1", "A2", "A3", "A4")
+		if err := q.Add("A5", 0, 0); !errors.Is(err, ErrFull) {
+			t.Fatalf("a fifth item of A: %v, want ErrFull", err)
 		}
-		addAll(t, q, "B1", "B2", "B3") // A at its limit takes nothing from the others
+		addAll(t, q, "B1", "B2", "B3", "B4") // A at its limit takes nothing from the others
+		// Four left: C may hold no more than the room left for the others, so a few keys at MaxPerKey cannot fill
+		// the queue between them.
+		addAll(t, q, "C1", "C2")
+		if err := q.Add("C3", 0, 0); !errors.Is(err, ErrFull) {
+			t.Fatalf("C past the room left for the others: %v, want ErrFull", err)
+		}
 		q.Close()
 
 		// What the previous run left counts: each key is still at its limit, and another has room until Max.
 		q = start(t, o)
-		for _, it := range []string{"A4", "B4"} {
+		for _, it := range []string{"A5", "B5", "C3"} {
 			if err := q.Add(it, 0, 0); !errors.Is(err, ErrFull) {
 				t.Fatalf("%s after a restart: %v, want ErrFull", it, err)
 			}
 		}
-		addAll(t, q, "C1")
-		if err := q.Add("C2", 0, 0); !errors.Is(err, ErrFull) {
+		addAll(t, q, "D1")
+		if err := q.Add("D2", 0, 0); !errors.Is(err, ErrFull) {
+			t.Fatalf("D past the room left for the others: %v, want ErrFull", err)
+		}
+		addAll(t, q, "E1")
+		if err := q.Add("F1", 0, 0); !errors.Is(err, ErrFull) {
 			t.Fatalf("an item past Max: %v, want ErrFull", err)
 		}
-		if n := q.Queued(); n != 7 {
-			t.Fatalf("%d queued, want 7", n)
+		if n := q.Queued(); n != 12 {
+			t.Fatalf("%d queued, want 12", n)
 		}
 	})
 }

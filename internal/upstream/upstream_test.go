@@ -283,7 +283,7 @@ func TestJWKSRotation(t *testing.T) {
 		t.Fatalf("keys not cached: %v fetches %d -> %d", err, fetches, e.oidc.JWKSFetches)
 	}
 
-	// Provider rotates to a new key id: an unknown kid refetches, but only once a minute.
+	// Provider rotates to a new key id: an unknown kid refetches, at most once every 5 seconds.
 	e.oidc.Mu.Lock()
 	e.oidc.RSAKey, _ = rsa.GenerateKey(rand.Reader, 2048)
 	e.oidc.KID = "k2"
@@ -291,7 +291,7 @@ func TestJWKSRotation(t *testing.T) {
 	if _, err := e.signIn(p, std("r1", "r1@example.com")); !errors.Is(err, upstream.ErrUpstream) {
 		t.Fatalf("rotation inside the refetch window should fail: %v", err)
 	}
-	e.advance(2 * time.Minute)
+	e.advance(5 * time.Second) // seconds, not a minute: a provider's rotation stalls its sign-ins that long at most
 	if _, err := e.signIn(p, std("r1", "r1@example.com")); err != nil {
 		t.Fatalf("after rotation: %v", err)
 	}

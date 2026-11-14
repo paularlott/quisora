@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"crypto/subtle"
+	"hash/maphash"
 	"mime"
 	"net"
 	"net/http"
@@ -11,11 +12,13 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/paularlott/logger"
 	"github.com/paularlott/quisora/internal/config"
+	"github.com/paularlott/quisora/internal/ephemeral"
 	"github.com/paularlott/quisora/internal/metrics"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/secure"
@@ -51,14 +54,61 @@ func SetTrustedProxies(list []string) {
 // IPv6 client is usually given a whole /64 and can send from any address in it: counted one by one, it would get a
 // fresh budget (and a fresh counter in memory) for every address. Audit records keep the full ClientIP.
 func RateKeyIP(r *http.Request) string {
+	key, _ := rateKeys(r)
+	return key
+}
+
+// RateNetIP is the network the request's client address is counted in beside its own key (RateKeyIP): an IPv6
+// address's /48, or "" for an IPv4 address (counted as itself alone). A share limited per address counts the /48 as
+// well, at NetShareFactor times the address's share: a provider hands a customer a /48 or a /56 as readily as a /64,
+// and counted by /64 alone one such allocation would bring as many shares as it has /64s (65,536 in a /48), enough
+// to spend whatever every address shares.
+func RateNetIP(r *http.Request) string {
+	_, wide := rateKeys(r)
+	return wide
+}
+
+// NetShareFactor is how many times an address's share of a limit (counted by RateKeyIP) its network (RateNetIP) may
+// take in all: a few customers of one /48, each with a /64 of their own, are not refused for one another, and one
+// customer holding the whole /48 gets this many shares rather than 65,536.
+const NetShareFactor = 4
+
+// rateKeys returns RateKeyIP and RateNetIP from one reading of the client address.
+func rateKeys(r *http.Request) (key, wide string) {
 	ip := ClientIP(r)
 	if a, err := netip.ParseAddr(ip); err == nil && a.Is6() && !a.Is4In6() {
-		if p, err := a.Prefix(64); err == nil {
-			return p.String()
+		p64, err64 := a.Prefix(64)
+		p48, err48 := a.Prefix(48)
+		if err64 == nil && err48 == nil {
+			return p64.String(), p48.String()
 		}
 	}
-	return ip
+	return ip, ""
 }
+
+// HolderIP names the request's client address as the one short-lived state is kept for (ephemeral.Budget): the
+// address as rate limits count it (RateKeyIP), and for an IPv6 address its /48 as the wider key, which may hold
+// ephemeral.WideFactor times as much, and its /32 as the widest, which may hold ephemeral.WidestFactor times as
+// much. A provider hands a customer a /48 or a /56 as readily as a /64, and counted by /64 alone one such allocation
+// would bring 65,536 budgets; a /32 is what a provider itself is allocated, and holds 65,536 /48s, each of which
+// would otherwise bring sixteen. The price is the provider's other customers: everyone behind one /32 shares
+// sixty-four budgets of unfinished sign-ins, which an attacker inside it can use up for them (and for nobody else).
+func HolderIP(r *http.Request) ephemeral.Holder {
+	h := ephemeral.Holder{Key: "ip|" + RateKeyIP(r)}
+	if a, err := netip.ParseAddr(ClientIP(r)); err == nil && a.Is6() && !a.Is4In6() {
+		if p, err := a.Prefix(48); err == nil {
+			h.Wide = "net|" + p.String()
+		}
+		if p, err := a.Prefix(32); err == nil {
+			h.Widest = "net|" + p.String()
+		}
+	}
+	return h
+}
+
+// HolderUser names a signed-in user as the one short-lived state is kept for (ephemeral.Budget): what an account
+// stores is the account's to answer for, from whatever addresses it is used.
+func HolderUser(userID string) ephemeral.Holder { return ephemeral.Holder{Key: "user|" + userID} }
 
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -198,18 +248,31 @@ func limitBody(next http.Handler) http.Handler {
 	})
 }
 
-// shed rejects requests with 503 once max() are in flight on this node. max is read at each request, so a
-// configuration reload changes it (limits.max_in_flight) and the requests in flight stay counted.
-func shed(max func() int, next http.Handler) http.Handler {
+// shed rejects requests with 503 once max() are in flight on this node, and with 429 a request whose client address
+// (RateKeyIP: an IPv6 /64 counts as one) has its share of them in flight already (limits.max_in_flight_per_ip), or
+// whose IPv6 /48 (RateNetIP) has NetShareFactor times that share in flight. Both are read at each request, so a
+// configuration reload changes them (limits.max_in_flight) and the requests in flight stay counted.
+//
+// A request holds its place from here, before its body is read: the handlers read it before their own limits by
+// address (the token endpoint, pushed authorization, logout, the sign-in pages' JSON), and the server waits for it up
+// to its read timeout (30 s). Without the share, one address sending requests whose bodies come a byte at a time
+// could hold every place, and every other client would get 503 for as long as it went on. The address's own requests
+// are refused first, at its share, and a handful of addresses are needed to fill the node. The /48's share keeps that
+// handful from being the /64s of one allocation: counted by /64 alone, 16 of the 65,536 /64s of one /48 held every
+// place at the default share (a sixteenth); with it, one /48 holds at most NetShareFactor sixteenths.
+func shed(limits func() (all, perIP int), next http.Handler) http.Handler {
 	// An atomic counter rather than a channel semaphore: every request passes here, and a channel's lock taken
-	// twice per request by every core is itself a bottleneck under load.
+	// twice per request by every core is itself a bottleneck under load. The counts by address are a sharded map,
+	// an entry only while the address (or its /48) has a request in flight: at most twice max_in_flight entries.
 	var inFlight atomic.Int64
+	var byIP inFlightByIP
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if unshed(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if inFlight.Add(1) > int64(max()) {
+		all, perIP := limits()
+		if inFlight.Add(1) > int64(all) {
 			inFlight.Add(-1)
 			metrics.HTTPShed.Inc()
 			w.Header().Set("Retry-After", "1")
@@ -217,8 +280,77 @@ func shed(max func() int, next http.Handler) http.Handler {
 			return
 		}
 		defer inFlight.Add(-1)
+		// One map for both: a /64's key ("2001:db8::/64") and a /48's ("2001:db8::/48") never collide, and an entry
+		// lives only while a request of its key is in flight, so the map holds at most twice max_in_flight entries.
+		ip, wide := rateKeys(r)
+		ok := byIP.take(ip, perIP)
+		if ok && wide != "" {
+			if ok = byIP.take(wide, perIP*NetShareFactor); !ok {
+				byIP.release(ip)
+			}
+		}
+		if !ok {
+			metrics.HTTPShedAddress.Inc()
+			w.Header().Set("Retry-After", "1")
+			WriteJSON(w, http.StatusTooManyRequests, ErrorBody{Error: "Too many requests from your address at once. Please try again."})
+			return
+		}
+		defer byIP.release(ip)
+		if wide != "" {
+			defer byIP.release(wide)
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// inFlightShards is how many locks the counts of requests in flight by address are spread over.
+const inFlightShards = 64
+
+// inFlightByIP counts the requests in flight by client address (shed).
+type inFlightByIP struct {
+	seed  maphash.Seed
+	once  sync.Once
+	shard [inFlightShards]struct {
+		mu sync.Mutex
+		n  map[string]int
+	}
+}
+
+func (c *inFlightByIP) of(ip string) *struct {
+	mu sync.Mutex
+	n  map[string]int
+} {
+	c.once.Do(func() {
+		c.seed = maphash.MakeSeed()
+		for i := range c.shard {
+			c.shard[i].n = map[string]int{}
+		}
+	})
+	return &c.shard[maphash.String(c.seed, ip)%inFlightShards]
+}
+
+// take counts a request of ip in flight and reports true, unless ip has max in flight already.
+func (c *inFlightByIP) take(ip string, max int) bool {
+	s := c.of(ip)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.n[ip] >= max {
+		return false
+	}
+	s.n[ip]++
+	return true
+}
+
+// release ends a request of ip that take counted; the address's entry goes with its last.
+func (c *inFlightByIP) release(ip string) {
+	s := c.of(ip)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.n[ip] <= 1 {
+		delete(s.n, ip)
+		return
+	}
+	s.n[ip]--
 }
 
 // SetDenyNetworks sets the networks whose clients are refused (server.deny_networks; deny), at start-up and on a

@@ -254,7 +254,7 @@ func (m *Module) verifyEmail(w http.ResponseWriter, r *http.Request) {
 					m.s.Sessions.Evict("", u.ID)
 					m.audit(r, "account.email.verify", org, u, u.Username, map[string]string{"email": l.Email})
 					result = "verified"
-					if !strings.EqualFold(u.Email, l.Email) {
+					if !model.SameAddress(u.Email, l.Email) {
 						frag = "emails" // a linked address: back to the list it is in
 					}
 				}

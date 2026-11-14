@@ -337,7 +337,15 @@ func TestCodeReplayDuringRedemptionRevokes(t *testing.T) {
 	c, _ := h.session(h.user)
 	v, ch := pkce()
 	code := h.getCode(c, cl, ch, nil)
-	_ = h.p.s.Eph.Set(context.Background(), nsReplayed, replayKey(cl, code), []byte{1}, usedTTL) // the racing replay's mark
+	// The racing replay's mark, left once the redemption has taken the code and before it looks for one: over the
+	// mark the redemption made, as codeReplayed leaves it.
+	eph := h.p.s.Eph
+	h.useEph(func(op, ns string) error {
+		if op == "set" && ns == nsUsed {
+			_ = eph.Set(context.Background(), nsReplayed, replayKey(cl, code), markReplayed, usedTTL)
+		}
+		return nil
+	})
 	r := h.token(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {cl.RedirectURIs[0]},
 		"code_verifier": {v}}, cl, secret)
 	if r.status != 400 || r.str("error") != "invalid_grant" {

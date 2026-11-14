@@ -40,10 +40,14 @@ type Health interface {
 
 // Server is the HTTPS server and the shared dependencies of every module.
 type Server struct {
-	Cfg      *config.Config
-	Svc      *service.Service
-	Log      logger.Logger
-	Eph      ephemeral.Store
+	Cfg *config.Config
+	Svc *service.Service
+	Log logger.Logger
+	Eph ephemeral.Store
+	// Held charges short-lived state to whoever it is kept for (limits.held_kb, read at each charge): what a request
+	// nobody has signed in for stores is charged to its address (HolderIP), a signed-in user's to the user
+	// (HolderUser), and refused past the budget (ephemeral.ErrHeld: 429).
+	Held     *ephemeral.Budget
 	Sessions *Sessions
 	Render   *Renderer
 	Site     Site
@@ -107,10 +111,35 @@ func New(cfg *config.Config, svc *service.Service, eph ephemeral.Store, log logg
 	SetTrustedProxies(cfg.Server.TrustProxy)
 	s := &Server{Cfg: cfg, Svc: svc, Log: log, Eph: eph, Sessions: NewSessions(svc), Render: r, stopping: make(chan struct{}),
 		Site: SiteFromConfig(cfg), Mux: http.NewServeMux()}
+	s.Held = &ephemeral.Budget{Store: liveEph{s}, Limit: func() int64 { return cfg.LiveLimits().HeldBytes() }}
 	deny, _ := cfg.DeniedNetworks() // config.Validate reports the bad ones
 	s.SetDenyNetworks(deny)
 	s.baseRoutes()
 	return s, nil
+}
+
+// liveEph is the server's short-lived state as it is at each call (Server.Eph): the budgets count in the store the
+// server uses now, also when it was replaced after the server was made.
+type liveEph struct{ s *Server }
+
+func (l liveEph) New(ctx context.Context, ns string, value []byte, ttl time.Duration) (string, error) {
+	return l.s.Eph.New(ctx, ns, value, ttl)
+}
+func (l liveEph) Set(ctx context.Context, ns, id string, value []byte, ttl time.Duration) error {
+	return l.s.Eph.Set(ctx, ns, id, value, ttl)
+}
+func (l liveEph) Replace(ctx context.Context, ns, id string, value []byte) error {
+	return l.s.Eph.Replace(ctx, ns, id, value)
+}
+func (l liveEph) Get(ctx context.Context, ns, id string) ([]byte, error) {
+	return l.s.Eph.Get(ctx, ns, id)
+}
+func (l liveEph) Take(ctx context.Context, ns, id string) ([]byte, error) {
+	return l.s.Eph.Take(ctx, ns, id)
+}
+func (l liveEph) Delete(ctx context.Context, ns, id string) error { return l.s.Eph.Delete(ctx, ns, id) }
+func (l liveEph) Incr(ctx context.Context, ns, key string, delta int64, window time.Duration) (int64, error) {
+	return l.s.Eph.Incr(ctx, ns, key, delta, window)
 }
 
 // Use registers modules.
@@ -124,7 +153,7 @@ func (s *Server) Use(mods ...Module) {
 func (s *Server) Handler() http.Handler {
 	// deny outside everything: a denied client costs nothing more. recoverer inside observe: a request that panics is
 	// answered 500 and is still logged and counted as one.
-	maxInFlight := func() int { return s.Cfg.LiveLimits().MaxInFlight }
+	maxInFlight := func() (int, int) { l := s.Cfg.LiveLimits(); return l.MaxInFlight, l.InFlightPerIP() }
 	return s.deny(requestInfo(observe(s.Log, s.Cfg.Log.Access, recoverer(s.Log,
 		securityHeaders(one(contentSecurityPolicy(s.Cfg.UI.LogoLight, s.Cfg.UI.LogoDark)), shed(maxInFlight, limitBody(s.serveGate(s.Mux))))))))
 }

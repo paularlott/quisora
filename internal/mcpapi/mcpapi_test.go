@@ -434,6 +434,27 @@ func batch(n int) string {
 	return "[" + strings.Join(items, ",") + "]"
 }
 
+// query_audit_log reads the audit log as the console does, so on the same budget: an organization's administrators
+// share web.AuditReadsPerMinute pages a minute, each of them web.AuditReadsPerMinuteActor of it, through the console,
+// the API and AI clients together, and past it the tool is refused (429) rather than add to the load on the log
+// every organization shares.
+func TestAuditLogBudget(t *testing.T) {
+	e := setup(t)
+	e.turnOn()
+	c, _ := e.client(e.user("ada", model.RoleAdmin))
+	if err := c.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i := range web.AuditReadsPerMinuteActor {
+		if text, isErr := call(t, c, "query_audit_log", map[string]any{"limit": 1}); isErr {
+			t.Fatalf("read %d: %s", i+1, text)
+		}
+	}
+	if text, isErr := call(t, c, "query_audit_log", nil); !isErr || !strings.Contains(text, "429") {
+		t.Fatalf("past the budget: %v %s", isErr, text)
+	}
+}
+
 // A user who is not a manager or above may sign the client in (the tenant decides who signs in), but the server
 // refuses them.
 func TestOnlyManagersAndUp(t *testing.T) {

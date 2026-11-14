@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,7 @@ func TestInvitePermissions(t *testing.T) {
 	if s := inv(mg, mid); s != 403 { // their own role is above what they manage
 		t.Errorf("manager invites self: %d", s)
 	}
-	if s := rm(mg, mid); s != 403 {
+	if s := rm(mg, mid); s != 422 { // nobody's own, refused with the reason (TestRemoveOwnPasswordRefusedWithReason)
 		t.Errorf("manager removes own password: %d", s)
 	}
 
@@ -137,5 +138,27 @@ func TestInvitePermissions(t *testing.T) {
 	}
 	if s := w.anon().post(AU+"/"+uid+"/invite", map[string]any{}).Status; s != 401 {
 		t.Errorf("anonymous invite: %d", s)
+	}
+}
+
+// Nobody removes their own password, whatever their role: the handler refuses it at once (before asking for a
+// re-authentication) with the reason, a manager included (who may not remove a manager's password, so the service
+// alone refused them as forbidden), and the password stays.
+func TestRemoveOwnPasswordRefusedWithReason(t *testing.T) {
+	w := newWorld(t)
+	w.env.Server.Reauthed = func(*http.Request) bool { return false } // the refusal comes first
+	for _, key := range []string{"super", "admin", "manager"} {
+		u, path := w.env.Admin, "/api/orgs/"+w.env.Primary.Name+"/users"
+		if key != "super" {
+			u, path = w.users[key], AU
+		}
+		r := w.as(key).delete(path + "/" + u.ID + "/password")
+		wantField(t, r, 422, "password")
+		if !strings.Contains(r.str("error"), "change it on your account page") {
+			t.Errorf("%s: %s", key, r.Raw)
+		}
+		if got, err := w.env.Svc.Users.Get(context.Background(), u.ID); err != nil || got.PasswordHash == "" {
+			t.Errorf("%s: the password was removed (%v)", key, err)
+		}
 	}
 }

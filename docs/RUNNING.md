@@ -65,7 +65,8 @@ and crashes. Only that node sends them; nothing else reads them. They are never 
 each node's are in its own database, and on a shared database every node holds its own there, apart from the others'.
 A node that is gone for good leaves its items unsent: each is discarded (it expires, and the purge removes it) a day
 after its last retry would have been, by when it is worth nothing (its retries are over, and an invitation it carries
-lasts 7 days). Each node's caps (10,000 emails and 10,000 logouts, 2,500 of each of one organization) and gauges count
+lasts 7 days). Each node's caps (10,000 emails and 10,000 logouts, 2,500 of each of one organization, and no more
+than the room left for the other organizations, so a few at 2,500 cannot fill a queue between them) and gauges count
 its own items only. Being the only node that writes its items, a node keeps an index of them in memory, read from the
 store once at start: choosing what to send next and checking the caps cost no reads of the store, however many sent
 items it still holds until its purge. A message or logout that was sent but whose end the store did not record (a
@@ -163,15 +164,18 @@ TLS, the proxy's configuration decides.
 | Setting                       | Default | What                                                                                                   | On a reload          |
 | ----------------------------- | ------- | ------------------------------------------------------------------------------------------------------ | -------------------- |
 | `limits.max_in_flight`        | 4096    | Requests in progress on a node before it answers 503 (never the probes, metrics, discovery, JWKS or the console's event stream) | Next request         |
+| `limits.max_in_flight_per_ip` | 0       | Of those, how many one address (an IPv6 /64) may have before its next gets 429 (0: a sixteenth of `limits.max_in_flight`, 256 by default), and an IPv6 /48 four times that, so one address (or the /64s of one allocation) sending slow request bodies cannot hold every place | Next request         |
 | `limits.login_per_ip_min`     | 300     | Sign-in attempts per organization and address per minute (three times it per address across organizations; a browser that signed in to the account before counts against the account's own) | Next attempt         |
 | `limits.lockout_attempts`     | 10      | Failed passwords before an account is locked (0: never)                                                | Next attempt         |
 | `limits.lockout_minutes`      | 15      | How long the lock lasts                                                                                | Next attempt         |
 | `limits.flows_per_ip`         | 50      | Sign-ins (authorization and device flows) one address may hold unfinished at once (0: no cap)           | Next sign-in         |
+| `limits.held_kb`              | 2048    | Short-lived sign-in state, in KiB, one address (an IPv6 /64; its /48 sixteen times as much, its /32 sixty-four times) or one signed-in user may have the server hold at once (0: no cap; otherwise at least 64, and used as at most 1/128 of `limits.ephemeral_mb`, 8 KiB for each MiB, but never below 64: a larger value is lowered to that, not refused): see [health and monitoring](#health-and-monitoring) | Next request         |
 | `limits.org_failures_per_minute` | 100  | Failed passwords per organization per minute before it counts as [under a spray](SECURITY.md#lockout-and-password-spraying) and limits failures per address too (0: never) | Next attempt         |
 | `limits.password_min_length`  | 15      | Shortest password accepted (8 to 64)                                                                   | Next password set    |
 | `limits.grants_per_user`      | 1000    | Refresh grants one user may hold                                                                       | Next grant           |
+| `limits.sessions_per_user`    | 100     | Browser sessions one user may hold (1 to 10000); past it the least recently used end, never refusing a sign-in ([sessions](sign-in/README.md#sessions)) | Next sign-in         |
 | `limits.password_workers`     | CPUs    | Passwords hashed at once                                                                               | Restart only         |
-| `limits.ephemeral_mb`         | 1024    | Memory for short-lived sign-in state                                                                   | Restart only         |
+| `limits.ephemeral_mb`         | 1024    | Memory for short-lived sign-in state (with a shared database: the bytes of it each node writes there)  | Restart only         |
 | `server.deny_networks`        | none    | Client addresses refused, below                                                                        | Next request         |
 
 `server.deny_networks` lists IP addresses and CIDR ranges (`["203.0.113.7", "198.51.100.0/24", "2001:db8:bad::/48"]`)
@@ -211,12 +215,13 @@ them all at once).
 ### Under attack
 
 1. Find the source: the audit events (`login.limited`, `login.failure`, `oauth.client_auth.limited`,
-   `api.request.refused`) and the access log name the address (`ip`); `quisora_audit_events_total` and
-   `quisora_http_shed_total` show the rate.
+   `api.request.refused`) and the access log name the address (`ip`); `quisora_audit_events_total`,
+   `quisora_http_shed_total` and `quisora_http_shed_address_total` show the rate.
 2. Deny it: add the address or its network to `server.deny_networks` in every node's file and reload every node.
    `quisora_http_denied_total` should start counting on each.
-3. If it moves around, tighten the limits the same way: a lower `limits.login_per_ip_min`, `limits.lockout_attempts`
-   or `limits.max_in_flight`. Reload rather than restart, so the counters keep what they have.
+3. If it moves around, tighten the limits the same way: a lower `limits.login_per_ip_min`, `limits.lockout_attempts`,
+   `limits.max_in_flight`, or `limits.held_kb` and `limits.flows_per_ip` when it is short-lived state being filled
+   (`quisora_ephemeral_refused_total`). Reload rather than restart, so the counters keep what they have.
 4. For more addresses than a short list, block them upstream (a firewall, the proxy or CDN in front).
 5. Once it is over, take the entries out and reload again. The account steps (locking, signing out) are in
    [SECURITY.md](SECURITY.md).
@@ -561,6 +566,12 @@ New cluster:
    they wait: "no data set"). The data set forms once every node has started: until then a new node copies from the first
    node alone; after that, replacements copy from a majority of the others as above.
 
+A node that has not formed the cluster (it has no data set yet, or sees fewer than a majority of the nodes) logs
+`cluster peers not in view` a minute after starting and every minute after, with the `peers` of `cluster.peers` it
+cannot see. Each is not started, not reachable on its cluster address, or has another `cluster.key`: nodes with
+different keys drop each other's packets as undecryptable and never meet: compare the key ids each node lists under
+`cluster_keys` (system overview, `GET /api/cluster`).
+
 Replacing a node: start the replacement with an empty database and the same configuration. It copies everything.
 
 After a lost disk with another node also down (`quisora force-start`), changing the size, and what each refusal means:
@@ -628,6 +639,32 @@ In a gossip cluster with the database trail, an event is on the node that record
 answer (3 s), is missing from a page (the page says how many nodes answered), and a node whose disk is lost takes its events
 with it.
 
+Every organization's pages read the same log (VictoriaLogs, or every node's database), so they are read on budgets: an
+organization's administrators share 120 pages a minute across the cluster (the console, the management API and the
+MCP server's `query_audit_log` together; a search as you type counts each page it loads), of which each
+administrator (through the console or any token of theirs) or service account may read 60, so one of them cannot
+spend the whole budget and hold the others out of their own log; two of them reading flat out still can. Each super
+admin has 120 of their own. Each node also reads at most 2 pages of one budget at once, and 16 in all, of which 4 are
+kept for the super admins: the organizations' pages together take at most 12, so however many organizations search
+slowly at once, the operators can still read any log. A page that takes longer than 15 seconds to read (or to count
+against its budget) is given up (503 with `Retry-After`; try a shorter time range), so a place is held that long at
+most (the database trail ends the read when the database notices). In a gossip cluster without VictoriaLogs a page
+also asks every other node for its events, outside that node's places: each node answers another within the
+asker's 3-second wait (4 seconds at most, then the query is ended) and at most 8 such requests at once, 4 of one
+organization's log, answering the rest busy at once (the page then says that node did not answer), so pages
+abandoned at the wait cannot pile up as queries on the other nodes. Past a limit the page is refused at once with 429 and `Retry-After` (60 seconds for the
+budget or an administrator's share of it, 2 for the node's places), rather than add to the load on a log that every
+organization shares. Only a page that is read is counted: one refused for want of a place, as not permitted (a
+manager's) or by its administrator's own share spends nothing of the organization's budget.
+
+What remains: six organizations each running two slow searches at once on a node hold the organizations' 12 places
+there, and the other organizations' pages on that node are answered 429 until one ends (15 seconds at most; the
+console tries again every 2 seconds, and the refusals cost nothing). A budget whose count cannot be read (the store
+is unreachable) answers 503, as with the other rate limits. Unlike them, a count that cannot be kept because the
+node's rate-limit counters are at their cap (`quisora_ephemeral_refused_total{reason="counters"}`: a flood of
+requests from many addresses) does not refuse the page: a flood on the sign-in pages must not take the audit log
+away from the administrators who need it then, and the places and the 15 seconds still bound the load.
+
 **Production, and any deployment whose compliance standard or security policy requires a retained audit trail, must
 use VictoriaLogs.** The database audit trail keeps events for
 days, not the year or more an audit period needs; it is per node in a gossip cluster; and it has no protection against
@@ -641,18 +678,85 @@ VictoriaLogs:
   `seq`);
 - give every node room for the spool (below) in its data directory;
 - ship Quisora's structured log too, and alert on `audit.undelivered`: each such line is an event VictoriaLogs will
-  never receive, logged in full so it can still be captured from the log.
+  never receive, or one logged because the spool's disk did not answer in time (the `reason` says which), in full so
+  it can still be captured from the log.
 
 ### What is recorded
 
 | Area | Events |
 | --- | --- |
-| Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure` (an attempt refused as locked, reasons `locked` and `address locked`, at most once a minute per locked account or address on each node, with `detail.suppressed` counting the repeats held back; a real account's are kept apart from those of logins that name no account and of addresses, so a flood of those cannot crowd them out), `login.lockout`, `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `org.spray.start` and `org.spray.end` (an organization's sign-in came under a password spray, and when it was over: [lockout](SECURITY.md#lockout-and-password-spraying)), `logout`, `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `mfa.import` (an authenticator secret imported with a new user: [API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)), `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
+| Sign-in | `login.success` (default on; `audit.logins = false` turns it off), `login.failure` (a wrong credential, reasons `bad password`, `unknown user`, `inactive`, `totp`, `recovery_code` and `email_code`; an attempt refused as locked, reasons `locked` and `address locked`; and the passkey and provider refusals of [passkeys](sign-in/passkeys.md) and [providers](sign-in/providers.md)), `login.lockout` (an account locked by the failure that tripped it: always recorded, even when that failure is held back), `login.limited` (a sign-in rate limit started refusing: once per limit and minute), `org.spray.start` and `org.spray.end` (an organization's sign-in came under a password spray, and when it was over: [lockout](SECURITY.md#lockout-and-password-spraying)), `logout`, `login.session.evict` (a session ended because its user held more than `limits.sessions_per_user`: the least recently used), `passkey.clone` (a copied authenticator, at sign-in or while confirming it is the user), `login.recovery_code`, `mfa.import` (an authenticator secret imported with a new user: [API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)), `login.email_code.sent`, `password.forgot`, `password.reset`, `invite.accept` |
 | OAuth / OpenID Connect | `oauth.consent` (allow or deny), `oauth.grant` (every code exchange), `oauth.token_exchange` (every token exchange), `oauth.device.approve` (a device sign-in approved), `oauth.revoke`, `oauth.grant.evict` (a grant ended because its user held too many: [how many](oauth/sign-in.md#refreshing)), `oauth.code.replay` and `oauth.refresh.reuse` (a code or refresh token presented again: its grant is revoked), `oauth.client_auth.limited` (a client's failed authentications reached the limit); with `audit.tokens = true` also `oauth.refresh` and `oauth.client_credentials` for every token issued, and `oauth.device.start` for every device sign-in started |
 | Administration | users, groups, organizations, tenants, access, clients, providers, API tokens, service accounts (`service_account.create`, `.update`, `.secret.rotate`, `.delete`), invitations, `user.locked_out`, `keys.rotate`, `keys.create` (every signing key made, scheduled ones too), `keys.remove`, tenants' SSH certificate authorities (`ssh.settings.update`, `ssh.ca.create`, `ssh.ca.rotate`, `ssh.ca.remove`, `ssh.cert.issue`, `ssh.cert.revoke`, `ssh.cert.refused`, `ssh.host.issue`, `ssh.host.refused`: [SSH certificates](ssh/README.md#what-is-recorded)), `backup.download`, `backup.restore`, `cluster.force_start`, `cluster.reload` (and `cluster.reload.failure`, with each node's report), `config.reload` (and `config.reload.failure`: one node's SIGHUP reload, with the node and what changed; compare nodes after an incident) |
-| API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back (refusals held back because the node was already tracking 10,000 refusing keys at once are counted in `quisora_audit_refusals_dropped_total`, and logged at most once a minute): anyone can repeat a refusal, and the audit log must not be the thing they flood |
+| API access | `api.request.refused` (a management API or SCIM request refused for an authenticated caller: a token without the scope, a request without the CSRF header, a console session without a second factor, a SCIM token whose owner lost the role; with the method, path and reason), `apitoken.refused` (a token that exists presented with a wrong secret, or after an emergency sign-out, or after its owner was disabled or demoted). Both at most once a minute per token or caller and reason on each node, with `detail.suppressed` counting the repeats held back (refusals held back because the node was already tracking 10,000 refusing keys at once, or 2,500 of one organization, are counted in `quisora_audit_refusals_dropped_total`, and logged at most once a minute): anyone can repeat a refusal, and the audit log must not be the thing they flood |
 | Emergency sign-out | `org.signout` and `server.signout` (with the reason, and whether API tokens ended too), then `signout.sweep` (how many sessions, grants and API tokens were deleted) |
 | Account self-service | `account.*`: passkeys, authenticator app, recovery codes, sessions, applications, connected providers, email verification |
+
+Wrong credentials and lockout refusals can be repeated at will (with `limits.lockout_attempts = 0` nothing locks), so
+each node records at most one a minute per key, sign-in step (password, authenticator code, recovery code, emailed
+code) and client address (an IPv6 /64 counts as one address), the next with `detail.suppressed` counting the repeats
+held back. The key is an account (a browser it signed in from before counts apart from strangers'), a login that
+names no account, or, for `address locked`, the address in that organization; nothing else a request can vary (the
+organization's name spelled in another case, the email address typed in another case) makes another key for the same
+account. The address is part of what is counted so that **every address that sends a wrong credential or is refused
+is named by an event in that minute**: an address that sends one wrong password first does not take the account's
+only event and leave the address that sends the rest unnamed.
+
+What one address can have recorded is bounded in turn, in each organization and on each node: 20 events a minute
+about existing accounts and 5 about logins that name no account (those are made up by whoever sends them, so the
+events are a sample of what the address tries), wrong credentials and lockout refusals each. An IPv6 address counts
+by its /48 here (its events still name the /64): a provider hands out a /48 as readily as a /64. The event after
+those names the address once more and says so (`detail.address_limit`), and then none until the minute is over; the
+address's next event says how many were held back (`detail.address_suppressed`). An organization's allowance is
+bounded the same way: **at most 200 events a minute naming addresses in each of the four kinds below, per
+organization, per node**, however many addresses send them.
+
+An event that cannot name its address (the address's allowance is spent, or the organization's, or the node's
+limiter is full) is recorded once a minute without it: **an existing account's once a minute per sign-in step**,
+naming whichever address came first, with `detail.suppressed` counting the rest, so an address cannot spend its
+allowance on decoy accounts (its own, say) and then guess at its target unseen; and the events that name no account
+once a minute per organization and step (a provider's callback with a state that is not valid, a real provider's
+`upstream not_linked`, a passkey nobody holds: each step its own), so a flood of made-up logins cannot hide a real
+provider's failures. That event says how many addresses the organization's allowance left unnamed in the minute so
+far (`detail.addresses_unnamed`, as many as the node could tell apart).
+
+So the worst case scales with the addresses and the real accounts, never with the attempts:
+
+- **Per client address, per organization it tries, per node: at most 54 events a minute naming it** (27
+  wrong-credential events: 20 + 1 for accounts and 5 + 1 for other logins; and 27 lockout refusals, the same way),
+  and an account is named in at most 20 + 1 of them per address that tries it, however many sign-in steps it tries.
+  Past that, the address can still be the one named by an account's event without its address, once a minute per
+  account and step it tries, if it gets there first.
+- **Per organization, per node, a minute**: 200 events naming addresses in each of the four kinds (wrong credentials
+  and lockout refusals, of existing accounts and of the rest: 800), one per sign-in step without an address for the
+  logins that name no account, and one per existing account and step without an address (at most 2,500 a kind:
+  a guess at every account of a large organization from addresses past their allowance costs one event per account
+  and step).
+- **Per node, a minute**: each of the four kinds holds at most 10,000 keys and 10,000 addresses at once, and one
+  organization at most 2,500 of each, so one organization's flood leaves the others' events as they were. That is
+  at most 10,000 events naming addresses and 10,000 without, a kind, and only with 50 organizations flooded at once.
+
+A cluster records as many times that as it has nodes. An attacker with many addresses (a botnet, or many /48s) has
+them named until the organization's 200 events a minute are spent; past that they are counted, not named, and
+`server.deny_networks` takes a range. Every wrong credential is still counted in
+`quisora_audit_events_total{action="login.failure"}`, held back or not.
+
+A real account's events are kept apart from those of logins that name no account and of addresses, and wrong
+credentials apart from lockout refusals, so a flood of one kind cannot crowd out another. Past the caps above, a
+kind's events of new addresses are counted in `quisora_audit_refusals_dropped_total` and logged at most once a minute
+(naming the limiter and the organization); an existing account's events are still recorded once a minute per
+sign-in step, naming one of the addresses, not all of them. The other sign-in
+failures anyone can repeat are recorded the same way (per client address too), by a fixed step name: a provider's callback with a state that is
+not valid (per organization and address, whatever state, code or provider the request names), a provider sign-in
+that failed after a valid state (per organization and kind of failure, or per account once one is known), a passkey
+that did not verify (per account, or per organization for a credential that names none: the event is then in the
+organization whose sign-in page was used), and a second factor that can no longer be used or set up.
+
+An audit event's detail values are bounded: each at 4 KiB and all of them at 16 KiB; past that the longest values are
+cut to one length (a short value is never cut to make room for a long one), end in `…`, and the event's
+`detail.clipped` names each one cut with its full length and the start of its SHA-256, so a cut is never silent and
+can be matched against the value itself. No event of the server's own comes near the caps: they bound what a request
+could make an event hold, since some events anyone can cause and each is kept for the retention.
 
 Updates record what changed, field by field, as `changed.<field>` = `old → new` (`changed.role`, `changed.email`,
 `changed.email_verified`, `changed.settings.require_mfa`, …). Fields that hold secrets never appear; a replaced
@@ -700,7 +804,9 @@ victorialogs_url = "http://victorialogs:9428"   # user:password@ in the URL is s
 - An event that finds the queue full, because the node writes faster than the spool's disk keeps up, is given up.
 - An event VictoriaLogs will never receive is written to the structured log in full, at error level, with the message
   `audit.undelivered`, a `reason`, and the event under `event` (the same fields VictoriaLogs would have stored). That
-  is the last place it goes: ship the structured log, or such events are lost.
+  is the last place it goes: ship the structured log, or such events are lost. (An event logged because the spool's
+  disk did not answer in time is written the same way and reaches VictoriaLogs as well once the disk answers: its
+  `reason` says so.)
 
 ### Spool
 
@@ -727,12 +833,26 @@ torn one out by itself, so a torn line can never take a complete event with it.
 When the structured log is the fallback (`audit.undelivered`, the event in full — ship the log and alert on it):
 
 - The spool disk did not answer within 2 seconds. The action goes on, the event is logged, and it is still spooled
-  once the disk answers, so it then reaches VictoriaLogs as well (a duplicate, by `id`; never a loss).
+  once the disk answers, so it then reaches VictoriaLogs as well (a duplicate, by `id`; never a loss). One such wait is
+  enough to know the disk is hung: until it has an event on disk within 2 seconds of the event being queued again,
+  the events after it go the same way without the wait (queued for the spool, while the queue has room, and logged at
+  once), so a hung disk slows one request, not every one. The log says when this starts (`the audit spool disk did
+  not answer in time`) and ends (`the audit spool disk answers again`). A disk that answers but keeps events waiting
+  longer than 2 seconds (each write a second or more, under load) stays in this state until it keeps up again, rather
+  than going in and out of it. These events are counted in `quisora_audit_undelivered_total` like the others, though
+  they are delivered as well.
 - The spool could not be written (a full or failing disk, a failed sync of the file or of the directory). The failed
   write is undone, so the log is that event's only copy; a crash before the log is shipped loses it from VictoriaLogs.
 - The spool had to make room (below), or the spool queue was full.
-- VictoriaLogs refused a batch for what is in it (400, 413, 422): it would never take it, so it leaves the spool
-  (logged with VictoriaLogs' answer) rather than hold back everything after it.
+- VictoriaLogs refused an event for what is in it (400, 413, 422): it would never take it, so it leaves the spool
+  (logged with VictoriaLogs' answer) rather than hold back everything after it. A batch it refuses is sent again in
+  halves, and the halves it refuses in halves again, so the events it takes are delivered and only those it refuses
+  are logged. The requests are bounded: a batch starts with 64 and earns 2 for every part VictoriaLogs takes, up to
+  512, which finds up to 33 refused events wherever they lie in a full segment (2,000 to 3,500 events) and loses no
+  other. Once they are spent, each part left is sent once more and logged as refused if VictoriaLogs still refuses
+  it, good events in it included (a batch refused for something every event in it has earns nothing, and is not sent
+  event by event: about 75 requests, then logged). VictoriaLogs being unreachable or failing part-way is an outage:
+  the batch stays in the spool and is sent again later.
 - A line in a spool segment is complete but not JSON (the disk changed it): it can never be sent.
 
 Delivery is at least once: a batch VictoriaLogs took is sent again if the node crashed before the batch left the
@@ -946,9 +1066,11 @@ emailed: administrators share invitation links themselves, and there is no self-
 say and look like is set per organization, over the primary organization's defaults: [EMAILS.md](EMAILS.md). An
 organization's administration (its administrators, managers and service accounts) has it email at most 300 invitations
 and verification links an hour to the addresses it enters, then 429 ([EMAILS.md](EMAILS.md#limits)). "Forgot your
-password?" sends an account at most 5 reset emails an hour for the requests of one address, and 20 an hour in all:
-anyone who knows the address can ask for a reset, but cannot use up the owner's own requests from another address, nor
-flood the inbox. The form answers the same either way.
+password?" sends an account at most 5 reset emails an hour for the requests of one address, and 20 an hour in all,
+then 3 more an hour for addresses that have not asked for it in the hour, one each: anyone who knows the address can
+ask for a reset, but cannot use up the owner's own requests from another address (a few addresses spending the 20
+leave the owner's first request from where they are its place), nor flood the inbox (23 an hour at most). The form
+answers the same either way.
 
 Email is queued in the store before the request that sends it answers, as the sending node's own ([Queued work](#queued-work)),
 sealed with the master key (messages carry single-use links). A message SMTP does not take is retried after 1, 5, 30
@@ -958,10 +1080,13 @@ When the master keys change (a start with new keys, or a reload) each node re-se
 before it reports that key, so a rotation reported complete leaves no queued message needing the old key. A message
 sealed under a key that is not configured (one removed too early, or a node that was down during the rotation started
 without it) is kept and logged, and sent once that key is put back in `previous_master_keys`. Each node holds at most
-10,000 messages, of which one organization may have 2,500; past that, new ones (of that organization) are refused with
-an error. Messages go out 8 at a time, at most 2 of them for one organization, each over a connection of its own: an
-organization's burst (thousands of invitations, or password resets asked for address after address) fills only its
-share, and the other organizations' messages go out beside its backlog rather than behind it. All organizations share
+10,000 messages, of which one organization may have 2,500, and no more than the room left for the others: the
+organizations busy at once leave each new one at least half of the room they left, so it takes many of them, not four,
+to refuse everyone's mail; past that, new ones (of that organization) are refused with an error. Messages go out 8 at a
+time, at most 2 of them for one organization, each over a connection of its own, and a free sender goes first to an
+organization with none of its mail being sent: an organization's burst (thousands of invitations, or password resets
+asked for address after address) fills only its share, and the other organizations' messages go out beside the
+backlogs rather than behind them. All organizations share
 the one SMTP server, though: when it is slow or down every organization's mail waits alike. A message whose sign-in
 code or link has expired by the time its turn comes is dropped, not sent (`mail not sent: what it carries expired while
 it was queued`), so mail SMTP takes again after an outage is what still works. Watch `quisora_mail_queued`: growing
@@ -974,6 +1099,12 @@ means SMTP is not taking mail.
   counts of writes whose outcome is unknown, refusals and clock skew.
 - `GET /api/cluster` (super admins) and the console's settings page: the node's cluster status.
 - The probes, metrics, discovery and JWKS are never shed under load (`limits.max_in_flight`, default 4096 per node).
+  One address (an IPv6 /64) may have at most `limits.max_in_flight_per_ip` of those requests in progress (a sixteenth
+  of them by default), and one IPv6 /48 four times that, whatever /64s of it they come from; its next gets 429 with
+  `Retry-After` (`quisora_http_shed_address_total`). A request holds its
+  place before its body is read, so without this an address sending bodies a byte at a time could hold every place
+  until the read timeout (30 s) and keep everyone else out. Behind a proxy, set `server.trust_proxy`, or every client
+  counts as the proxy's address.
 - Short-lived sign-in state (flows, codes, challenges) is held in each node's memory up to
   `limits.ephemeral_mb` (default 1024 MiB); past it, requests that would add to it get 503 with `Retry-After` (a
   page, or `temporarily_unavailable` from the OAuth endpoints) until expiries make room, and the node logs a warning
@@ -981,18 +1112,83 @@ means SMTP is not taking mail.
   count against that limit (however many there are, they cannot refuse a sign-in its state) and are never refused
   because sign-in state filled it. But whoever is limited often chooses their keys, so their memory has a cap of its
   own, `limits.ephemeral_mb` again, or 16 MiB if that is more (so a node holds at most `limits.ephemeral_mb` of
-  sign-in state plus that much of counters). Past the cap a new counter is not made and its limit
-  refuses (it fails closed; counters already held go on counting), counted as
-  `quisora_ephemeral_refused_total{reason="counters"}` and logged at most once a minute. With a
-  shared database this state lives in the database instead. A pushed authorization request (PAR) holds nothing: its
-  request_uri carries the request, sealed (docs/oauth/par.md).
+  sign-in state plus that much of counters, and the caches' cap below). Past the cap a new counter is not made and
+  its limit refuses (it fails closed; counters already held go on counting), counted as
+  `quisora_ephemeral_refused_total{reason="counters"}` and logged at most once a minute. Short-lived caches (client
+  metadata documents read in the last minute, [MCP.md](MCP.md)) are kept apart too, under a cap of their own: a
+  sixteenth of `limits.ephemeral_mb`, at least 4 MiB (`quisora_ephemeral_cache_bytes` against
+  `quisora_ephemeral_cache_limit_bytes`). At it a new entry takes the room of the oldest ones, which go (nothing is
+  refused: an entry evicted only saves a read, which the next request that needs it does again, within its limits),
+  and the node logs that at most once a minute; only an entry larger than the whole cap is not kept, counted as
+  `quisora_ephemeral_refused_total{reason="cache"}`. The records protections rest on (that an authorization code was used, so that
+  its replay ends what it issued; when a device last polled, for `slow_down`; that an organization is under a
+  password spray) are kept apart in the same way, under a quarter of `limits.ephemeral_mb` (at least 16 MiB): sign-in
+  state that fills the node never switches those protections off. Past their own cap they fail closed (a code is not
+  redeemed: 503 `temporarily_unavailable`, and is still there for the retry; a poll is told to slow down), counted as
+  `quisora_ephemeral_refused_total{reason="guard"}` and logged at most once a minute. A spray whose record cannot be
+  kept there is remembered by a counter instead, so the spray limit holds (for a lockout time from the minute over
+  the limit whose record could not be kept, and again from the next; its end is then not audited). What one requester may keep among these records is
+  bounded apart from the rest of what it holds, at a sixteenth of `limits.held_kb` (at least 32 KiB): the records of
+  a code's use are charged to the code's user when the code is redeemed, and kept for 20 minutes (every code has
+  expired by then: `tokens.code_ttl` is at most ten), and a device sign-in's poll record to the address that started
+  it. Past it a code is not redeemed (429 `temporarily_unavailable` with `Retry-After`, the code still there) or a
+  device sign-in not started (429 `slow_down`): about 170 redemptions per user in 20 minutes by default, some 40 at
+  the smallest `limits.held_kb`. So filling these records' room, which would refuse every redemption on the node,
+  takes about a thousand accounts redeeming codes as fast as they are allowed at the defaults, and never fewer than
+  about 250 however the two limits are set, not a few dozen. With a shared database this state lives in the database instead, a row each until it
+  expires, and the same budgets apply to the rows each node writes there: `limits.ephemeral_mb` for sign-in state,
+  the counters' cap, the caches' cap and the guard records' cap, with the same refusals, warnings and metrics (a
+  full cache there makes room too: the oldest rows the node wrote are deleted for a new one). Each node counts what it wrote
+  itself (its size and expiry, as it would count its memory), so the nodes together may write up to their number times
+  the budgets, and a row another node takes or deletes stays counted by the node that wrote it until it expires. A
+  pushed authorization request (PAR) holds nothing: its request_uri carries the request, sealed (docs/oauth/par.md).
+- What one requester can have a node hold is bounded in bytes, not only by how fast it may ask. Everything kept for
+  a request nobody has signed in for (a sign-in flow, the state of a sign-in under way at a provider, a passkey
+  challenge, the ticket of a second sign-in step, a device sign-in waiting to be approved) is charged to the client
+  address, and what a signed-in user has kept (authorization codes, a sign-out waiting for its confirmation,
+  challenges and provider connections begun from the account page) to the user: at most `limits.held_kb` each
+  (default 2048 KiB, 0 turns it off). Past it the request that would add more gets 429 with `Retry-After` (a page, a JSON error, or
+  `slow_down` from the device authorization endpoint), counted as
+  `quisora_ephemeral_refused_total{reason="held_bytes"}`; nobody else is refused anything. An IPv6 /64 counts as one
+  address, its /48 may hold sixteen times `limits.held_kb` in all and its /32 sixty-four times, so one allocation's
+  65,536 /64s do not bring a budget each, nor a provider's 65,536 /48s. The count is kept in 20-minute windows (the
+  longest any of this lives), and what ends early (a sign-in finished or cancelled, a challenge answered, a second
+  factor given, a device's tokens collected, a sign-out confirmed) gives its bytes back to the window it was counted
+  in, so a requester holds at most twice the budget, across the turn of a window, and an office behind one address
+  that finishes its sign-ins is never near it: a sign-in in progress is about 1 KiB, so the default is some two
+  thousand of them at once. What is abandoned stays counted until its window turns. That is the price of a budget
+  per address where many people share one (an office, a mobile provider's address translation, one provider's IPv6
+  /32): they share the budget, and whoever among them starts sign-ins and leaves them unfinished can use it up for
+  the others, for up to 20 minutes after they stop (429 for new sign-ins from that address; nobody elsewhere is
+  refused). Raise `limits.held_kb` where that many people sign in from one address. Authorization codes are counted
+  apart, in windows of their own lifetime (`tokens.code_ttl`), and given back when redeemed: any page can send a
+  signed-in browser to an application its user allowed before and have a code issued, so codes nobody redeems come
+  back to their user within two code lifetimes instead of holding the user's sign-ins up for 20 minutes. The count
+  is the cluster's, not each node's (it lives on the node that owns the requester's counter, or in the shared
+  database); with gossip, each time that owner changes within a window (a node stops serving or starts) the
+  requester may hold up to one more budget until the window's entries expire, since the new owner counts from
+  nothing. The requester's own parameters are kept at their own length (no escaping that would make each `<`, `>`
+  or `&` six bytes), and the caps on them (`state` 2048, `nonce` 1024, `login_hint` 256, a path to return to 2048)
+  are on what they take stored. A session has one sign-out confirmation waiting at a time, whatever asks for it.
 - A sign-in started at an authorization endpoint (or a device code's verification page) holds a flow for up to 20
-  minutes, until it finishes. One client address holds at most `limits.flows_per_ip` (default 50; an IPv6 /64 counts
-  as one address, 0 turns it off) at once; past it new ones get 429 until one finishes or the address's count starts
-  again (20 minutes after its first flow), so a few addresses cannot fill `limits.ephemeral_mb` with sign-ins they
-  never finish. Starting them is limited too, to 300 a minute per address. Like the other limits it is approximate (an
-  address may hold up to about twice it as its count starts again). Behind a proxy set `server.trust_proxy`, or every
-  user shares the proxy's address and its flows.
+  minutes from its start, until it finishes (the steps in between do not extend it). One client address holds at
+  most `limits.flows_per_ip` (default 50; an IPv6 /64 counts as one address, its /48 may hold sixteen times as many
+  and its /32 sixty-four times; 0 turns it off) at once, within its `limits.held_kb`; past it new ones get 429 until one finishes or expires, so a few addresses cannot fill
+  `limits.ephemeral_mb` with sign-ins they never finish. Starting them is limited too, to 300 a minute per address.
+  It is counted as `limits.held_kb` is (an address may hold up to twice it across the turn of a 20-minute window, and
+  ending old flows never buys room for more than the limit). Behind a proxy set `server.trust_proxy`, or every user
+  shares the proxy's address, its flows and its `limits.held_kb`.
+- What this does not stop: these budgets are per address, so an attacker with many addresses scales with them. At
+  the defaults one IPv4 address or IPv6 /64 holds at most 4 MiB (twice 2 MiB, across a window), one IPv6 /48 at
+  most 64 MiB and one IPv6 /32 (what a provider is allocated) at most 256 MiB, so filling the default
+  `limits.ephemeral_mb` takes some 256 to 512 IPv4 addresses, or 4 to 8 IPv6 /32s, each kept busy; a botnet has
+  that. `limits.held_kb` is used as at most 1/128 of `limits.ephemeral_mb` (a larger value, the default on a small node included, is lowered to that), so that however the two are set one address
+  or user holds at most a 64th of the node, a /48 a quarter, and it takes a whole /32 to fill it. The node's memory
+  limit is then the backstop: the state is refused at `limits.ephemeral_mb` (503 for new sign-ins on that node, until
+  expiries make room within 20 minutes) rather than the node running out of memory, and
+  `quisora_ephemeral_refused_total{reason="held_bytes"}` and `{reason="full"}` show it happening. Lower
+  `limits.held_kb` (a sign-in holds about 1 KiB, so 256 still lets one address hold some two hundred at once), raise
+  `limits.ephemeral_mb`, and block the sources upstream.
 
 ### Metrics
 
@@ -1005,18 +1201,19 @@ endpoint. Every node serves its own.
 | `quisora_http_requests_total{code}` | Requests by status class (`2xx` … `5xx`) |
 | `quisora_http_request_duration_seconds` | Time to answer (histogram) |
 | `quisora_http_shed_total` | Requests refused because too many were in progress |
+| `quisora_http_shed_address_total` | Requests refused with 429 because their address had its share (`limits.max_in_flight_per_ip`) in progress |
 | `quisora_http_denied_total` | Requests refused with 403 because the client's address is in `server.deny_networks` ([denied addresses](#limits-and-denied-addresses)); not counted in `quisora_http_requests_total` |
-| `quisora_audit_events_total{action,outcome}` | Every audit event: `login.failure`, `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `oauth.client_auth.limited`, `passkey.clone` and the rest ([what is recorded](#what-is-recorded)) |
-| `quisora_audit_undelivered_total` | Audit events VictoriaLogs will never receive |
+| `quisora_audit_events_total{action,outcome}` | Every audit event: `login.failure`, `login.lockout`, `login.limited`, `oauth.refresh.reuse`, `oauth.code.replay`, `oauth.client_auth.limited`, `passkey.clone` and the rest ([what is recorded](#what-is-recorded)). `login.failure` counts every wrong password or code, the repeats the audit log holds back too |
+| `quisora_audit_undelivered_total` | Audit events logged in full as `audit.undelivered`: those VictoriaLogs will never receive, and those logged because the spool's disk did not answer within 2 seconds, which reach VictoriaLogs as well once it does (the `reason` in the log tells them apart) |
 | `quisora_audit_spool_bytes` | Disk the VictoriaLogs spool uses (growing: VictoriaLogs is not taking events) |
 | `quisora_mail_queued` | Emails this node has waiting to be sent |
 | `quisora_mail_failed_total{reason}` | Emails that never reached the mail server: `given_up` (every retry failed; the log names the recipient), `dropped` (kept past the queue's discard horizon, or unreadable) and `expired` (the sign-in code or link in it had expired while it waited) |
 | `quisora_authorize_refused_total{error}` | Authorization requests from a known application sent back with an error before anyone signed in, by error: `invalid_scope` (it asked for a scope its settings do not allow), `unauthorized_client` (a grant type it may not use), `invalid_request` and the others. Each is also logged as a warning (`oidc: authorization request refused`) naming the application, the error and why; not an audit event, as nobody has signed in and anyone who knows a client ID can cause one. A rise after an application's settings were changed is usually that change (its `client.update` audit event shows what changed) |
-| `quisora_ephemeral_bytes`, `quisora_ephemeral_budget_bytes`, `quisora_ephemeral_counter_bytes`, `quisora_ephemeral_entries` | This node's short-lived state: the memory its sign-in flows, codes and challenges take, by the estimate checked against `limits.ephemeral_mb`; that limit in bytes; the memory its rate-limit counters take, checked against their own cap (`limits.ephemeral_mb`, at least 16 MiB); how many entries it holds (counters included). With a shared database the state is in the database, and these stay near 0 |
-| `quisora_audit_refusals_dropped_total{limiter}` | Refusal audit events (`apitoken.refused`, `api.request.refused`, SSH refusals, sign-in lockout refusals) not recorded because the node already tracked 10,000 refusing keys at once, by limiter: `refusals`, `login` (sign-in keys that name no account, and addresses) and `login_accounts` (existing accounts'). Above 0: a flood of refused requests; the node also logs it at most once a minute |
-| `quisora_ephemeral_refused_total{reason}` | Requests refused for short-lived state, by reason: `full` (this node's short-lived state at `limits.ephemeral_mb`: 503), `counters` (a new rate-limit counter past the counters' cap: the limit refuses) and `flows_per_ip` (an address holding `limits.flows_per_ip` sign-ins in progress: 429) |
+| `quisora_ephemeral_bytes`, `quisora_ephemeral_budget_bytes`, `quisora_ephemeral_counter_bytes`, `quisora_ephemeral_counter_limit_bytes`, `quisora_ephemeral_cache_bytes`, `quisora_ephemeral_cache_limit_bytes`, `quisora_ephemeral_entries` | This node's short-lived state: the memory its sign-in flows, codes and challenges take, by the estimate checked against `limits.ephemeral_mb`; that limit in bytes; the memory its rate-limit counters take, checked against their own cap; that cap in bytes (`limits.ephemeral_mb`, at least 16 MiB); the memory its short-lived caches (client metadata documents read in the last minute) take, checked against their own cap; that cap in bytes (a sixteenth of `limits.ephemeral_mb`, at least 4 MiB: at it the oldest entries make room); how many entries it holds (counters and cache entries included). With a shared database, the same for the rows this node wrote there |
+| `quisora_audit_refusals_dropped_total{limiter}` | Refusal audit events (`apitoken.refused`, `api.request.refused`, SSH refusals, sign-in lockout refusals and wrong credentials) not recorded because the node already tracked 10,000 keys (or, for the sign-in events, 10,000 client addresses) at once in their limiter, or one organization 2,500 of them, or (sign-in events) because the organization already had 200 events naming addresses recorded in the minute ([what is recorded](#what-is-recorded)), by limiter: `refusals`, `login` (lockout refusals of sign-in keys that name no account, and of addresses), `login_accounts` (existing accounts' lockout refusals), `login_failures` (wrong passwords for logins that name no account) `login_account_failures` (existing accounts' wrong passwords and codes) and `device_starts` (the device sign-ins public clients started, `oauth.device.start`). For the sign-in limiters it counts events whose address went unnamed: the account's event of that minute and sign-in step is still recorded (`login_accounts`, `login_account_failures`), or the organization's of that step (`login`, `login_failures`), naming one of the addresses. Above 0: a flood of refused requests; the node also logs it at most once a minute |
+| `quisora_ephemeral_refused_total{reason}` | Requests refused for short-lived state, by reason: `full` (this node's short-lived state at `limits.ephemeral_mb`: 503), `counters` (a new rate-limit counter past the counters' cap: the limit refuses), `flows_per_ip` (an address holding `limits.flows_per_ip` sign-ins in progress: 429), `held_bytes` (an address or a signed-in user holding `limits.held_kb` of short-lived state: 429), `guard` (a record of a used code, a device poll or a password spray past those records' cap: the code is not redeemed, the poll is told to slow down, the spray is remembered by a counter) and `cache` (a short-lived cache entry larger than the caches' whole cap, not kept: nothing refused; a full cache evicts its oldest entries instead, which is not counted here) |
 | `quisora_backchannel_logout_queued` | Back-channel logouts this node has waiting to be retried (growing: an application is not taking them) |
-| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, so only its own are dropped), or dropped unsent past the queue's discard horizon |
+| `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, and no more than the room left for the others, so only its own are dropped), or dropped unsent past the queue's discard horizon |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |
 | `quisora_cluster_alive_nodes`, `quisora_cluster_size`, `quisora_cluster_quorum` | Cluster membership |
 | `quisora_partitions_owned` | Partitions this node owns (the 64 are shared by the ready nodes) |
@@ -1053,7 +1250,9 @@ Alerts worth having:
   `increase(quisora_ephemeral_refused_total{reason="full"}[5m]) > 0`: the node's short-lived state is (nearly) full and
   new sign-ins get 503: a flood of unfinished sign-ins, or `limits.ephemeral_mb` too small for the load. A steady
   `rate(quisora_ephemeral_refused_total{reason="flows_per_ip"}[5m])` is addresses starting sign-ins they do not finish
-  (or many users behind one address: see `server.trust_proxy`). Refusals for `flows_per_ip` are counted only: no audit
+  (or many users behind one address: see `server.trust_proxy`), and `{reason="held_bytes"}` the same measured in
+  bytes (`limits.held_kb`): a few addresses refused is an attack held off, many at once with `{reason="full"}` rising
+  is one with enough addresses to fill the node. Refusals for `flows_per_ip` and `held_bytes` are counted only: no audit
   event or log line is written for each, so a flood of them cannot fill the audit log; the request log (`log.access`)
   shows the address of each 429.
 - For tenants that use SSH certificates: a log line `oidc: making an SSH revocation list` at error level (the tenant's
