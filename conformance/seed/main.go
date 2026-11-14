@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -15,6 +16,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"log"
 	"math/big"
 	"os"
@@ -92,9 +97,12 @@ func main() {
 		Issuer: issuer, ClientID: ptr("quisora-upstream"), ClientSecret: ptr("upstream-secret"), LinkByEmail: ptr(true),
 		AutoProvision: ptr(false), Enabled: ptr(true)})
 	must(err)
-	_, err = svc.CreateUser(ctx, sys, org.ID, service.UserInput{Email: ptr("user@acme.test"), GivenName: ptr("Conformance"),
+	user, err := svc.CreateUser(ctx, sys, org.ID, service.UserInput{Email: ptr("user@acme.test"), GivenName: ptr("Conformance"),
 		FamilyName: ptr("User"), Verified: ptr(true), Phone: ptr("+44 20 7946 0958"), PhoneVerified: ptr(true),
 		Locale: ptr("en-GB"), ZoneInfo: ptr("Europe/London")}) // the FAPI plan's claims request asks for both
+	must(err)
+	// and for picture: a plain square, as a user's uploaded picture would be
+	_, err = svc.SetPicture(ctx, sys, user.ID, ptr(pictureURI()))
 	must(err)
 
 	repl := []string{}
@@ -197,4 +205,15 @@ func jwkPair(kid string) (public, private string) {
 	pj, _ := json.Marshal(map[string]any{"keys": []any{pub}})
 	sj, _ := json.Marshal(map[string]any{"keys": []any{priv}})
 	return string(pj), string(sj)
+}
+
+// pictureURI is a data: URI of a 64-pixel square PNG in one colour, the seeded user's profile picture.
+func pictureURI() string {
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff}}, image.Point{}, draw.Src)
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		log.Fatal(err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(b.Bytes())
 }

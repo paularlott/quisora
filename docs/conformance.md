@@ -51,6 +51,8 @@ list `scim` (a warning); it does now. Its one skip is the RS256 module again, co
 
 - **Warning** (`test-claims-parameter-identity-claims`): the ID token carries `sid`, the session id of OpenID
   Connect back-channel logout, which the module does not know. Quisora supports back-channel logout, so it stays.
+  The module also asks for `picture`; the harness seeds its user with one (a user without a picture has no `picture`
+  claim, which the module reported as missing until the seed gave it one).
 - **Review** (`par-attempt-to-use-expired-request_uri`, `par-attempt-to-use-request_uri-for-different-client`):
   neither request can be sent back to the client (an expired request_uri is gone, and one presented by another client
   belongs to the client that pushed it, so nothing in it can be trusted for this one), so Quisora shows its error page. The suite asks for a
