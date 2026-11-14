@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -403,6 +404,7 @@ func (p *Provider) readMetadataDoc(ctx context.Context, orgID, id string) []byte
 		p.log.Warn("oidc: client metadata document refused", "client_id", id, "error", perr)
 		return nil
 	}
+	_ = p.s.Eph.Delete(ctx, nsCIMDGone, metadataGoneKey(orgID, id)) // found again: a 404 before it was transient
 	// At the caches' cap the oldest entries make room for it (ephemeral.Local): the read just made is the one the
 	// minute's other callers look for. Not kept only when the store cannot keep it now: the next caller in the minute
 	// then finds the read over and nothing shared, and reads again (awaitShared).
@@ -410,14 +412,53 @@ func (p *Provider) readMetadataDoc(ctx context.Context, orgID, id string) []byte
 	return doc
 }
 
+// nsCIMDGone notes, per organization and URL, when a stored application's document was first answered 404 or 410
+// (metadataGoneMark), so that one such answer does not end it: a CDN edge that has not got the file yet, or a deploy
+// that serves 404 for a moment, would otherwise end every user's access to the app, at a moment anyone can choose
+// (anyone can start a sign-in that makes the read). Only a stored application's URL is noted, so the notes are bounded
+// by the applications stored; a read that finds the document again removes its note.
+const nsCIMDGone = "oauth.cimd.gone"
+
+// metadataGoneGrace is how long a stored application's document must have been gone, by the first and a later read
+// of it, before the application ends; metadataGoneMark how long the first answer is remembered (a later read past it
+// starts the grace again).
+const (
+	metadataGoneGrace = 10 * time.Minute
+	metadataGoneMark  = 2 * time.Hour
+)
+
+func metadataGoneKey(orgID, id string) string { return orgID + "|" + id }
+
 // endGoneMetadataApp ends organization orgID's stored application id, whose document's server answered this server's
 // own read of that exact URL with 404 or 410 (errFetchGone, cause): its author has taken it down, which is how an
 // application is withdrawn. As service.RevokeSelfRegisteredApp does, every user's grants to it end and it is removed
 // (a later sign-in naming the URL reads it again, as for an application never stored). Nothing else ends one: a
 // network error, a timeout or any other answer leaves the stored copy (good until service.MetadataStale), and nobody
 // but whoever serves the URL decides what it answers (no redirect is followed: secure.OutboundClient, fetch).
+//
+// Not on the first such answer: the first is noted (nsCIMDGone), and the application ends only when a read at least
+// metadataGoneGrace later is answered so again, with no read in between that found the document. Meanwhile it is
+// served from its stored copy as for any read that fails.
 func (p *Provider) endGoneMetadataApp(ctx context.Context, orgID, id string, cause error) {
-	err := p.svc.EndGoneMetadataApp(ctx, orgID, id, cause.Error())
+	c, err := p.svc.Clients.Get(ctx, model.ClientRecordID(orgID, id))
+	if err != nil || !c.SelfRegistered || !c.IsMetadataClient() || c.OrgID != orgID || c.MetadataURL != id {
+		return // not a stored application of this organization's: nothing to end, nothing to note
+	}
+	key := metadataGoneKey(orgID, id)
+	b, err := p.s.Eph.Get(ctx, nsCIMDGone, key)
+	if err != nil {
+		if errors.Is(err, ephemeral.ErrNotFound) {
+			_ = p.s.Eph.Set(ctx, nsCIMDGone, key, []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), metadataGoneMark)
+			p.log.Warn("oidc: a stored application's metadata document is gone; the application ends if it is still gone "+
+				"when read again after the grace", "client_id", id, "grace", metadataGoneGrace, "error", cause)
+		}
+		return
+	}
+	if first, perr := strconv.ParseInt(string(b), 10, 64); perr != nil || time.Since(time.Unix(0, first)) < metadataGoneGrace {
+		return
+	}
+	err = p.svc.EndGoneMetadataApp(ctx, orgID, id, cause.Error())
+	_ = p.s.Eph.Delete(ctx, nsCIMDGone, key)
 	switch {
 	case err == nil:
 		p.clients.Del(model.ClientRecordID(orgID, id))

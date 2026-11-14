@@ -123,7 +123,9 @@ in with PKCE, naming the MCP server as `resource`.
   while its URL cannot be read (a network error, a timeout, any other answer than the ones below, or a document
   refused, such as one over the redirect URI caps); past that the document is read for the request, as for an app not
   stored (within the address's 20 a minute), and the app is unknown until it is read. A document whose own URL answers
-  `404 Not Found` or `410 Gone` has been withdrawn by its author: the app ends then, as **Revoke** ends one (every
+  `404 Not Found` or `410 Gone` has been withdrawn by its author, once that is still the answer to a read at least ten
+  minutes after the first (with no read in between finding it; a document gone once and then found again was a hiccup,
+  such as a CDN edge or a deploy, and nothing ends): the app ends then, as **Revoke** ends one (every
   user's access to it, then the app), recorded as `client.self_registered.revoke` by the system with the answer as its
   `reason`. Only Quisora's own read of that exact URL decides it (no redirect is followed), so nobody but whoever serves
   the URL can end an app this way; a later sign-in naming the URL reads it again and asks the user, as for a new app.

@@ -287,10 +287,34 @@ func TestStoredMetadataAppEndsWhenItsDocumentIsGone(t *testing.T) {
 			}
 			mode.Store(int32(status))
 			_, ch := pkce()
+			// The first answer only starts the grace: a CDN edge or a deploy may answer 404 for a moment.
 			if rec := h.startFrom("198.51.100.126", authzQuery(cl, ch, url.Values{"resource": {mcpResource}})); rec.Code != http.StatusFound {
 				t.Fatalf("a stored application due a refresh: %d", rec.Code) // answered from the stored copy
 			}
+			gone := metadataGoneKey(h.env.Primary.ID, cl.ID)
 			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := h.env.Server.Eph.Get(ctx, nsCIMDGone, gone); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the first gone answer was not noted")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if _, err := h.env.Svc.Clients.Get(ctx, rid); err != nil || grants() == 0 {
+				t.Fatalf("one gone answer ended the application: %v", err)
+			}
+			// Still gone a grace later (the note made to look that old, and a minute later): the application ends.
+			old := strconv.FormatInt(time.Now().Add(-metadataGoneGrace-time.Second).UnixNano(), 10)
+			if err := h.env.Server.Eph.Set(ctx, nsCIMDGone, gone, []byte(old), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			_ = h.env.Server.Eph.Delete(ctx, nsRateOIDC, metadataReadKey(h.env.Primary.ID, cl.ID))
+			if rec := h.startFrom("198.51.100.127", authzQuery(cl, ch, url.Values{"resource": {mcpResource}})); rec.Code != http.StatusFound {
+				t.Fatalf("a stored application read again: %d", rec.Code)
+			}
+			deadline = time.Now().Add(5 * time.Second)
 			for {
 				if _, err := h.env.Svc.Clients.Get(ctx, rid); errors.Is(err, store.ErrNotFound) {
 					break
@@ -336,4 +360,46 @@ func TestStoredMetadataAppEndsWhenItsDocumentIsGone(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A document gone once and then found again was a hiccup: the note of the first answer goes with the read that finds
+// it, so a 404 later starts the grace afresh rather than ending the application.
+func TestMetadataGoneThenFoundStartsTheGraceAgain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h := setup(t, nil)
+	h.mcpTenant("mcp", true)
+	redirect := "http://127.0.0.1:44197/callback"
+	srv, _, mode := statusDocServer(t, redirect)
+	h.p.HTTP = srv.Client()
+	cl, rid := h.storedDocApp(srv.URL, redirect, 25*time.Hour)
+	_, ch := pkce()
+	gone := metadataGoneKey(h.env.Primary.ID, cl.ID)
+	old := strconv.FormatInt(time.Now().Add(-metadataGoneGrace-time.Second).UnixNano(), 10)
+	if err := h.env.Server.Eph.Set(ctx, nsCIMDGone, gone, []byte(old), time.Hour); err != nil { // gone a grace ago
+		t.Fatal(err)
+	}
+	mode.Store(http.StatusOK) // and found now
+	if rec := h.startFrom("198.51.100.140", authzQuery(cl, ch, url.Values{"resource": {mcpResource}})); rec.Code != http.StatusFound {
+		t.Fatalf("a stored application due a refresh: %d", rec.Code)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := h.env.Server.Eph.Get(ctx, nsCIMDGone, gone); errors.Is(err, ephemeral.ErrNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the document found again left the note of its first gone answer")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mode.Store(http.StatusNotFound)
+	_ = h.env.Server.Eph.Delete(ctx, nsRateOIDC, metadataReadKey(h.env.Primary.ID, cl.ID))
+	if rec := h.startFrom("198.51.100.141", authzQuery(cl, ch, url.Values{"resource": {mcpResource}})); rec.Code != http.StatusFound {
+		t.Fatalf("a stored application read again: %d", rec.Code)
+	}
+	time.Sleep(300 * time.Millisecond) // the refresh in the background
+	if _, err := h.env.Svc.Clients.Get(ctx, rid); err != nil {
+		t.Fatalf("a 404 after the document was found again ended the application: %v", err)
+	}
 }
