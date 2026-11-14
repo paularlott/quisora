@@ -119,7 +119,8 @@ All of them are under the organization's issuer, `/o/<org id>` (or `/o/<org name
 | `/o/<org id>/oauth/register` | Dynamic client registration (RFC 7591), for [self-registered apps](../MCP.md) |
 
 An authorization request costs a lookup of its client, and one that starts a sign-in holds a little state for up to
-20 minutes, so each address may make at most 300 a minute, whatever they name; past that it gets a `429 Too Many
+20 minutes, so each address may make at most 300 a minute, whatever they name (an IPv6 /48, 19,200 in all, whatever
+/64s they come from: see [RUNNING.md](../RUNNING.md#health-and-monitoring)); past that it gets a `429 Too Many
 Requests` page for the rest of the minute. Behind a proxy set `server.trust_proxy`, or every user shares the proxy's
 address and its budget.
 

@@ -221,11 +221,12 @@ func (c *contended) Incr(_ context.Context, _, _ string, delta int64, _ time.Dur
 	return ephemeral.Contended, nil
 }
 
-// A charge that could not be counted (the counter too contended, or past the counters' cap) is refused, and nothing
-// is given back for it: it counted nothing, and taking it off again would leave the counter below what is held.
+// A charge that could not be counted (the counter too contended, or past the counters' cap) is refused
+// (ErrContended), and nothing is given back for it: it counted nothing, and taking it off again would leave the
+// counter below what is held.
 func TestHoldGivesNothingBackForAChargeNotCounted(t *testing.T) {
 	st := &contended{}
-	if _, ok, err := ephemeral.Hold(context.Background(), st, "held", "addr", 5, 100, time.Minute); ok || err != nil {
+	if _, ok, err := ephemeral.Hold(context.Background(), st, "held", "addr", 5, 100, time.Minute); ok || !errors.Is(err, ephemeral.ErrContended) {
 		t.Fatalf("a charge on a contended counter: %v %v", ok, err)
 	}
 	if len(st.deltas) != 1 || st.deltas[0] != 5 {

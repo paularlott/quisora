@@ -60,7 +60,7 @@ that allows is 7.5 KB, and the authorization URL that carries it 7.6 KB, which f
 A push is counted after the client has authenticated. A confidential client (secret or private key JWT) may push 1,800 a
 minute, whatever its address and whatever other clients push; past that it gets `429 temporarily_unavailable` with
 `Retry-After`. A public client is admitted by its `client_id` alone, so anyone can push as it: it may push 60 a minute
-per address, and nothing it pushes is held by Quisora, so no one can use up another client's or organization's share.
+per address (240 per IPv6 /48, whatever /64s they come from), and nothing it pushes is held by Quisora, so no one can use up another client's or organization's share.
 
 ## Requiring it
 

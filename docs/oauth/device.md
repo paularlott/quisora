@@ -153,7 +153,7 @@ request, as at any token request.
 
 A code is the only thing linking the two, so it is short-lived and hard to guess: 8 letters from 20 consonants (no
 vowels, so no words, and no 0/O or 1/I to confuse), 10 minutes, once. Each address may enter 20 wrong codes per 15
-minutes, and start 30 device sign-ins per minute; those it has waiting count toward what the address may have the
+minutes, and start 30 device sign-ins per minute (an IPv6 /48 four times each, whatever /64s they come from); those it has waiting count toward what the address may have the
 server hold (`limits.held_kb`, about 1.5 KiB each, and a sixteenth of it for the records of their polls, about
 0.5 KiB each), and past that a new one is refused with `slow_down` (429) until some are finished or expire. A
 sign-in gives both back when it ends: its tokens collected, or its refusal.

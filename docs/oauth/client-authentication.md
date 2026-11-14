@@ -36,7 +36,7 @@ clients are rotated by super admins only. A [service account](../SERVICE-ACCOUNT
 (`POST /api/orgs/{org}/service-accounts/{id}/secret`) by its organization's administrators.
 
 **Wrong secrets** are limited: after 30 failures a minute for one client from one address (300 from one address for
-any client), every attempt is refused for the rest of the minute, the right secret included, and the client's
+any client, and from one IPv6 /48 sixty-four times that, whatever /64s they come from), every attempt is refused for the rest of the minute, the right secret included, and the client's
 organization gets an `oauth.client_auth.limited` audit event. The address's 300 are also spent by a public client's
 token requests that fail on what they present (an unknown or used code or refresh token, a refused DPoP proof): anyone
 can name a public client, so past them every request from the address that is not a confidential client proving its

@@ -40,13 +40,18 @@ const (
 	nsDevicePoll = ephemeral.GuardPrefix + "oauth.device.poll" // device_code -> devicePoll
 	nsDeviceTurn = "oauth.device.turn"                         // device_code -> the right to decide it, taken by the first decision
 
-	deviceTTL          = 10 * time.Minute
-	deviceInterval     = 5 // seconds between polls
-	userCodeAlphabet   = "BCDFGHJKLMNPQRSTVWXZ"
-	userCodeLen        = 8
+	deviceTTL        = 10 * time.Minute
+	deviceInterval   = 5 // seconds between polls
+	userCodeAlphabet = "BCDFGHJKLMNPQRSTVWXZ"
+	userCodeLen      = 8
+	// deviceGuessesPerIP is the wrong user codes an address may enter per deviceGuessWindow, and its IPv6 /48
+	// web.NetShareFactor times as many (netCount): a guessing limit, kept tight for a /48 too, which a site whose
+	// people type their codes right does not come near.
 	deviceGuessesPerIP = 20
 	deviceGuessWindow  = 15 * time.Minute
-	deviceStartsPerIP  = 30 // device authorization requests per address and minute
+	// deviceStartsPerIP is the device authorization requests per address and minute, and its IPv6 /48 may make
+	// web.NetShareFactor times as many: each start holds a device sign-in for deviceTTL.
+	deviceStartsPerIP = 30
 	// deviceExtraCost is what a device sign-in holds beyond its own record, charged with it as it starts: the user
 	// code's and the turn's entries, and what an approval adds to the sign-in (the user, their session and how they
 	// signed in). devicePollCost is the record of its polls, charged apart (nsDevicePoll).
@@ -156,11 +161,16 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	}
 	ctx := r.Context()
 	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "device-start|"+web.RateKeyIP(r), 1, time.Minute)
+	over := n > deviceStartsPerIP
+	if err == nil && !over { // and the address's /48
+		n, err = p.netCount(ctx, r, "device-start", 1, time.Minute)
+		over = n > deviceStartsPerIP*web.NetShareFactor
+	}
 	if err != nil {
 		writeOAuthError(w, serverError(unavailable(err)))
 		return
 	}
-	if n > deviceStartsPerIP {
+	if over {
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down",
 			desc: "too many device sign-ins from this address; try again in a minute", retry: true})
 		return
@@ -245,7 +255,8 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	b := ephemeral.JSON(d)
 	if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "slow_down",
-			desc: "too many device sign-ins from this address are waiting; finish one, or try again in a few minutes", retry: true})
+			desc: "too many device sign-ins from this address are waiting; finish one, or try again in a few minutes", retry: true,
+			after: ephemeral.RetryAfter(err, 0)})
 		return
 	}
 	if err != nil {
@@ -415,11 +426,16 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	guessKey := "device-code|" + web.RateKeyIP(r)
 	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 0, deviceGuessWindow)
+	over := n >= deviceGuessesPerIP
+	if err == nil && !over { // and the address's /48
+		n, err = p.netCount(ctx, r, "device-code", 0, deviceGuessWindow)
+		over = n >= deviceGuessesPerIP*web.NetShareFactor
+	}
 	if err != nil {
 		render(http.StatusServiceUnavailable, "Something went wrong. Try again in a moment.")
 		return
 	}
-	if n >= deviceGuessesPerIP {
+	if over {
 		render(http.StatusTooManyRequests, "Too many codes were tried from here. Wait 15 minutes, then try again.")
 		return
 	}
@@ -435,6 +451,7 @@ func (p *Provider) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		_, _ = p.s.Eph.Incr(ctx, nsRateOIDC, guessKey, 1, deviceGuessWindow)
+		_, _ = p.netCount(ctx, r, "device-code", 1, deviceGuessWindow)
 		render(http.StatusBadRequest, "That code is not valid. It may have expired: check the code on your device, or start again there.")
 		return
 	}

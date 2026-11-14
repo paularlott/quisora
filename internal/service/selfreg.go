@@ -592,9 +592,13 @@ func (s *Service) endSelfRegistered(ctx context.Context, a *Actor, c *model.Clie
 // stored copy kept, it would go on signing users in for up to MetadataStale. Only the caller's own read of that exact
 // URL decides it (anyone can make a sign-in name a URL, but not what its server answers); a network error, a timeout
 // or another answer never does. ErrNotFound when the organization has no such application stored (or the id is an
-// administrator's client, which is never touched).
+// administrator's client, which is never touched); the store's error when the application could not be read (its
+// caller keeps what it noted, and tries again).
 func (s *Service) EndGoneMetadataApp(ctx context.Context, orgID, url, reason string) error {
 	c, err := s.Clients.Get(ctx, model.ClientRecordID(orgID, url))
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return mapStore(err)
+	}
 	if err != nil || !c.SelfRegistered || !c.IsMetadataClient() || c.OrgID != orgID || c.MetadataURL != url {
 		return ErrNotFound
 	}

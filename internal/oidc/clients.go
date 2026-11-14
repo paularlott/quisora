@@ -128,6 +128,7 @@ type oauthError struct {
 	desc   string
 	realm  bool   // add WWW-Authenticate: Basic
 	retry  bool   // add Retry-After (rate limited)
+	after  int    // the Retry-After's seconds, when not retryAfter's (a held budget's window: ephemeral.RetryAfter)
 	nonce  string // add DPoP-Nonce (use_dpop_nonce)
 	cause  error  // the failure behind an unavailable answer, for callers that report it in their own shape
 }
@@ -161,7 +162,9 @@ func writeOAuthError(w http.ResponseWriter, e *oauthError) {
 	if e.realm {
 		w.Header().Set("WWW-Authenticate", `Basic realm="quisora", charset="UTF-8"`)
 	}
-	if e.retry {
+	if e.after > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(e.after))
+	} else if e.retry {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
 	}
 	if e.nonce != "" {
@@ -206,15 +209,37 @@ const failuresPerIPMin = 10 * clientAuthFailuresPerMin
 // once past failuresPerIPMin).
 const failuresPerIPMax = 10 * failuresPerIPMin
 
-// failIPKey is the counter of failuresPerIPMin for r's address.
+// failIPKey is the counter of failuresPerIPMin for r's address. Its IPv6 /48 is counted as well (failNet, netCount),
+// at web.NetBusyFactor times both limits: failures are many behind a busy shared network when public clients' tokens
+// go stale together, and they hold nothing, so a /48 that is a whole organization's network gets sixty-four
+// addresses' worth, and one allocation's 65,536 /64s no more.
 func failIPKey(r *http.Request) string { return "fail-ip|" + web.RateKeyIP(r) }
+
+// failNet is the name of the /48's counter of failures (netCount).
+const failNet = "fail-ip"
+
+// countFailed counts a failure against r's address and its /48, and returns what each then holds as the address's
+// limits read them (the /48's divided by web.NetBusyFactor): the larger. A counter that cannot be used is an error.
+func (p *Provider) countFailed(ctx context.Context, r *http.Request, delta int64) (int64, error) {
+	n, err := p.s.Eph.Incr(ctx, nsRateOIDC, failIPKey(r), delta, time.Minute)
+	if err != nil {
+		return 0, err
+	}
+	wide, err := p.netCount(ctx, r, failNet, delta, time.Minute)
+	if err != nil {
+		return 0, err
+	}
+	return max(n, wide/web.NetBusyFactor), nil
+}
 
 // authenticateClient authenticates the caller of a back-channel endpoint (token, introspect, revoke) with
 // client_secret_basic, client_secret_post or private_key_jwt, or admits a public client by its client_id (token, when
 // allowPublic), under the ceilings on failures above. There is no "none" method.
 func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clientEntry, *oauthError) {
+	// The client's own failures are counted per address alone, not per /48 as well: they count in the address's
+	// failures too (countFailed), whose /48 aggregate bounds what one allocation's /64s can make, and a secret cannot
+	// be guessed anyway (the limit is on the work, not the odds).
 	key := "client-auth|" + authClientID(r) + "|" + web.RateKeyIP(r)
-	ipKey := failIPKey(r)
 	limited := &oauthError{status: http.StatusTooManyRequests, code: "invalid_client",
 		desc: "too many failed client authentications; try again in a minute", retry: true}
 	// Refused as "try again", not as invalid_client: a public client that took that for a verdict on its own
@@ -232,7 +257,7 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	if n >= clientAuthFailuresPerMin {
 		return nil, limited
 	}
-	failedIP, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 0, time.Minute)
+	failedIP, err := p.countFailed(r.Context(), r, 0) // the address's failures, or its /48's share of them
 	if err != nil {
 		return nil, serverError(unavailable(err))
 	}
@@ -252,7 +277,7 @@ func (p *Provider) authenticateClient(r *http.Request, allowPublic bool) (*clien
 	}
 	// The authentication has already failed: if counting the failure fails too, the caller still gets that
 	// failure (invalid_client), not a limit it has not reached.
-	n, err = p.s.Eph.Incr(r.Context(), nsRateOIDC, ipKey, 1, time.Minute)
+	n, err = p.countFailed(r.Context(), r, 1)
 	if err != nil {
 		return ce, e
 	}

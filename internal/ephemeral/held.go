@@ -46,8 +46,40 @@ import (
 
 // ErrHeld is returned when a requester already holds its budget of short-lived state (Budget.Charge): the request
 // that wanted to keep more is refused (429 with Retry-After), counted as
-// quisora_ephemeral_refused_total{reason="held_bytes"}. Nobody else is refused anything.
+// quisora_ephemeral_refused_total{reason="held_bytes"}. Nobody else is refused anything. The error a charge returns
+// is a *HeldError, which is ErrHeld (errors.Is) and says when the requester's budget frees (RetryAfter).
 var ErrHeld = errors.New("ephemeral: this requester holds its budget of short-lived state")
+
+// ErrContended is returned when a charge could not be counted at all: a counter it needs reported Contended (too
+// contended to update, or a new counter past the counters' cap). That says nothing of what the requester holds, so
+// it is not ErrHeld: the request is answered as any counter that fails is, 503 with a short Retry-After (the client
+// is not told it holds too much, and backing off for a window would not help it). It is counted where the counter
+// was refused (quisora_ephemeral_refused_total{reason="counters"} for the cap, {reason="contended"} for a counter
+// too contended to update), not again here.
+var ErrContended = errors.New("ephemeral: the short-lived state budget's counter could not be updated now")
+
+// HeldError is the ErrHeld a refused charge returns: RetryAfter is how long until the window that refused it ends,
+// at least a second, which is when the requester may hold more again (its counter there starts from nothing). A
+// constant Retry-After would be wrong both ways: too short, it has compliant clients refused again; too long, it keeps
+// them away for nothing.
+type HeldError struct {
+	RetryAfter time.Duration
+}
+
+func (e *HeldError) Error() string { return ErrHeld.Error() }
+
+// Is makes a HeldError ErrHeld (errors.Is).
+func (e *HeldError) Is(target error) bool { return target == ErrHeld }
+
+// RetryAfter is the Retry-After, in whole seconds, of a request refused with err: the seconds until the window that
+// refused it ends (HeldError, at least 1), or def when err says none.
+func RetryAfter(err error, def int) int {
+	var he *HeldError
+	if errors.As(err, &he) && he.RetryAfter > 0 {
+		return max(1, int((he.RetryAfter+time.Second-1)/time.Second))
+	}
+	return def
+}
 
 const (
 	// HeldNS is the namespace of the budgets' counters.
@@ -93,7 +125,8 @@ func (h Holder) tiers() [3]struct {
 }
 
 // Held is a charge as it was made: kept with the entry it paid for (in its JSON), and given back when the entry ends
-// before its time (Refund).
+// before its time (Refund). A charge that was refused (HoldFor) is a Held of nothing (N zero, no key: nothing to give
+// back) that names the window which refused it, for Left.
 type Held struct {
 	Key    string `json:"k"`
 	Wide   string `json:"w,omitempty"`
@@ -105,6 +138,16 @@ type Held struct {
 
 // now is the clock windows are told by (tests move it).
 var now = time.Now
+
+// Left is how long until the window h was counted in (or refused in) ends, at least a second: when a requester
+// refused there may hold more again.
+func (h Held) Left() time.Duration {
+	if h.Win <= 0 {
+		return time.Second
+	}
+	window := int64(time.Duration(h.Win) * time.Second)
+	return max(time.Second, time.Duration((h.Epoch+1)*window-now().UnixNano()))
+}
 
 // Holding is what key holds in namespace ns by the count of the current window of length window (Hold): for tests
 // and diagnostics.
@@ -121,7 +164,8 @@ func counterKey(key string, window time.Duration, epoch int64) string {
 // limit: when it is not, nothing stays counted. The count is of the current window (see above), so with everything
 // counted living at most window, key holds at most twice limit. The counter is incremented before it is compared, so
 // requests arriving together cannot pass the limit between them. A counter that cannot be used is an error, and one
-// too contended or past the store's caps is over any limit: both refuse.
+// too contended or past the store's caps (Contended) is ErrContended: both refuse, and neither says the requester is
+// over its limit. A refusal for the limit returns a Held that names the window which refused (Held.Left).
 func Hold(ctx context.Context, st Store, ns, key string, n, limit int64, window time.Duration) (Held, bool, error) {
 	return HoldFor(ctx, st, ns, Holder{Key: key}, n, limit, window)
 }
@@ -155,7 +199,10 @@ func HoldFor(ctx context.Context, st Store, ns string, h Holder, n, limit int64,
 			_, _ = st.Incr(context.WithoutCancel(ctx), ns, ck, -n, 2*window)
 		}
 		Release(ctx, st, ns, held) // what the narrower keys counted
-		return Held{}, false, err
+		if err == nil && got >= Contended {
+			err = ErrContended // not a verdict on the requester: counted where the counter was refused
+		}
+		return Held{Epoch: epoch, Win: held.Win}, false, err
 	}
 	return held, true, nil
 }
@@ -183,8 +230,9 @@ type Budget struct {
 }
 
 // Charge counts an entry of namespace ns with a value of size bytes, kept for ttl, against what h may hold. It
-// answers ErrHeld when h (or one of its wider keys) is at its budget, another error when the count could not be made
-// (the caller refuses, as for any counter that fails), and otherwise the charge, to keep in the entry and give back
+// answers ErrHeld (a *HeldError, with the seconds until the window that refused ends) when h (or one of its wider keys)
+// is at its budget, another error when the count could not be made (ErrContended, or the store's: the caller refuses
+// with 503, as for any counter that fails), and otherwise the charge, to keep in the entry and give back
 // when it ends early (Held.Refund); nil when nothing was charged (no budget, or nobody to charge).
 func (b *Budget) Charge(ctx context.Context, h Holder, ns string, size int, ttl time.Duration) (*Held, error) {
 	return b.charge(ctx, h, ns, size, max(HeldWindow, ttl), 1)
@@ -235,7 +283,7 @@ func (b *Budget) charge(ctx context.Context, h Holder, ns string, size int, wind
 	}
 	if !ok {
 		metrics.EphemeralRefused.Inc("held_bytes")
-		return nil, ErrHeld
+		return nil, &HeldError{RetryAfter: held.Left()}
 	}
 	return &held, nil
 }

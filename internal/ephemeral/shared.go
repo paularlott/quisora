@@ -302,7 +302,9 @@ const casRetries = 40
 
 // Contended is what Incr reports for a counter it could not update after casRetries attempts: more than any limit,
 // so every caller fails closed (a rate limit trips, a jti counts as replayed). Only a key hammered by many writers
-// at once gets there — which is what a rate limit is for.
+// at once gets there — which is what a rate limit is for. Each is counted as
+// quisora_ephemeral_refused_total{reason="contended"}, as a new counter past the cap is as {reason="counters"}: the
+// callers (a held budget: ErrContended) count nothing more for it.
 const Contended = int64(1) << 40
 
 // rid is the record id of ns/key: a hash, so ids have a fixed length and the key never appears in the database.
@@ -341,40 +343,47 @@ func (s *Shared) write(ctx context.Context, ns, id string, value []byte, ttl tim
 
 // Replace writes the row's new value on the condition that nobody changed the row since it was read, with the
 // expiry it had (Store.Replace): a row another node took or deleted meanwhile is ErrNotFound, and one another node
-// replaced is read again. The row counts against its kind's budget on this node from now on, as one it wrote.
+// replaced is read again. The row counts against its kind's budget on this node from now on, as one it wrote. A
+// replace that fails, however (the row gone, the database refusing, the caller gone, or too many other writers),
+// counts nothing for it: the row is dropped from the ledger as a write that failed is (write), so no failure leaves
+// a row counted that this node did not write until the sweep.
 func (s *Shared) Replace(ctx context.Context, ns, id string, value []byte) error {
 	rid, kind := rid(ns, id), valueKind(ns)
+	reserved := false
+	fail := func(err error) error {
+		if reserved || errors.Is(err, ErrNotFound) {
+			s.drop(rid) // not written by this request (or gone): not counted here
+		}
+		return err
+	}
 	for range casRetries {
 		e, err := s.t.Get(ctx, rid)
 		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				s.drop(rid) // gone: not counted here any longer either
-			}
-			return notFound(err)
+			return fail(notFound(err))
 		}
 		if !s.reserve(rid, kind, rowSize(rid, value), e.Expires) {
-			return s.refused(kind, ns)
+			return fail(s.refused(kind, ns)) // nothing counted for it now (reserve); an earlier attempt's is dropped
 		}
+		reserved = true
 		e.Value = value
 		if err = s.t.Update(ctx, e); err == nil {
 			return nil
 		}
 		if errors.Is(err, store.ErrNotFound) {
-			s.drop(rid)
-			return ErrNotFound
+			return fail(ErrNotFound)
 		}
 		if !errors.Is(err, store.ErrStale) {
-			return err
+			return fail(err)
 		}
 		// Changed since it was read: gone (the next read says so), or replaced by another node. Read again, a
 		// little later.
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fail(ctx.Err())
 		case <-time.After(time.Duration(500+rand.IntN(4500)) * time.Microsecond):
 		}
 	}
-	return errors.New("ephemeral: the entry is changed too often to replace")
+	return fail(errors.New("ephemeral: the entry is changed too often to replace"))
 }
 
 func (s *Shared) Get(ctx context.Context, ns, id string) ([]byte, error) {
@@ -462,6 +471,7 @@ func (s *Shared) Incr(ctx context.Context, ns, key string, delta int64, window t
 		case <-time.After(time.Duration(500+rand.IntN(4500)) * time.Microsecond):
 		}
 	}
+	metrics.EphemeralRefused.Inc("contended")
 	return Contended, nil
 }
 

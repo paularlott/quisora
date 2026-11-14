@@ -211,7 +211,7 @@ func (p *Provider) handleLogout(w http.ResponseWriter, r *http.Request) {
 		// two kilobytes for ten minutes.
 		held, err := p.s.Held.Charge(ctx, web.HolderUser(user.ID), nsLogout, len(ephemeral.JSON(lr)), logoutTTL)
 		if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
-			p.tooManyHeld(w, r)
+			p.tooManyHeld(w, r, ephemeral.RetryAfter(err, 60))
 			return
 		}
 		if err != nil {

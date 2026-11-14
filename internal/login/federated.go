@@ -60,7 +60,11 @@ func (m *Module) providerStart(w http.ResponseWriter, r *http.Request) {
 	// The state of the sign-in under way is kept for the address that asked: nobody has signed in.
 	authURL, state, err := m.Upstream.BeginTenant(m.heldByIP(r), org, p, next, tenant)
 	if errors.Is(err, ephemeral.ErrHeld) { // the address holds as much as it may: counted by the budget
-		tooManyHeld(w)
+		tooManyHeld(w, err)
+		return
+	}
+	if errors.Is(err, ephemeral.ErrContended) { // the budget's counter could not be updated: 503, counted where refused
+		m.internalError(w, r, "upstream begin", err)
 		return
 	}
 	if err != nil {
@@ -338,7 +342,8 @@ func (m *Module) providerCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if !errors.Is(err, ephemeral.ErrHeld) && !errors.Is(err, ephemeral.ErrFull) { // those are counted where refused
+		if !errors.Is(err, ephemeral.ErrHeld) && !errors.Is(err, ephemeral.ErrFull) &&
+			!errors.Is(err, ephemeral.ErrContended) { // those are counted where refused
 			m.s.Log.Error("ticket", "error", err)
 		}
 		http.Redirect(w, r, loginURL(res.Org, res.Next, res.Tenant, "failed"), http.StatusFound)

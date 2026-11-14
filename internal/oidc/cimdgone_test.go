@@ -305,8 +305,8 @@ func TestStoredMetadataAppEndsWhenItsDocumentIsGone(t *testing.T) {
 			if _, err := h.env.Svc.Clients.Get(ctx, rid); err != nil || grants() == 0 {
 				t.Fatalf("one gone answer ended the application: %v", err)
 			}
-			// Still gone a grace later (the note made to look that old, and a minute later): the application ends.
-			old := strconv.FormatInt(time.Now().Add(-metadataGoneGrace-time.Second).UnixNano(), 10)
+			// Gone a grace, read in between (the note made to look so, and a minute later): the application ends.
+			old := string(goneMark{time.Now().Add(-metadataGoneGrace - time.Second).UnixNano(), time.Now().Add(-time.Minute).UnixNano()}.encode())
 			if err := h.env.Server.Eph.Set(ctx, nsCIMDGone, gone, []byte(old), time.Hour); err != nil {
 				t.Fatal(err)
 			}
@@ -375,7 +375,7 @@ func TestMetadataGoneThenFoundStartsTheGraceAgain(t *testing.T) {
 	cl, rid := h.storedDocApp(srv.URL, redirect, 25*time.Hour)
 	_, ch := pkce()
 	gone := metadataGoneKey(h.env.Primary.ID, cl.ID)
-	old := strconv.FormatInt(time.Now().Add(-metadataGoneGrace-time.Second).UnixNano(), 10)
+	old := string(goneMark{time.Now().Add(-metadataGoneGrace - time.Second).UnixNano(), time.Now().Add(-time.Minute).UnixNano()}.encode())
 	if err := h.env.Server.Eph.Set(ctx, nsCIMDGone, gone, []byte(old), time.Hour); err != nil { // gone a grace ago
 		t.Fatal(err)
 	}

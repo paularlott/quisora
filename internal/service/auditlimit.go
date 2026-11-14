@@ -430,9 +430,14 @@ func (s *Service) loginEventOf(logins, accounts *loginLimiters, loginsName, acco
 // logins that name no account and of addresses (subject: the login's lockout key, the address's). addr is the
 // client address as rate limits count it, and kind the reason and sign-in step. A refusal checks no credential, but
 // the address that keeps trying a locked account is as much evidence as the one that guessed, so it is named in the
-// same way.
+// same way. record records a login.failure (reason locked or address locked), and every refusal held back, in its
+// window, past its address's allowance or by a full limiter, is still counted in
+// quisora_audit_events_total{action="login.failure"}, as AuditLoginFailure counts the failures it holds back: an
+// alert keyed on that rate sees sustained hammering of a locked account, not one event a minute.
 func (s *Service) AuditLoginRefusal(account bool, orgID, addr, subject, kind string, record func(detail map[string]string)) {
-	s.loginEventOf(&s.loginRefusals, &s.accountRefusals, "login", "login_accounts", account, orgID, addr, subject, kind, record)
+	if !s.loginEventOf(&s.loginRefusals, &s.accountRefusals, "login", "login_accounts", account, orgID, addr, subject, kind, record) {
+		metrics.AuditEvents.Inc("login.failure", "failure")
+	}
 }
 
 // AuditDeviceStart records the start of a public client's device sign-in (oauth.device.start, with audit.tokens)

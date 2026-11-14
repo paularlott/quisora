@@ -111,7 +111,7 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// A public client is admitted by its client_id alone, so anyone can fail as it: its failures count against the
 	// address (read by authenticateClient above). A confidential client's count against itself.
-	failKey := failIPKey(r)
+	failKey := failIPKey(r) // and its /48 (tokenFailed)
 	if !ce.c.Public() {
 		failKey = "token-fail|" + ce.c.ID + "|" + gt
 		if n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, failKey, 0, time.Minute); err != nil {
@@ -159,12 +159,18 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	writeTokens(w, tr)
 }
 
-// tokenFailed counts a token request that failed on what it presented in failKey (the address of a public client, the
-// confidential client itself). The request fails whatever the counter answers.
+// tokenFailed counts a token request that failed on what it presented in failKey (the address of a public client,
+// with its /48: countFailed; the confidential client itself). The request fails whatever the counter answers.
 func (p *Provider) tokenFailed(r *http.Request, failKey string, e *oauthError) {
-	if e.code == "invalid_grant" || e.code == "invalid_dpop_proof" {
-		_, _ = p.s.Eph.Incr(context.WithoutCancel(r.Context()), nsRateOIDC, failKey, 1, time.Minute)
+	if e.code != "invalid_grant" && e.code != "invalid_dpop_proof" {
+		return
 	}
+	ctx := context.WithoutCancel(r.Context())
+	if failKey == failIPKey(r) {
+		_, _ = p.countFailed(ctx, r, 1)
+		return
+	}
+	_, _ = p.s.Eph.Incr(ctx, nsRateOIDC, failKey, 1, time.Minute)
 }
 
 func serverError(err error) *oauthError {
@@ -174,8 +180,9 @@ func serverError(err error) *oauthError {
 		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
 			desc: "this server cannot make changes now; try again shortly", retry: true}
 	}
-	if errors.Is(err, ephemeral.ErrFull) {
-		// This node's short-lived state is full (counted and logged by the store): not a failure, the client retries.
+	if errors.Is(err, ephemeral.ErrFull) || errors.Is(err, ephemeral.ErrContended) {
+		// This node's short-lived state is full, or a counter a held budget needs could not be updated (counted where
+		// refused): not a failure, the client retries.
 		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
 			desc: "this server is busy; try again shortly", retry: true}
 	}
@@ -352,7 +359,8 @@ func (p *Provider) exchangeCode(ctx context.Context, c *model.Client, code, redi
 		held, err := p.s.Held.ChargeGuard(ctx, web.HolderUser(cd.UserID), nsUsed, usedCost(c, &cd), usedTTL)
 		if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
 			return nil, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
-				desc: "too many authorization codes were redeemed for this user; try again in a few minutes", retry: true}
+				desc: "too many authorization codes were redeemed for this user; try again in a few minutes", retry: true,
+				after: ephemeral.RetryAfter(err, 0)}
 		}
 		if err != nil {
 			return nil, serverError(unavailable(err))

@@ -738,7 +738,7 @@ So the worst case scales with the addresses and the real accounts, never with th
 
 A cluster records as many times that as it has nodes. An attacker with many addresses (a botnet, or many /48s) has
 them named until the organization's 200 events a minute are spent; past that they are counted, not named, and
-`server.deny_networks` takes a range. Every wrong credential is still counted in
+`server.deny_networks` takes a range. Every wrong credential and every lockout refusal is still counted in
 `quisora_audit_events_total{action="login.failure"}`, held back or not.
 
 A real account's events are kept apart from those of logins that name no account and of addresses, and wrong
@@ -1148,8 +1148,11 @@ means SMTP is not taking mail.
   address, and what a signed-in user has kept (authorization codes, a sign-out waiting for its confirmation,
   challenges and provider connections begun from the account page) to the user: at most `limits.held_kb` each
   (default 2048 KiB, 0 turns it off). Past it the request that would add more gets 429 with `Retry-After` (a page, a JSON error, or
-  `slow_down` from the device authorization endpoint), counted as
-  `quisora_ephemeral_refused_total{reason="held_bytes"}`; nobody else is refused anything. An IPv6 /64 counts as one
+  `slow_down` from the device authorization endpoint) set to the seconds until the window that refused it turns
+  (below), when the requester may hold more again, counted as
+  `quisora_ephemeral_refused_total{reason="held_bytes"}`; nobody else is refused anything. A charge whose counter
+  could not be updated (too contended, or past the counters' cap) says nothing of what the requester holds: that
+  request gets 503 with a short `Retry-After`, counted where the counter was refused (`counters` or `contended`). An IPv6 /64 counts as one
   address, its /48 may hold sixteen times `limits.held_kb` in all and its /32 sixty-four times, so one allocation's
   65,536 /64s do not bring a budget each, nor a provider's 65,536 /48s. The count is kept in 20-minute windows (the
   longest any of this lives), and what ends early (a sign-in finished or cancelled, a challenge answered, a second
@@ -1174,10 +1177,21 @@ means SMTP is not taking mail.
   minutes from its start, until it finishes (the steps in between do not extend it). One client address holds at
   most `limits.flows_per_ip` (default 50; an IPv6 /64 counts as one address, its /48 may hold sixteen times as many
   and its /32 sixty-four times; 0 turns it off) at once, within its `limits.held_kb`; past it new ones get 429 until one finishes or expires, so a few addresses cannot fill
-  `limits.ephemeral_mb` with sign-ins they never finish. Starting them is limited too, to 300 a minute per address.
-  It is counted as `limits.held_kb` is (an address may hold up to twice it across the turn of a 20-minute window, and
+  `limits.ephemeral_mb` with sign-ins they never finish. Starting them is limited too, to 300 a minute per address
+  (and per IPv6 /48 sixty-four times that: see below). It is counted as `limits.held_kb` is (an address may hold up to twice it across the turn of a 20-minute window, and
   ending old flows never buys room for more than the limit). Behind a proxy set `server.trust_proxy`, or every user
   shares the proxy's address, its flows and its `limits.held_kb`.
+- The OAuth endpoints' limits per address that anyone can spend before signing in count an IPv6 address by its /64
+  and its /48 as well, so the 65,536 /64s of one allocation do not each bring a share of their own. The /48's share
+  is a factor of the address's: **four times** for what is rare or holds state (self-registrations, 40 a minute;
+  metadata documents read for apps not stored yet, 80 a minute; device sign-ins started, 120 a minute; wrong device
+  codes, 80 per 15 minutes; a public client's pushed authorization requests, 240 a minute), and **sixty-four times**
+  for request rates already high per address that hold nothing (authorization requests, 19,200 a minute; failed
+  client authentications and public clients' failed token requests, 19,200 a minute before public clients are
+  refused, 192,000 before nothing is looked at). A /48 is often a whole organization's network (a university, a
+  company): everyone on it shares the /48's shares, whatever /64s they have, which these limits leave room for. An
+  IPv4 address has no /48 and is counted as itself alone. A /48 past its share gets the same 429 as an address
+  past its own.
 - What this does not stop: these budgets are per address, so an attacker with many addresses scales with them. At
   the defaults one IPv4 address or IPv6 /64 holds at most 4 MiB (twice 2 MiB, across a window), one IPv6 /48 at
   most 64 MiB and one IPv6 /32 (what a provider is allocated) at most 256 MiB, so filling the default
@@ -1211,7 +1225,7 @@ endpoint. Every node serves its own.
 | `quisora_authorize_refused_total{error}` | Authorization requests from a known application sent back with an error before anyone signed in, by error: `invalid_scope` (it asked for a scope its settings do not allow), `unauthorized_client` (a grant type it may not use), `invalid_request` and the others. Each is also logged as a warning (`oidc: authorization request refused`) naming the application, the error and why; not an audit event, as nobody has signed in and anyone who knows a client ID can cause one. A rise after an application's settings were changed is usually that change (its `client.update` audit event shows what changed) |
 | `quisora_ephemeral_bytes`, `quisora_ephemeral_budget_bytes`, `quisora_ephemeral_counter_bytes`, `quisora_ephemeral_counter_limit_bytes`, `quisora_ephemeral_cache_bytes`, `quisora_ephemeral_cache_limit_bytes`, `quisora_ephemeral_entries` | This node's short-lived state: the memory its sign-in flows, codes and challenges take, by the estimate checked against `limits.ephemeral_mb`; that limit in bytes; the memory its rate-limit counters take, checked against their own cap; that cap in bytes (`limits.ephemeral_mb`, at least 16 MiB); the memory its short-lived caches (client metadata documents read in the last minute) take, checked against their own cap; that cap in bytes (a sixteenth of `limits.ephemeral_mb`, at least 4 MiB: at it the oldest entries make room); how many entries it holds (counters and cache entries included). With a shared database, the same for the rows this node wrote there |
 | `quisora_audit_refusals_dropped_total{limiter}` | Refusal audit events (`apitoken.refused`, `api.request.refused`, SSH refusals, sign-in lockout refusals and wrong credentials) not recorded because the node already tracked 10,000 keys (or, for the sign-in events, 10,000 client addresses) at once in their limiter, or one organization 2,500 of them, or (sign-in events) because the organization already had 200 events naming addresses recorded in the minute ([what is recorded](#what-is-recorded)), by limiter: `refusals`, `login` (lockout refusals of sign-in keys that name no account, and of addresses), `login_accounts` (existing accounts' lockout refusals), `login_failures` (wrong passwords for logins that name no account) `login_account_failures` (existing accounts' wrong passwords and codes) and `device_starts` (the device sign-ins public clients started, `oauth.device.start`). For the sign-in limiters it counts events whose address went unnamed: the account's event of that minute and sign-in step is still recorded (`login_accounts`, `login_account_failures`), or the organization's of that step (`login`, `login_failures`), naming one of the addresses. Above 0: a flood of refused requests; the node also logs it at most once a minute |
-| `quisora_ephemeral_refused_total{reason}` | Requests refused for short-lived state, by reason: `full` (this node's short-lived state at `limits.ephemeral_mb`: 503), `counters` (a new rate-limit counter past the counters' cap: the limit refuses), `flows_per_ip` (an address holding `limits.flows_per_ip` sign-ins in progress: 429), `held_bytes` (an address or a signed-in user holding `limits.held_kb` of short-lived state: 429), `guard` (a record of a used code, a device poll or a password spray past those records' cap: the code is not redeemed, the poll is told to slow down, the spray is remembered by a counter) and `cache` (a short-lived cache entry larger than the caches' whole cap, not kept: nothing refused; a full cache evicts its oldest entries instead, which is not counted here) |
+| `quisora_ephemeral_refused_total{reason}` | Requests refused for short-lived state, by reason: `full` (this node's short-lived state at `limits.ephemeral_mb`: 503), `counters` (a new rate-limit counter past the counters' cap: the limit refuses), `contended` (a counter in the shared database too contended to update after its retries: the limit refuses, and a held budget answers 503), `flows_per_ip` (an address holding `limits.flows_per_ip` sign-ins in progress: 429), `held_bytes` (an address or a signed-in user holding `limits.held_kb` of short-lived state: 429, with `Retry-After` the seconds until the 20-minute window that refused it ends, when it may hold more again; a budget whose counter could not be updated is not this but 503, counted as `counters` or `contended`), `guard` (a record of a used code, a device poll or a password spray past those records' cap: the code is not redeemed, the poll is told to slow down, the spray is remembered by a counter) and `cache` (a short-lived cache entry larger than the caches' whole cap, not kept: nothing refused; a full cache evicts its oldest entries instead, which is not counted here) |
 | `quisora_backchannel_logout_queued` | Back-channel logouts this node has waiting to be retried (growing: an application is not taking them) |
 | `quisora_backchannel_logout_failed_total` | Back-channel logouts given up on after every retry, dropped because the queue was full (an organization holds at most 2,500 of a node's 10,000 retries, and no more than the room left for the others, so only its own are dropped), or dropped unsent past the queue's discard horizon |
 | `quisora_ready`, `quisora_writable`, `quisora_leader` | This node serves; accepts changes; runs housekeeping |

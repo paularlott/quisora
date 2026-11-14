@@ -146,7 +146,8 @@ var (
 	AuditEvents = Default.NewCounter("quisora_audit_events_total",
 		"Audit events recorded, by action and outcome: login.failure, login.lockout, login.limited, "+
 			"oauth.refresh.reuse, oauth.code.replay, oauth.client_auth.limited and the others (docs/RUNNING.md). "+
-			"login.failure counts every wrong password or code, those held back from the audit log too.",
+			"login.failure counts every wrong password or code, and every attempt refused as locked, those held back "+
+			"from the audit log too.",
 		"action", "outcome")
 	AuditUndelivered = Default.NewCounter("quisora_audit_undelivered_total",
 		"Audit events logged in full as audit.undelivered instead of being known to be on their way to VictoriaLogs: "+

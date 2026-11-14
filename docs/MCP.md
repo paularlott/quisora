@@ -98,7 +98,7 @@ in with PKCE, naming the MCP server as `resource`.
   authorization: such an app starts its first sign-in with a plain authorization request (a redirect, which needs no
   CORS), and may use PAR from then on. A metadata
   document is read only for a resource whose tenant accepts self-registered apps, at most 20 new documents per address
-  and minute and once a minute per URL and organization, with the same SSRF guard as JWKS (no private or loopback
+  and minute (80 per IPv6 /48) and once a minute per URL and organization, with the same SSRF guard as JWKS (no private or loopback
   addresses unless listed in `server.allowed_networks` or `server.allow_private_networks` is set), at most 5 KB; the
   app is stored only once a user lets it sign in. Until then what the document said (its name, redirect URIs and
   scope, not the document as it was written) is kept in the sign-in that read it (which counts toward the address's
@@ -123,9 +123,12 @@ in with PKCE, naming the MCP server as `resource`.
   while its URL cannot be read (a network error, a timeout, any other answer than the ones below, or a document
   refused, such as one over the redirect URI caps); past that the document is read for the request, as for an app not
   stored (within the address's 20 a minute), and the app is unknown until it is read. A document whose own URL answers
-  `404 Not Found` or `410 Gone` has been withdrawn by its author, once that is still the answer to a read at least ten
-  minutes after the first (with no read in between finding it; a document gone once and then found again was a hiccup,
-  such as a CDN edge or a deploy, and nothing ends): the app ends then, as **Revoke** ends one (every
+  `404 Not Found` or `410 Gone` has been withdrawn by its author, once it has answered so for ten minutes without a
+  break: every read from the first such answer on found it gone, none more than ten minutes after the one before. A
+  document gone once and then found again was a hiccup, such as a CDN edge or a deploy, and nothing ends; nor do two
+  such answers further apart than ten minutes with no read in between, which start the ten minutes again. So an app
+  read less often than every ten minutes (a lightly used one, read as people sign in to it) is not ended this way:
+  its stored copy is not refreshed meanwhile, and it is unknown once that is a week old, as above. The app ends then, as **Revoke** ends one (every
   user's access to it, then the app), recorded as `client.self_registered.revoke` by the system with the answer as its
   `reason`. Only Quisora's own read of that exact URL decides it (no redirect is followed), so nobody but whoever serves
   the URL can end an app this way; a later sign-in naming the URL reads it again and asks the user, as for a new app.

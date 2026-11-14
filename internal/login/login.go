@@ -726,9 +726,11 @@ func (m *Module) heldByUser(r *http.Request, userID string) context.Context {
 }
 
 // tooManyHeld answers a request refused because its requester already has this server hold as much short-lived
-// state as it may (ephemeral.ErrHeld): 429, counted by the budget, never audited or logged per request.
-func tooManyHeld(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", "60")
+// state as it may (ephemeral.ErrHeld, err): 429, counted by the budget, never audited or logged per request. Its
+// Retry-After is the seconds until the window that refused it ends (ephemeral.RetryAfter): the budget frees then, and
+// not before.
+func tooManyHeld(w http.ResponseWriter, err error) {
+	w.Header().Set("Retry-After", strconv.Itoa(ephemeral.RetryAfter(err, 60)))
 	writeErr(w, http.StatusTooManyRequests, "Too many sign-ins are in progress from your network. Finish one, or wait a few minutes, then try again.", "")
 }
 
@@ -865,11 +867,13 @@ func noteSession(ctx context.Context, sess *model.Session) {
 
 func (m *Module) internalError(w http.ResponseWriter, r *http.Request, what string, err error) {
 	if errors.Is(err, ephemeral.ErrHeld) {
-		tooManyHeld(w)
+		tooManyHeld(w, err)
 		return
 	}
-	if errors.Is(err, ephemeral.ErrFull) {
-		// this node's short-lived state is full: the store counts and logs that (once a minute), so this does not
+	if errors.Is(err, ephemeral.ErrFull) || errors.Is(err, ephemeral.ErrContended) {
+		// this node's short-lived state is full, or a counter a held budget needs could not be updated (too
+		// contended, or past the counters' cap): not the requester's doing, so 503, not 429. The store counts and
+		// logs that (once a minute), so this does not again
 		w.Header().Set("Retry-After", "5")
 		writeErr(w, http.StatusServiceUnavailable, "This server is busy. Please try again in a moment.", "")
 		return

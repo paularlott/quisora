@@ -141,7 +141,8 @@ const metadataAwait = 9 * time.Second
 // read it again.
 const metadataShareTTL = time.Minute
 
-// metadataPerIPMin bounds the metadata documents read per address and minute for applications not stored yet.
+// metadataPerIPMin bounds the metadata documents read per address and minute for applications not stored yet, and an
+// IPv6 /48 web.NetShareFactor times as many (netCount): each may be a fetch, and keeps what it read in a sign-in.
 const metadataPerIPMin = 20
 
 // appClient is the client of a sign-in (authorize, resume, consent) in organization orgID. A client_id that is a
@@ -220,10 +221,15 @@ func (p *Provider) readMetadata(ctx context.Context, r *http.Request, orgID, id 
 	// without number, from any number of addresses, none of them counted.
 	if unstored && r != nil {
 		n, err := p.s.Eph.Incr(ctx, nsRateOIDC, "cimd-ip|"+web.RateKeyIP(r), 1, time.Minute)
+		over := n > metadataPerIPMin
+		if err == nil && !over { // and the address's /48
+			n, err = p.netCount(ctx, r, "cimd-ip", 1, time.Minute)
+			over = n > metadataPerIPMin*web.NetShareFactor
+		}
 		if err != nil {
 			return nil, nil, unavailable(err)
 		}
-		if n > metadataPerIPMin {
+		if over {
 			return nil, nil, nil
 		}
 	}
@@ -412,22 +418,42 @@ func (p *Provider) readMetadataDoc(ctx context.Context, orgID, id string) []byte
 	return doc
 }
 
-// nsCIMDGone notes, per organization and URL, when a stored application's document was first answered 404 or 410
-// (metadataGoneMark), so that one such answer does not end it: a CDN edge that has not got the file yet, or a deploy
-// that serves 404 for a moment, would otherwise end every user's access to the app, at a moment anyone can choose
-// (anyone can start a sign-in that makes the read). Only a stored application's URL is noted, so the notes are bounded
-// by the applications stored; a read that finds the document again removes its note.
+// nsCIMDGone notes, per organization and URL, when a stored application's document was first and last answered 404
+// or 410 in an unbroken run of such answers (goneMark), so that one such answer does not end it: a CDN edge that has
+// not got the file yet, or a deploy that serves 404 for a moment, would otherwise end every user's access to the app,
+// at a moment anyone can choose (anyone can start a sign-in that makes the read). Only a stored application's URL is
+// noted, so the notes are bounded by the applications stored; a read that finds the document again removes its note.
 const nsCIMDGone = "oauth.cimd.gone"
 
-// metadataGoneGrace is how long a stored application's document must have been gone, by the first and a later read
-// of it, before the application ends; metadataGoneMark how long the first answer is remembered (a later read past it
-// starts the grace again).
+// metadataGoneGrace is how long a stored application's document must have been gone before the application ends:
+// continuously, as far as this server can tell, which is by reads none of which is more than metadataGoneGrace after
+// the one before (endGoneMetadataApp). metadataGoneMark is how long a note is kept after its last gone answer: past
+// the grace it would start the grace again anyway, so it only bounds the notes' memory.
 const (
 	metadataGoneGrace = 10 * time.Minute
 	metadataGoneMark  = 2 * time.Hour
 )
 
 func metadataGoneKey(orgID, id string) string { return orgID + "|" + id }
+
+// goneMark is a note of nsCIMDGone: the first and the last gone answer of a run (unix nanoseconds), kept as
+// "first,last".
+type goneMark struct{ first, last int64 }
+
+func (m goneMark) encode() []byte {
+	return []byte(strconv.FormatInt(m.first, 10) + "," + strconv.FormatInt(m.last, 10))
+}
+
+// parseGoneMark reads a note; false for one that cannot be read (which starts the grace again, as no note does).
+func parseGoneMark(b []byte) (goneMark, bool) {
+	f, l, ok := strings.Cut(string(b), ",")
+	first, ferr := strconv.ParseInt(f, 10, 64)
+	last, lerr := strconv.ParseInt(l, 10, 64)
+	if !ok || ferr != nil || lerr != nil || last < first {
+		return goneMark{}, false
+	}
+	return goneMark{first, last}, true
+}
 
 // endGoneMetadataApp ends organization orgID's stored application id, whose document's server answered this server's
 // own read of that exact URL with 404 or 410 (errFetchGone, cause): its author has taken it down, which is how an
@@ -436,9 +462,20 @@ func metadataGoneKey(orgID, id string) string { return orgID + "|" + id }
 // network error, a timeout or any other answer leaves the stored copy (good until service.MetadataStale), and nobody
 // but whoever serves the URL decides what it answers (no redirect is followed: secure.OutboundClient, fetch).
 //
-// Not on the first such answer: the first is noted (nsCIMDGone), and the application ends only when a read at least
-// metadataGoneGrace later is answered so again, with no read in between that found the document. Meanwhile it is
-// served from its stored copy as for any read that fails.
+// Not on the first such answer: the first is noted (nsCIMDGone, goneMark), and the application ends only once the
+// document has been gone for metadataGoneGrace without a break: each gone answer that comes no more than
+// metadataGoneGrace after the last one carries the run on (its last answer now), and ends the application when the
+// run's first answer is metadataGoneGrace ago or more. One that comes later than that starts the run again (first and
+// last now): this server saw nothing in between, and two blips far apart (a deploy's 404 now, a CDN edge's in an
+// hour) are not a document taken down. So an application read less often than once in metadataGoneGrace (a lightly
+// used one, read when someone signs in) never ends this way; its stored copy is not refreshed meanwhile, and it is
+// unknown once that is service.MetadataStale old, as for a document that cannot be read. A read that finds the
+// document ends the run (readMetadataDoc). Meanwhile the application is served from its stored copy as for any read
+// that fails.
+//
+// The note goes when the application has ended, or is no longer there to end; a failure to end it (the store
+// refusing) leaves the note, so that the next read that finds the document still gone tries again, rather than
+// starting the grace over.
 func (p *Provider) endGoneMetadataApp(ctx context.Context, orgID, id string, cause error) {
 	c, err := p.svc.Clients.Get(ctx, model.ClientRecordID(orgID, id))
 	if err != nil || !c.SelfRegistered || !c.IsMetadataClient() || c.OrgID != orgID || c.MetadataURL != id {
@@ -446,23 +483,33 @@ func (p *Provider) endGoneMetadataApp(ctx context.Context, orgID, id string, cau
 	}
 	key := metadataGoneKey(orgID, id)
 	b, err := p.s.Eph.Get(ctx, nsCIMDGone, key)
-	if err != nil {
-		if errors.Is(err, ephemeral.ErrNotFound) {
-			_ = p.s.Eph.Set(ctx, nsCIMDGone, key, []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), metadataGoneMark)
-			p.log.Warn("oidc: a stored application's metadata document is gone; the application ends if it is still gone "+
-				"when read again after the grace", "client_id", id, "grace", metadataGoneGrace, "error", cause)
-		}
+	if err != nil && !errors.Is(err, ephemeral.ErrNotFound) {
+		return // not known whether a run is under way: nothing decided on it
+	}
+	now := time.Now().UnixNano()
+	m, ok := parseGoneMark(b)
+	if err != nil || !ok || now-m.last > int64(metadataGoneGrace) {
+		// No run under way, or nothing seen of it for longer than the grace: this answer starts one.
+		_ = p.s.Eph.Set(ctx, nsCIMDGone, key, goneMark{now, now}.encode(), metadataGoneMark)
+		p.log.Warn("oidc: a stored application's metadata document is gone; the application ends if it is still gone "+
+			"when read again over the grace, each read within the grace of the one before", "client_id", id,
+			"grace", metadataGoneGrace, "error", cause)
 		return
 	}
-	if first, perr := strconv.ParseInt(string(b), 10, 64); perr != nil || time.Since(time.Unix(0, first)) < metadataGoneGrace {
+	if m.last = now; now-m.first < int64(metadataGoneGrace) {
+		_ = p.s.Eph.Set(ctx, nsCIMDGone, key, m.encode(), metadataGoneMark) // the run goes on
 		return
 	}
 	err = p.svc.EndGoneMetadataApp(ctx, orgID, id, cause.Error())
-	_ = p.s.Eph.Delete(ctx, nsCIMDGone, key)
 	switch {
 	case err == nil:
+		_ = p.s.Eph.Delete(ctx, nsCIMDGone, key)
 		p.clients.Del(model.ClientRecordID(orgID, id))
-	case !gone(err):
+	case gone(err):
+		_ = p.s.Eph.Delete(ctx, nsCIMDGone, key) // nothing left to end
+	default:
+		// Not ended: the run stays noted (its last answer now), so the next read that finds the document gone ends it.
+		_ = p.s.Eph.Set(ctx, nsCIMDGone, key, m.encode(), metadataGoneMark)
 		p.log.Error("oidc: ending a self-registered application whose metadata document is gone", "client_id", id, "error", err)
 	}
 }

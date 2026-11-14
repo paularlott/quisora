@@ -170,10 +170,11 @@ func (p *Provider) flowUnsaved(w http.ResponseWriter, r *http.Request, err error
 }
 
 // tooManyHeld answers a request that would have this server keep more short-lived state for its requester than the
-// requester may hold (limits.flows_per_ip, limits.held_kb): 429, as a page. Counted by whoever refused; never audited
-// or logged per request.
-func (p *Provider) tooManyHeld(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Retry-After", "60")
+// requester may hold (limits.flows_per_ip, limits.held_kb): 429, as a page, with Retry-After the seconds until the
+// window that refused it ends (ephemeral.RetryAfter, Held.Left), when the requester may hold more again. Counted by
+// whoever refused; never audited or logged per request.
+func (p *Provider) tooManyHeld(w http.ResponseWriter, r *http.Request, retryAfter int) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-ins in progress",
 		"Too many sign-ins were started from your network and not finished. Finish one, or wait a few minutes, then try again.")
 }
@@ -192,13 +193,13 @@ func (p *Provider) startFlow(w http.ResponseWriter, r *http.Request, f *flow) (s
 		holder := web.HolderIP(r) // its wider keys; the address itself as rate limits name it
 		holder.Key = web.RateKeyIP(r)
 		slot, ok, err := ephemeral.HoldFor(ctx, p.s.Eph, nsHeld, holder, 1, int64(limit), flowTTL)
-		if err != nil {
+		if err != nil { // the counter could not be used (ephemeral.ErrContended among them): not a verdict on the address
 			p.tryAgain(w, r)
 			return "", false
 		}
 		if !ok {
 			metrics.EphemeralRefused.Inc("flows_per_ip")
-			p.tooManyHeld(w, r)
+			p.tooManyHeld(w, r, int((slot.Left()+time.Second-1)/time.Second)) // rounded up: not a second early
 			return "", false
 		}
 		f.Slot = &slot
@@ -213,8 +214,8 @@ func (p *Provider) startFlow(w http.ResponseWriter, r *http.Request, f *flow) (s
 	if err != nil {
 		giveBack()
 		if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget
-			p.tooManyHeld(w, r)
-		} else {
+			p.tooManyHeld(w, r, ephemeral.RetryAfter(err, 60))
+		} else { // the counter could not be used (ephemeral.ErrContended among them), or the store failed
 			p.tryAgain(w, r)
 		}
 		return "", false
@@ -413,19 +414,40 @@ func repeated(v url.Values) string {
 
 // authorizePerIPMin bounds the authorization requests per IP address and minute. What the flows they start hold is
 // bounded apart from it, in number and in bytes (startFlow). Far above what people signing in behind one address make; behind a proxy, set
-// server.trust_proxy, or every user shares the proxy's address and its budget.
+// server.trust_proxy, or every user shares the proxy's address and its budget. An IPv6 /48 may make
+// web.NetBusyFactor times as many: these hold nothing by themselves, and a /48 is often a whole organization's
+// network, whose people's sign-ins must not be refused for one another (netCount).
 const authorizePerIPMin = 300
+
+// netCount adds delta to the counter name of r's IPv6 /48 (web.RateNetIP) in nsRateOIDC, the aggregate beside a
+// counter the address's /64 is limited by (web.RateKeyIP): an attacker picks the /64 it sends from, and a /48 has
+// 65,536 of them, each a share of its own. The /48 is limited to a factor of the address's limit:
+// web.NetShareFactor for what is rare or holds state, web.NetBusyFactor for request rates already high per address
+// that hold nothing. An IPv4 address has no /48 (counted as itself alone): 0, and no counter is touched, so the
+// aggregate costs one Incr, for IPv6 only.
+func (p *Provider) netCount(ctx context.Context, r *http.Request, name string, delta int64, window time.Duration) (int64, error) {
+	wide := web.RateNetIP(r)
+	if wide == "" {
+		return 0, nil
+	}
+	return p.s.Eph.Incr(ctx, nsRateOIDC, name+"-net|"+wide, delta, window)
+}
 
 func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Counted first, whatever the request: one that names no real client still costs a store read, and one that does
 	// holds a flow in memory for flowTTL. Nothing is known yet to redirect to, so a refusal is a page.
 	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, "authorize|"+web.RateKeyIP(r), 1, time.Minute)
+	over := n > authorizePerIPMin
+	if err == nil && !over { // and the address's /48
+		n, err = p.netCount(r.Context(), r, "authorize", 1, time.Minute)
+		over = n > authorizePerIPMin*web.NetBusyFactor
+	}
 	if err != nil {
 		// The counter cannot be used, so the request is refused, but as "try again", not as the limit it has not hit.
 		p.tryAgain(w, r)
 		return
 	}
-	if n > authorizePerIPMin {
+	if over {
 		w.Header().Set("Retry-After", "60")
 		p.message(w, r, http.StatusTooManyRequests, "Too many requests", "Too many sign-in requests",
 			"Too many sign-in requests came from your network. Wait a minute, then try again.")
@@ -899,7 +921,7 @@ func (p *Provider) proceed(w http.ResponseWriter, r *http.Request, id string, f 
 	// charged when it is redeemed, which such a page cannot do.
 	codeHeld, err := p.s.Held.ChargeFor(ctx, web.HolderUser(user.ID), nsCode, len(ephemeral.JSON(cd)), ttl)
 	if errors.Is(err, ephemeral.ErrHeld) { // counted by the budget; the flow is kept
-		p.tooManyHeld(w, r)
+		p.tooManyHeld(w, r, ephemeral.RetryAfter(err, 60))
 		return
 	}
 	if err != nil {

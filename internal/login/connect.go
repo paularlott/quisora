@@ -69,7 +69,8 @@ func (m *Module) connectProvider(w http.ResponseWriter, r *http.Request, a acct)
 		return
 	}
 	authURL, state, err := m.Upstream.BeginConnect(m.heldByUser(r, u.ID), org, p, u, web.OrgPath(org.ID, "/account#providers"))
-	if errors.Is(err, ephemeral.ErrHeld) || errors.Is(err, ephemeral.ErrFull) { // counted where they were refused
+	if errors.Is(err, ephemeral.ErrHeld) || errors.Is(err, ephemeral.ErrFull) ||
+		errors.Is(err, ephemeral.ErrContended) { // counted where they were refused: 429 or 503 (internalError)
 		m.internalError(w, r, "upstream connect", err)
 		return
 	}

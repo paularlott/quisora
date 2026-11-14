@@ -70,8 +70,18 @@ func RateNetIP(r *http.Request) string {
 
 // NetShareFactor is how many times an address's share of a limit (counted by RateKeyIP) its network (RateNetIP) may
 // take in all: a few customers of one /48, each with a /64 of their own, are not refused for one another, and one
-// customer holding the whole /48 gets this many shares rather than 65,536.
+// customer holding the whole /48 gets this many shares rather than 65,536. It is for limits of what is rare or costly
+// per address (registrations, documents fetched, device sign-ins and pushed requests that hold state, wrong codes):
+// a /48 is often a whole organization's network (a university, a company) whose people share it, and these are
+// limits such a site does not come near.
 const NetShareFactor = 4
+
+// NetBusyFactor is NetShareFactor for limits of request rates already high per address that hold nothing by
+// themselves (authorization requests, failed requests to the token endpoint): a /48 that is a whole organization's
+// network makes many times one address's ordinary traffic, and four addresses' worth would throttle a busy site's
+// users for one another. Sixty-four, as the widest key of the held budgets (ephemeral.WidestFactor), still bounds
+// what one allocation's 65,536 /64s get to that many shares.
+const NetBusyFactor = 64
 
 // rateKeys returns RateKeyIP and RateNetIP from one reading of the client address.
 func rateKeys(r *http.Request) (key, wide string) {

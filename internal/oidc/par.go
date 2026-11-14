@@ -49,7 +49,8 @@ const (
 // checked or recorded (a DPoP proof is a replicated write). A confidential client is known and only pushes for its
 // users, so it is counted alone, and a busy backend is not capped by anyone else's pushes or by its own address. A public
 // client is counted by address: its own budget, which no one else's pushes can use up, bounds the proofs one
-// address may have recorded. There is no limit per organization: nothing a push holds is shared.
+// address may have recorded, and its IPv6 /48 has web.NetShareFactor times that (netCount): each push holds a
+// request for its lifetime. There is no limit per organization: nothing a push holds is shared.
 const (
 	parPerClientMin   = 1800
 	parPublicPerIPMin = 60
@@ -100,11 +101,16 @@ func (p *Provider) handlePAR(w http.ResponseWriter, r *http.Request) {
 		key, limit = "par-ip|"+web.RateKeyIP(r), parPublicPerIPMin
 	}
 	n, err := p.s.Eph.Incr(r.Context(), nsRateOIDC, key, 1, time.Minute)
+	over := n > limit
+	if err == nil && !over && c.Public() { // and the address's /48
+		n, err = p.netCount(r.Context(), r, "par-ip", 1, time.Minute)
+		over = n > limit*web.NetShareFactor
+	}
 	if err != nil {
 		writeOAuthError(w, serverError(unavailable(err)))
 		return
 	}
-	if n > limit {
+	if over {
 		writeOAuthError(w, &oauthError{status: http.StatusTooManyRequests, code: "temporarily_unavailable",
 			desc: "too many pushed authorization requests; try again in a minute", retry: true})
 		return

@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/gossip/hlc"
 	"github.com/paularlott/quisora/internal/metrics"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/store/memstore"
 )
 
@@ -126,5 +128,42 @@ func TestSharedGuardRecordsKeptApart(t *testing.T) {
 	}
 	if metrics.EphemeralRefused.Value("guard") == guard {
 		t.Fatal("the refusal is not counted as guard")
+	}
+}
+
+// failCAS is a store whose conditional writes fail with err (one that is not ErrStale: the database refusing).
+type failCAS struct {
+	store.Store
+	err error
+}
+
+func (f *failCAS) CompareAndPut(ctx context.Context, rec *store.Record, expect hlc.Timestamp) error {
+	if f.err != nil {
+		return f.err
+	}
+	return f.Store.CompareAndPut(ctx, rec, expect)
+}
+
+// A replace that fails for any reason counts nothing for the row it did not write: a database that refuses the write
+// (not a race lost to another node) leaves no ledger row over-counting this node's budget until the sweep.
+func TestSharedReplaceFailureCountsNothing(t *testing.T) {
+	ctx := context.Background()
+	f := &failCAS{Store: memstore.New()}
+	e := NewShared(f)
+	e.Budget = 64 << 10
+	other := NewShared(f.Store) // another node wrote the row: this one does not count it
+	if err := other.Set(ctx, "flow", "a", make([]byte, 100), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	f.err = store.ErrUnavailable
+	if err := e.Replace(ctx, "flow", "a", make([]byte, 5000)); !errors.Is(err, store.ErrUnavailable) {
+		t.Fatalf("a replace the database refused: %v", err)
+	}
+	if e.Used() != 0 || e.Len() != 0 {
+		t.Fatalf("a replace that failed is still counted: %d bytes, %d rows", e.Used(), e.Len())
+	}
+	f.err = nil
+	if err := e.Replace(ctx, "flow", "a", make([]byte, 5000)); err != nil || e.Used() == 0 {
+		t.Fatalf("a replace that succeeded: %v, %d bytes", err, e.Used())
 	}
 }
