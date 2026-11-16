@@ -106,8 +106,11 @@ func main() {
 	d := rp.Director
 	rp.Director = func(r *http.Request) { d(r); r.Host = suite.Host; log.Printf("relay %s %s", r.Method, r.URL) }
 	tc := &tls.Config{Certificates: []tls.Certificate{cert}}
-	go func() { log.Fatal((&http.Server{Addr: *relay, Handler: rp, TLSConfig: tc}).ListenAndServeTLS("", "")) }()
-	log.Fatal((&http.Server{Addr: *listen, Handler: m, TLSConfig: tc}).ListenAndServeTLS("", ""))
+	const headers = 10 * time.Second // as Quisora's own server: a client that sends no headers in time is dropped
+	go func() {
+		log.Fatal((&http.Server{Addr: *relay, Handler: rp, TLSConfig: tc, ReadHeaderTimeout: headers}).ListenAndServeTLS("", ""))
+	}()
+	log.Fatal((&http.Server{Addr: *listen, Handler: m, TLSConfig: tc, ReadHeaderTimeout: headers}).ListenAndServeTLS("", ""))
 }
 
 // selfSigned makes a certificate for the names Quisora and the suite's browser use, and writes it (PEM) to out.
