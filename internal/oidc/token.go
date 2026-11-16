@@ -193,6 +193,11 @@ func serverError(err error) *oauthError {
 		return &oauthError{status: http.StatusServiceUnavailable, code: "temporarily_unavailable",
 			desc: "this server cannot check the request now; try again shortly", retry: true}
 	}
+	if errors.Is(err, errNoAccess) {
+		// access ended between the request's checks and minting (the user's, or for a guest what their sign-in
+		// came through): the grant is no good, as a check a moment later would have said
+		return oerr("invalid_grant", errNoAccess.Error())
+	}
 	return &oauthError{status: http.StatusInternalServerError, code: "server_error", desc: "temporary failure (" + errString(err) + ")"}
 }
 
@@ -574,7 +579,7 @@ func (p *Provider) userGrant(ctx context.Context, c *model.Client, cd *codeData,
 	if c.BackchannelURI != "" {
 		p.noteSessionClient(ctx, cd.SessionID, c.ID)
 	}
-	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cd.SessionID, gid: g.ID,
+	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: cd.SessionID, gid: g.ID, sources: g.Sources,
 		authTime: g.AuthTime, amr: cd.AMR, idp: cd.IdP, upstreamAMR: cd.UpstreamAMR, upstream: cd.Upstream, nonce: cd.Nonce, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes), claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)
 	if err != nil {
@@ -968,7 +973,7 @@ func (p *Provider) refresh(ctx context.Context, c *model.Client, token, scope st
 	case pr.counted && pr.counter != g.Counter:
 		return nil, invalid
 	}
-	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID,
+	is := &issue{client: c, user: u, org: org, scopes: scopes, resources: res, sid: g.SessionID, gid: g.ID, sources: g.Sources,
 		authTime: g.AuthTime, amr: g.AMR, idp: g.IdP, upstreamAMR: g.UpstreamAMR, upstream: g.Upstream, app: app, claimsUI: allowedClaims(g.ClaimsUI, c.Scopes),
 		claimsID: allowedClaims(g.ClaimsID, c.Scopes), jkt: jkt, adTypes: ad}
 	tr, err := p.mint(ctx, is, true)

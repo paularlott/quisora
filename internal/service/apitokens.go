@@ -543,7 +543,7 @@ func (s *Service) ValidateAPIToken(ctx context.Context, presented string) (*mode
 		return refuse("the owner's sign-in was reset since the token was made")
 	}
 	// A guest's token stands on the accounts it came from (model.APIToken.Sources), as the person's own tokens there do.
-	if ok, err := s.sourcesHold(ctx, t.Sources, s.storeUser, true); err != nil {
+	if ok, _, err := s.sourcesHold(ctx, t.Sources, s.storeUser, true); err != nil {
 		return nil, nil, fmt.Errorf("%w: the accounts the token's owner signs in from could not be read: %v", ErrUnavailable, err)
 	} else if !ok {
 		return refuse("the owner's account in the organization they sign in from is disabled, gone or reset")

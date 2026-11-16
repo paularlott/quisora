@@ -303,7 +303,7 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 	if err != nil {
 		return nil, err
 	}
-	sourced, err := s.SourcesHold(ctx, req.Sources, s.storeUser)
+	sourced, sourcesUntil, err := s.SourcesUntil(ctx, req.Sources, s.storeUser)
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +363,9 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 	}
 	if !dec.Until.IsZero() && dec.Until.Before(validBefore) {
 		validBefore = dec.Until // nor the end of the timed access entries that alone give the user the tenant
+	}
+	if !sourcesUntil.IsZero() && sourcesUntil.Before(validBefore) {
+		validBefore = sourcesUntil // nor, for a guest, the end of the account or access their sign-in came through
 	}
 	org, err := s.Org(ctx, u.OrgID)
 	if err != nil {

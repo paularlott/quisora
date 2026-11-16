@@ -99,11 +99,14 @@ class Client:
     client_id, client_secret, org: a service account, and the name or id of its
         organization (or token_endpoint, the one its creation answered)
     scope: for a service account, the scopes to ask for (default: all it holds)
+    verify: False skips checking the server's TLS certificate (a development
+        server's self-signed one; never in production)
     """
 
     def __init__(self, url, token=None, client_id=None, client_secret=None, org=None,
-                 token_endpoint=None, scope=None, api_version=API_VERSION, timeout=30):
+                 token_endpoint=None, scope=None, api_version=API_VERSION, timeout=30, verify=True):
         self.url = url.rstrip("/")
+        self.verify = verify
         self.token = token
         self.client_id = client_id
         self.client_secret = client_secret
@@ -127,7 +130,7 @@ class Client:
                 form["scope"] = self.scope
             resp = _send("POST", self.token_endpoint, data=urllib.parse.urlencode(form),
                          headers={"Content-Type": "application/x-www-form-urlencoded"},
-                         timeout=self.timeout)
+                         timeout=self.timeout, verify=self.verify)
             if resp.status_code != 200:
                 raise _error(resp)
             body = resp.json()
@@ -140,7 +143,7 @@ class Client:
         decoded JSON answer, or None for an empty one."""
         headers = {"Authorization": "Bearer " + self._bearer(), "Api-Version": self.api_version,
                    "Accept": "application/json"}
-        kwargs = {"headers": headers, "timeout": self.timeout}
+        kwargs = {"headers": headers, "timeout": self.timeout, "verify": self.verify}
         if params:
             kwargs["params"] = _drop_none(params)
         if body is not None:
@@ -421,6 +424,8 @@ def from_env():
     QUISORA_CLIENT_ID      a service account's client id,
     QUISORA_CLIENT_SECRET  its secret, and
     QUISORA_ORG            its organization (or QUISORA_TOKEN_ENDPOINT)
+    QUISORA_INSECURE=1     skip checking the server's TLS certificate
+                           (a development server only)
     """
     url = os.environ.get("QUISORA_URL")
     if not url:
@@ -430,4 +435,5 @@ def from_env():
                   client_id=os.environ.get("QUISORA_CLIENT_ID"),
                   client_secret=os.environ.get("QUISORA_CLIENT_SECRET"),
                   org=os.environ.get("QUISORA_ORG"),
-                  token_endpoint=os.environ.get("QUISORA_TOKEN_ENDPOINT"))
+                  token_endpoint=os.environ.get("QUISORA_TOKEN_ENDPOINT"),
+                  verify=os.environ.get("QUISORA_INSECURE", "") not in ("1", "true", "yes"))

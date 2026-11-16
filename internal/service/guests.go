@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
@@ -30,64 +31,84 @@ type UserGetter func(ctx context.Context, id string) (*model.User, error)
 // Sources) still stand: each user there, usable (UserUsable) and in the session epoch recorded (model.GuestSource).
 // users reads them: the caller's cache, as the check runs with every use. An error is a read that failed: no verdict.
 func (s *Service) SourcesHold(ctx context.Context, sources []model.GuestSource, users UserGetter) (bool, error) {
+	ok, _, err := s.sourcesHold(ctx, sources, users, false)
+	return ok, err
+}
+
+// SourcesUntil is SourcesHold, and when they hold, until when at the latest: the earliest end among them of a source
+// user's account (User.ValidUntil) and of the timed access to the sign-in client they came through that alone lets
+// them use it (AppAccess.Until). Zero: no such end. What is issued to the guest (access tokens, SSH certificates)
+// expires by it, as what is issued to a user expires by their own account's and access's end.
+func (s *Service) SourcesUntil(ctx context.Context, sources []model.GuestSource, users UserGetter) (bool, time.Time, error) {
 	return s.sourcesHold(ctx, sources, users, false)
 }
 
-// sourcesHold is SourcesHold holding each source to its session epoch or, cred, to its credential epoch (a guest's
+// sourcesHold is SourcesUntil holding each source to its session epoch or, cred, to its credential epoch (a guest's
 // personal API token, model.APIToken.Sources).
-func (s *Service) sourcesHold(ctx context.Context, sources []model.GuestSource, users UserGetter, cred bool) (bool, error) {
+func (s *Service) sourcesHold(ctx context.Context, sources []model.GuestSource, users UserGetter, cred bool) (bool, time.Time, error) {
+	var until time.Time
+	earlier := func(t time.Time) {
+		if !t.IsZero() && (until.IsZero() || t.Before(until)) {
+			until = t
+		}
+	}
 	for _, src := range sources {
 		u, err := users(ctx, src.UserID)
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, ErrNotFound) {
-			return false, nil
+			return false, time.Time{}, nil
 		}
 		if err != nil {
-			return false, mapStore(err)
+			return false, time.Time{}, mapStore(err)
 		}
 		if u.ID != src.UserID || cred && !u.Holds(src.Epoch) || !cred && !u.SessionHolds(src.Epoch) {
-			return false, nil
+			return false, time.Time{}, nil
 		}
 		if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
-			return false, err
+			return false, time.Time{}, err
+		}
+		if u.ValidUntil != nil {
+			earlier(*u.ValidUntil)
 		}
 		if src.Client != "" {
-			if ok, err := s.mayUseSignInClient(ctx, u, src.Client); err != nil || !ok {
-				return false, err
+			ok, end, err := s.mayUseSignInClient(ctx, u, src.Client)
+			if err != nil || !ok {
+				return false, time.Time{}, err
 			}
+			earlier(end)
 		}
 	}
-	return true, nil
+	return true, until, nil
 }
 
 // mayUseSignInClient reports whether u may still use clientID, the sign-in application of their organization that a
 // guest sign-in came through (model.GuestSource.Client): it is there, enabled, of u's organization, and u's access to
 // its tenant allows it (ClientAccess), so access that ended there (an entry past its end, removed or narrowed, the
-// tenant made members-only) ends the guest's sign-in with it, at its next check. An error is a read that failed: no
-// verdict.
-func (s *Service) mayUseSignInClient(ctx context.Context, u *model.User, clientID string) (bool, error) {
+// tenant made members-only) ends the guest's sign-in with it, at its next check. until is when that access ends when
+// only timed entries give it (AppAccess.Until; zero: no such end). An error is a read that failed: no verdict.
+func (s *Service) mayUseSignInClient(ctx context.Context, u *model.User, clientID string) (ok bool, until time.Time, err error) {
 	c, err := s.Clients.Get(ctx, clientID)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil // the provider moved to another application (or went): sign in again through it
+		return false, time.Time{}, nil // the provider moved to another application (or went): sign in again through it
 	}
 	if err != nil {
-		return false, mapStore(err)
+		return false, time.Time{}, mapStore(err)
 	}
 	if c.OrgID != u.OrgID || !c.Enabled {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	t, err := s.ClientTenant(ctx, c)
 	if errors.Is(err, ErrNotFound) {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	if err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	if !t.Settings.MembersOnly {
-		return true, nil // open to everyone in the organization: nothing more to read
+		return true, time.Time{}, nil // open to everyone in the organization: nothing more to read
 	}
 	groups, err := s.UserGroupsOf(ctx, []*model.User{u})
 	if err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	ids := make([]string, 0, len(groups[u.ID]))
 	for _, g := range groups[u.ID] {
@@ -95,9 +116,9 @@ func (s *Service) mayUseSignInClient(ctx context.Context, u *model.User, clientI
 	}
 	app, err := s.ClientAccess(ctx, t, c, u, ids)
 	if err != nil {
-		return false, mapStore(err)
+		return false, time.Time{}, mapStore(err)
 	}
-	return app.Allowed, nil
+	return app.Allowed, app.Until, nil
 }
 
 // tokenSources are what a personal API token that a made now stands on (model.APIToken.Sources): the accounts a's

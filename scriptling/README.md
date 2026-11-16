@@ -16,6 +16,7 @@ The scripts read the server and credentials from the environment (`quisora.from_
 | `QUISORA_TOKEN` | A [personal API token](../docs/API-TOKENS.md) with the `admin` scope, **or** |
 | `QUISORA_CLIENT_ID`, `QUISORA_CLIENT_SECRET` | a [service account](../docs/SERVICE-ACCOUNTS.md)'s credentials, and |
 | `QUISORA_ORG` | its organization (name or id), or `QUISORA_TOKEN_ENDPOINT` |
+| `QUISORA_INSECURE` | `1` skips checking the server's TLS certificate: a development server's self-signed one only, never in production |
 
 A service account gets access tokens with the client credentials grant; the library fetches a new one shortly before
 the current one expires.

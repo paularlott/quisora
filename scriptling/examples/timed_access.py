@@ -6,8 +6,9 @@
 #   scriptling -L lib examples/timed_access.py <org> list <tenant>
 #   scriptling -L lib examples/timed_access.py <org> remove <tenant> <user>
 #
-# <tenant> is a tenant's name or id, <user> a username or email address. Needs an administrator's token, or a service
-# account of the organization with the access, tenants and users scopes.
+# <tenant> is a tenant's name or id, <user> a username or email address. Giving access to someone who has it already
+# gives their entry the new end. Needs an administrator's token, or a service account of the organization with the
+# access, tenants and users scopes.
 
 import sys
 import quisora
@@ -45,7 +46,14 @@ try:
     if action == "give" and len(positional) == 4:
         _, login, hours, reason = positional
         u = need(qs.find_user(org, login), "user " + login)
-        e = qs.give_access(org, tenant["id"], u["id"], hours=float(hours), roles=roles, reason=reason)
+        try:
+            e = qs.give_access(org, tenant["id"], u["id"], hours=float(hours), roles=roles, reason=reason)
+        except quisora.QuisoraError as err:
+            if err.status != 409:
+                raise
+            # they have access already (one entry per person and tenant): give that entry the new end
+            fields = {} if roles is None else {"roles": roles}
+            e = qs.update_access(org, tenant["id"], tenant["id"] + ":" + u["id"], hours=float(hours), reason=reason, **fields)
         print(f"{u['username']} has access to {tenant['name']} until {e['expires']} (UTC)")
     elif action == "list" and len(positional) == 1:
         for e in qs.iter_access(org, tenant["id"]):

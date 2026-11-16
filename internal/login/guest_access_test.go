@@ -2,8 +2,11 @@ package login_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +75,8 @@ func TestGuestSignInStandsOnTheSourceTenantAccess(t *testing.T) {
 		t.Fatal("no refusal for a user with no access to the vendor tenant")
 	}
 
-	end := time.Now().Add(time.Hour).Format(time.RFC3339)
+	endAt := time.Now().Add(3 * time.Minute).Truncate(time.Second) // within an access token's usual lifetime
+	end := endAt.Format(time.RFC3339)
 	e, err := g.Svc.AddAccess(ctx, service.System, tn.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: pat.ID,
 		Expires: &end, Reason: ptr("SUP-1")})
 	if err != nil {
@@ -83,6 +87,10 @@ func TestGuestSignInStandsOnTheSourceTenantAccess(t *testing.T) {
 		t.Fatal("not signed in as a guest with access to the vendor tenant")
 	}
 	app := g.signInToApp(t, b)
+	// the guest's access token ends no later than the access it came through, and so does a refreshed one
+	if exp := tokenExp(t, app.access); exp > endAt.Unix() {
+		t.Fatalf("the guest's access token expires at %d, after the source access ends at %d", exp, endAt.Unix())
+	}
 	if ok, e := app.refreshes(); !ok || app.userinfo() != 200 {
 		t.Fatalf("the guest's application: refresh %v %q, userinfo %d", ok, e, app.userinfo())
 	}
@@ -170,5 +178,55 @@ func TestGuestSignInThroughAnOpenSourceTenant(t *testing.T) {
 	b, _ := g.continueAs(t, pat)
 	if !signedInToAcme(b) {
 		t.Fatal("not signed in as a guest through the default tenant")
+	}
+}
+
+// tokenExp is a JWT access token's exp claim.
+func tokenExp(t *testing.T, tok string) int64 {
+	t.Helper()
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a JWT: %q", tok)
+	}
+	b, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	return c.Exp
+}
+
+// A guest's access tokens through an open source tenant last as usual; with the source user's account ending soon,
+// they end with it.
+func TestGuestTokensEndWithTheSourceAccount(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
+	ctx := context.Background()
+	pat := g.person(t, g.Primary, "pat", "pat@example.com")
+	g.person(t, g.acme, "pat-guest", "pat@example.com")
+	b, _ := g.continueAs(t, pat)
+	app := g.signInToApp(t, b)
+	if exp := tokenExp(t, app.access); exp < time.Now().Add(4*time.Minute).Unix() {
+		t.Fatalf("the access token ends early with nothing to end it: %d", exp)
+	}
+	endAt := time.Now().Add(2 * time.Minute).Truncate(time.Second)
+	end := endAt.Format(time.RFC3339)
+	if _, err := g.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{ValidUntil: &end}); err != nil {
+		t.Fatal(err)
+	}
+	g.heard(pat)
+	if ok, e := app.refreshes(); !ok {
+		t.Fatalf("refresh: %q", e)
+	}
+	st, tok := app.token(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {app.refresh}})
+	if st != 200 {
+		t.Fatalf("refresh: %d %v", st, tok)
+	}
+	if exp := tokenExp(t, tok["access_token"]); exp > endAt.Unix() {
+		t.Fatalf("the guest's access token expires at %d, after the source account ends at %d", exp, endAt.Unix())
 	}
 }

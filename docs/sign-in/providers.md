@@ -324,9 +324,8 @@ management API's `expires`, by hand or from an external tool that approves reque
   session, each refresh, each access token checked) asks S again whether the person may still use that application.
   So when their entry ends, is removed or narrowed, or the tenant is made members-only, the guest is out of B at once,
   before anything else runs; then S's sweep (or the removal) signs the guest's sessions in B out, with back-channel logout to
-  B's applications, as for a person removed in S. As there, access tokens B already issued are not shortened: an
-  application that only checks their signature accepts one until it expires (minutes), and SSH certificates count until
-  servers next fetch the revocation list.
+  B's applications, as for a person removed in S. The guest's access tokens and SSH certificates in B are issued to
+  expire no later than that access's end (and the person's account end in S), as S's own would.
 - B still decides what the guest gets in B: **Create accounts automatically**, the groups, and B's own tenants' access
   lists, which can have ends of their own.
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/store/kvstore"
@@ -28,8 +29,12 @@ type benchEnv struct {
 	secret  string
 }
 
-func newBenchEnv(b *testing.B, edit func(*service.ClientInput)) *benchEnv {
-	h := setup(b, nil)
+func newBenchEnv(b *testing.B, edit func(*service.ClientInput), cfg ...func(*config.Config)) *benchEnv {
+	var cfgFn func(*config.Config)
+	if len(cfg) > 0 {
+		cfgFn = cfg[0]
+	}
+	h := setup(b, cfgFn)
 	cl, secret := h.newClient(edit)
 	return &benchEnv{harness: h, handler: h.env.Server.Handler(), cl: cl, secret: secret}
 }
@@ -127,7 +132,10 @@ func BenchmarkTokenClientCredentials(b *testing.B) {
 }
 
 func BenchmarkTokenCodeExchange(b *testing.B) {
-	e := newBenchEnv(b, nil)
+	// One user redeems every code here, far more than a person does: the guard records each redemption is charged to
+	// (limits.held_kb, about a hundred and sixty redemptions per user in twenty minutes) are left out, or the run
+	// measures the 429 that follows.
+	e := newBenchEnv(b, nil, func(c *config.Config) { c.Limits.HeldKB = 0 })
 	pu, _ := url.Parse(e.env.URL)
 	verifier, challenge := pkce()
 	ctx := context.Background()

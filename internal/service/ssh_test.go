@@ -3375,3 +3375,49 @@ func TestSSHTimedAccess(t *testing.T) {
 		t.Errorf("without an end the certificate is valid for %v, want the tenant's 1h", d)
 	}
 }
+
+// A guest's certificate is valid no later than the end of what its sign-in came through: the timed access to the
+// source organization's sign-in client that alone lets the source user use it, or the source account's own end.
+func TestSSHGuestCertificateEndsWithItsSourceAccess(t *testing.T) {
+	w := newSSHWorld(t)
+	w.enable(service.SSHSettingsInput{CertTTL: ptr(3600)})
+	home := w.env.org("home")
+	set := model.DefaultTenantSettings()
+	set.MembersOnly = true
+	vendor, err := w.svc.CreateTenant(w.ctx, service.System, home.ID, service.TenantInput{Name: ptr("vendor"), Settings: &set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signIn, _, err := w.svc.CreateClient(w.ctx, service.System, home.ID, service.ClientInput{Name: ptr("Sign-in"), TenantID: &vendor.ID,
+		RedirectURIs: &[]string{"https://idp.example/cb"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := w.user(home.ID, "pat", model.RoleUser)
+	g := w.user(w.org.ID, "pat-guest", model.RoleUser)
+	end := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	if _, err := w.svc.AddAccess(w.ctx, service.System, vendor.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: src.ID,
+		Expires: ptr(end.Format(time.RFC3339))}); err != nil {
+		t.Fatal(err)
+	}
+	from := func(r *service.SSHUserRequest) {
+		r.Sources = []model.GuestSource{{UserID: src.ID, Epoch: w.fresh(src).SessionEpoch, Client: signIn.ID}}
+	}
+	c := w.mustSign(g, from)
+	if c.Cert.ValidBefore.After(end) {
+		t.Fatalf("certificate valid before %v, past the source access's end %v", c.Cert.ValidBefore, end)
+	}
+	// the source account ending sooner ends it sooner
+	sooner := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	if _, err := w.svc.UpdateUser(w.ctx, service.System, src.ID, service.UserInput{ValidUntil: ptr(sooner.Format(time.RFC3339))}); err != nil {
+		t.Fatal(err)
+	}
+	if c := w.mustSign(g, from); c.Cert.ValidBefore.After(sooner) {
+		t.Fatalf("certificate valid before %v, past the source account's end %v", c.Cert.ValidBefore, sooner)
+	}
+	// once the source access has ended, none is signed
+	endEntry(t, w.svc, model.AccessID(vendor.ID, src.ID))
+	if _, err := w.sign(g, from); err == nil {
+		t.Fatal("a certificate was signed after the source access ended")
+	}
+}

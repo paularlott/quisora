@@ -239,7 +239,7 @@ type Service struct {
 	orgMiss       *ttlcache.Cache[struct{}]    // references that named no organization (cachedOrg)
 	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)
 	primaryID     atomic.Pointer[string]       // the primary organization's id, once read (PrimaryOrgID)
-	bg            sync.WaitGroup               // Background work
+	bg            background                   // Background work
 	tokenTouching sync.Map                     // ids of API tokens whose last use is being recorded (touchAPIToken)
 
 	// OnSessionsEnding is called just before sessions are ended (sessionIDs nil = every session and refresh grant

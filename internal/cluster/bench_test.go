@@ -63,32 +63,8 @@ func BenchmarkEphemeral(b *testing.B) {
 	c.startAll()
 	c.waitReady()
 	a, r := c.nodes[0].n.Ephemeral(), c.nodes[1].n.Ephemeral()
-	b.Run("LocalTake", func(b *testing.B) {
-		ids := make([]string, b.N)
-		for i := range ids {
-			ids[i], _ = a.New(bg, "oauth.code", []byte("v"), time.Minute)
-		}
-		b.ReportAllocs()
-		b.ResetTimer()
-		for _, id := range ids {
-			if _, err := a.Take(bg, "oauth.code", id); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("RemoteTake", func(b *testing.B) {
-		ids := make([]string, b.N)
-		for i := range ids {
-			ids[i], _ = a.New(bg, "oauth.code", []byte("v"), time.Minute)
-		}
-		b.ReportAllocs()
-		b.ResetTimer()
-		for _, id := range ids {
-			if _, err := r.Take(bg, "oauth.code", id); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
+	b.Run("LocalTake", func(b *testing.B) { benchTake(b, a, a) })
+	b.Run("RemoteTake", func(b *testing.B) { benchTake(b, a, r) })
 	b.Run("IncrRoutedParallel", func(b *testing.B) {
 		var n atomic.Int64
 		b.ReportAllocs()
@@ -103,6 +79,32 @@ func BenchmarkEphemeral(b *testing.B) {
 		})
 	})
 	var _ ephemeral.Store = a
+}
+
+// benchTake times taking entries made at from through take, made a batch at a time outside the timing: a full run's b.N
+// of them at once would not fit a node's short-lived state (ephemeral.ErrFull).
+func benchTake(b *testing.B, from, take ephemeral.Store) {
+	const batch = 10_000
+	ids := make([]string, 0, batch)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for done := 0; done < b.N; done += len(ids) {
+		b.StopTimer()
+		ids = ids[:0]
+		for range min(batch, b.N-done) {
+			id, err := from.New(bg, "oauth.code", []byte("v"), time.Minute)
+			if err != nil {
+				b.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		b.StartTimer()
+		for _, id := range ids {
+			if _, err := take.Take(bg, "oauth.code", id); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
 }
 
 // BenchmarkResync times a node with a new disk copying a 100k-record cluster from the other two nodes: the first node

@@ -42,9 +42,7 @@ certificates) reads the entries again, on every node, so at the end the user is 
 - A guest who came into another organization through an [organization provider](sign-in/providers.md#only-some-of-ss-users-for-a-time-a-members-only-tenant)
   whose sign-in application is in this tenant is out of that organization at the same moment for every check Quisora
   makes (their session there, refresh, userinfo and introspection), and their sessions there are signed out with the
-  rest. Access tokens already issued to that organization's applications are not shortened: an application that
-  checks them only by their signature accepts them until they expire (minutes, the access token lifetime), and the
-  guest's SSH certificates there count until servers next fetch the revocation list.
+  rest. Their access tokens and SSH certificates there were issued to expire by the same end, as a user's own are.
 
 An application that keeps its own session for hours without refreshing or introspecting its tokens hears of the end
 through back-channel logout; register a back-channel logout URI for it.

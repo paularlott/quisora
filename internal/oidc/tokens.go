@@ -68,15 +68,20 @@ type issue struct {
 	claimsID []string           // ... and for the ID token
 	act      string             // act claim, raw JSON (token exchange)
 	expires  time.Time          // the access token expires no later than this (zero: its usual lifetime)
-	jkt      string             // DPoP key thumbprint the access token is bound to (cnf.jkt)
+	// sources are what a guest's sign-in stands on (model.Grant.Sources): mint caps the access token at their end
+	// (service.SourcesUntil), kept in sourcesUntil
+	sources      []model.GuestSource
+	sourcesUntil time.Time
+	jkt          string // DPoP key thumbprint the access token is bound to (cnf.jkt)
 	// adTypes are the authorization details types the request asked for (authdetails.go); nil: it asked for none,
 	// and the token carries every type the client is registered for.
 	adTypes []string
 	details []byte // the access token's authorization_details (authDetails), set by mint
 }
 
-// accessExpiry is when the access token of is expires: its usual lifetime, cut short by an end asked for and by the end
-// of the timed access entries that alone give the user the application (service.AppAccess.Until).
+// accessExpiry is when the access token of is expires: its usual lifetime, cut short by an end asked for, by the end
+// of the timed access entries that alone give the user the application (service.AppAccess.Until) and, for a guest, by
+// the end of the account or access their sign-in came through (service.SourcesUntil).
 func (p *Provider) accessExpiry(is *issue, now time.Time) time.Time {
 	exp := now.Add(p.cfg.Tokens.Access())
 	if !is.expires.IsZero() && is.expires.Before(exp) {
@@ -84,6 +89,9 @@ func (p *Provider) accessExpiry(is *issue, now time.Time) time.Time {
 	}
 	if is.app != nil && !is.app.Until.IsZero() && is.app.Until.Before(exp) {
 		exp = is.app.Until
+	}
+	if !is.sourcesUntil.IsZero() && is.sourcesUntil.Before(exp) {
+		exp = is.sourcesUntil
 	}
 	return exp
 }
@@ -492,6 +500,17 @@ func (p *Provider) mint(ctx context.Context, is *issue, withID bool) (*tokenResp
 			return nil, errNoAccess
 		}
 		is.app = app
+	}
+	if len(is.sources) > 0 {
+		// a guest: what their sign-in came through must still stand, and the token ends no later than it does
+		ok, until, err := p.svc.SourcesUntil(ctx, is.sources, p.user)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+		if !ok {
+			return nil, errNoAccess
+		}
+		is.sourcesUntil = until
 	}
 	is.details = p.authDetails(is)
 	now := time.Now()

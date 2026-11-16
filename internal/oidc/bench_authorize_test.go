@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/config"
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -17,7 +18,9 @@ func BenchmarkAuthorizeConsented(b *testing.B) { benchAuthorizeConsented(b, fals
 func BenchmarkAuthorizeRemembered(b *testing.B) { benchAuthorizeConsented(b, true) }
 
 func benchAuthorizeConsented(b *testing.B, remember bool) {
-	h := setup(b, nil)
+	// Every run issues a code nobody redeems, each charged to the user (limits.held_kb) until it expires, which a run
+	// of a second fills: the budget is left out, or the run measures the 429 that follows.
+	h := setup(b, func(c *config.Config) { c.Limits.HeldKB = 0 })
 	cl, secret := h.newClient(func(in *service.ClientInput) {
 		in.FirstParty, in.Name, in.RememberConsent = ptr(false), ptr("Bench App"), ptr(remember)
 	})

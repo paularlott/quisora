@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paularlott/quisora/internal/model"
@@ -637,14 +638,49 @@ const (
 // waits for every such run (tests, shutdown). The deadline keeps a stalled store (a standalone store's commit waits
 // on its context only) from piling up one goroutine per request for as long as the stall lasts.
 func (s *Service) Background(ctx context.Context, timeout time.Duration, f func(ctx context.Context)) {
-	s.bg.Add(1)
+	s.bg.start()
 	go func() {
-		defer s.bg.Done()
+		defer s.bg.done()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 		defer cancel()
 		f(ctx)
 	}()
 }
 
-// WaitBackground waits for the work started with Background.
-func (s *Service) WaitBackground() { s.bg.Wait() }
+// WaitBackground waits until no work started with Background is running. It may be called at any time, from any
+// number of goroutines, while requests go on starting more (a sync.WaitGroup may not be: an Add while a Wait is
+// returning panics).
+func (s *Service) WaitBackground() { s.bg.wait() }
+
+// background counts the runs of Background.
+type background struct {
+	mu   sync.Mutex
+	n    int
+	idle *sync.Cond // made with the first wait
+}
+
+func (b *background) start() {
+	b.mu.Lock()
+	b.n++
+	b.mu.Unlock()
+}
+
+func (b *background) done() {
+	b.mu.Lock()
+	b.n--
+	if b.n == 0 && b.idle != nil {
+		b.idle.Broadcast()
+	}
+	b.mu.Unlock()
+}
+
+func (b *background) wait() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.idle == nil {
+		b.idle = sync.NewCond(&b.mu)
+	}
+	for b.n > 0 {
+		b.idle.Wait()
+	}
+}
