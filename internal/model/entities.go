@@ -788,7 +788,7 @@ func (a *TenantAccess) Index() Index {
 	return Index{
 		Scope:     a.OrgID,
 		Partition: a.OrgID,
-		Fields:    map[string]any{"tenant_id": a.TenantID},
+		Fields:    map[string]any{"tenant_id": a.TenantID, "expiring": !a.Expires.IsZero(), "ends": a.Expires},
 	}
 }
 
@@ -1000,6 +1000,9 @@ type UpstreamAccount struct {
 type GuestSource struct {
 	UserID string `msgpack:"u"`
 	Epoch  uint64 `msgpack:"ep,omitempty"` // the source session's epoch (Session.Epoch)
+	// Client is the sign-in application of the source organization the guest came through (the organization provider's
+	// Provider.ClientID): the sign-in stands on the source user still being allowed to use it (its tenant's access).
+	Client string `msgpack:"c,omitempty"`
 }
 
 // MaxGuestDepth bounds the chain of accounts a guest's sign-in stands on (Session.Sources): a guest can be the source of
@@ -1047,6 +1050,9 @@ type Provider struct {
 	// taken out of the groups no longer signs in. Empty: every user of SourceOrg may. A group deleted since lets
 	// nobody in; with all of them deleted, nobody signs in through the provider.
 	SourceGroups []string `msgpack:"sg,omitempty" json:"source_groups,omitempty"`
+	// SourceTenant is the tenant of SourceOrg that holds the provider's sign-in application (an organization provider):
+	// its access decides who of SourceOrg may sign in this way, and for how long. Its default tenant unless chosen.
+	SourceTenant string `msgpack:"stn,omitempty" json:"source_tenant,omitempty"`
 }
 
 // OIDC reports whether the provider signs in with OpenID Connect (every type but GitHub).

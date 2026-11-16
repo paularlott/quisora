@@ -241,13 +241,18 @@ Only a **super admin** can create, change or delete one: it makes an application
 ### Setting it up
 
 In the organization that receives the guests (organization B): **Providers** → **New provider** → type **Another
-organization**, and choose the organization whose users sign in (S) from the list. Nothing else is needed:
+organization**, and choose the organization whose users sign in (S) and one of its tenants: type the start of S's name,
+or of the tenant's, and pick **S (tenant)** from the list (it searches as you type, so a server with thousands of
+organizations is no harder; `S (sup` narrows to S's tenants starting "sup"). The
+tenant holds the sign-in application: S's default tenant suits "everyone in S"; a members-only tenant limits it to the
+people on that tenant's access list, for as long as their access lasts ([below](#only-some-of-ss-users-for-a-time-a-members-only-tenant)).
+Nothing else is needed:
 
 - The provider's issuer is S's own (`https://id.example.com/o/<S id>`). Its requests to S (discovery, token, keys) are
   answered by the server itself, in memory: they work whatever the server can reach on its own public address, and never
   leave the process.
 - Quisora makes the client the provider signs in with, in S: a confidential application named
-  `Sign-in to <B's name>` in S's default tenant, whose only redirect URI is the provider's callback address, with the
+  `Sign-in to <B's name>` in the chosen tenant of S, whose only redirect URI is the provider's callback address, with the
   scopes `openid profile email`. It is first-party, so the people signing in are not asked for consent, and its secret is
   sealed into the provider; nobody sees it. It is listed with S's applications, and made and removed with the provider:
   edit the provider, not the application. S's own rules for that tenant (who may sign in, second factors) apply to the
@@ -260,7 +265,9 @@ organization**, and choose the organization whose users sign in (S) from the lis
   super admin's decision to trust S's staff with the addresses they assert (see below).
 
 Changing the organization moves the client (a new one in the new organization, the old one removed) and unlinks everyone
-who had signed in through the provider. Deleting the provider deletes its client. These are two writes in two
+who had signed in through the provider. Changing the tenant makes a new client in it and removes the old one: the guests
+signed in through the old one are signed out (their sign-ins stood on it) and sign in again through the new one, under
+its tenant's access list. Deleting the provider deletes its client. These are two writes in two
 organizations, never one transaction, so they are ordered to leave at most an unused client: the client is made before
 the provider is written, and removed after the provider is deleted or no longer uses it. When a removal fails (the
 store was unavailable), Quisora logs a warning and the housekeeping orphan sweep removes the client within the day; a
@@ -304,6 +311,28 @@ another organization's groups never carry over.
 
 With the management API, `source_groups` is the list of S's group ids (`[]` for none).
 
+### Only some of S's users, for a time: a members-only tenant
+
+For a vendor's support staff reaching into a customer's organization (S the vendor, B the customer), choose a
+**members-only** tenant of S as the provider's tenant, say `customer-access`: only the people on that tenant's access
+list can sign in to B through the provider. Give each of them an access entry with an end (**Access ends**, or the
+management API's `expires`, by hand or from an external tool that approves requests: see
+[time-limited access](../TIMED-ACCESS.md)):
+
+- Signing in through the provider is refused at S (403) without a live entry, or through a group with one.
+- A guest's sign-in in B records the sign-in application it came through, and every use of it (each request with the
+  session, each refresh, each access token checked) asks S again whether the person may still use that application.
+  So when their entry ends, is removed or narrowed, or the tenant is made members-only, the guest is out of B at once,
+  before anything else runs; then S's sweep (or the removal) signs the guest's sessions in B out, with back-channel logout to
+  B's applications, as for a person removed in S. As there, access tokens B already issued are not shortened: an
+  application that only checks their signature accepts one until it expires (minutes), and SSH certificates count until
+  servers next fetch the revocation list.
+- B still decides what the guest gets in B: **Create accounts automatically**, the groups, and B's own tenants' access
+  lists, which can have ends of their own.
+
+With the management API, `source_tenant` is the tenant's id or name; `GET /api/orgs/<B>/providers/sources?q=<name>`
+lists the organizations and tenants matching a name, as the console's picker does.
+
 ### Second factors and leavers
 
 A guest signs in to B with a first factor only (`amr` `["fed"]`), as with any provider: B's own rules ask for a second
@@ -314,12 +343,14 @@ have asked for one by default. A super admin can turn on **counts as a second fa
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 
 The provider asks for no refresh token, so there is no leaver detection; S and B are on the same server instead. A
-guest's session in B stands on the session at S it signed in with: it records that person and the session's epoch, and
+guest's session in B stands on the session at S it signed in with: it records that person, the session's epoch and the
+sign-in application it came through, and
 B's refresh grants and SSH certificates made from it take that over. Every use of them - each request with the session,
 each refresh, each access token checked, the SSH revocation list - checks the person at S too, as it checks the guest
 account itself. So when a person's sessions end in S - signed out everywhere (by an administrator, or by themselves,
 including **sign out my other sessions**), disabled, locked out, past their end date, their password or sign-in reset,
-promoted to manager, or deleted - their guest accounts' sessions, refresh grants (offline access too) and SSH
+promoted to manager, or deleted - or they may no longer use the provider's sign-in application at S (their access to its
+tenant ended or was removed) - their guest accounts' sessions, refresh grants (offline access too) and SSH
 certificates stop working with it, whatever else happens: at once on the node that made the change, and on the others
 as soon as they hear of it (within seconds, as for the person's own sessions). A guest sign-in that was under way at that
 moment ends the same way, at its first use. Then their records are removed and B's applications told by

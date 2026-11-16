@@ -98,6 +98,9 @@ type sshDecision struct {
 	Allowed     bool
 	Unavailable bool
 	Principals  []string
+	// Until is when the user's access ends when only timed access entries give it (AppAccess.Until): a certificate is valid
+	// no later. Zero: no such bound.
+	Until time.Time
 }
 
 // Prefixes of the principals of a user's groups and application roles: "group:ops", "role:deploy". A username never
@@ -194,7 +197,7 @@ func (s *Service) sshDecideAll(ctx context.Context, t *model.Tenant, users []*mo
 			}
 		}
 		slices.Sort(list)
-		out[u.ID] = sshDecision{Allowed: true, Principals: slices.Compact(list)}
+		out[u.ID] = sshDecision{Allowed: true, Principals: slices.Compact(list), Until: app.Until}
 	}
 	return out, nil
 }
@@ -357,6 +360,9 @@ func (s *Service) SignUserSSH(ctx context.Context, req SSHUserRequest) (*SSHIssu
 	validBefore := now.Add(ttl)
 	if u.ValidUntil != nil && u.ValidUntil.Before(validBefore) {
 		validBefore = *u.ValidUntil // never beyond the account's end
+	}
+	if !dec.Until.IsZero() && dec.Until.Before(validBefore) {
+		validBefore = dec.Until // nor the end of the timed access entries that alone give the user the tenant
 	}
 	org, err := s.Org(ctx, u.OrgID)
 	if err != nil {

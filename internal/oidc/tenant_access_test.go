@@ -78,8 +78,12 @@ func TestTenantAccessMembersOnly(t *testing.T) {
 	}
 
 	// expiry: an expired direct entry no longer counts; the group still covers both clients
-	past := time.Now().Add(-time.Minute).Format(time.RFC3339)
-	if _, err := h.env.Svc.UpdateAccess(ctx, h.admin, tn.ID, e.ID, service.AccessInput{Expires: &past}); err != nil {
+	acc, err := h.env.Svc.Access.Get(ctx, e.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc.Expires = time.Now().Add(-time.Minute).UTC() // as time passing would: the API sets no end in the past
+	if err := h.env.Svc.Access.Update(ctx, acc); err != nil {
 		t.Fatal(err)
 	}
 	r4 := h.refreshWith(cl, secret, r3.str("refresh_token"))

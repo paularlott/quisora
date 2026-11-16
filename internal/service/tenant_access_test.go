@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -62,6 +63,10 @@ func TestTenantAccessLifecycle(t *testing.T) {
 		"bad role":          {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Roles: &[]string{"has space"}},
 		"bad tag":           {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Tags: &[]string{"-x"}},
 		"bad expiry":        {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Expires: ptr("next week")},
+		"date only":         {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Expires: ptr("2099-01-01")},
+		"no offset":         {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Expires: ptr("2099-01-01T10:00:00")},
+		"ended already":     {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Expires: ptr(time.Now().Add(-time.Minute).Format(time.RFC3339))},
+		"long reason":       {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Reason: ptr(strings.Repeat("x", 501))},
 		"unknown client id": {SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, AllClients: ptr(false), Clients: &[]string{"nope"}},
 	}
 	for name, in := range bad {
@@ -99,9 +104,19 @@ func TestTenantAccessLifecycle(t *testing.T) {
 		t.Errorf("bad sort: %v", err)
 	}
 
-	// Update: expiry, then all clients.
+	// Update: an end that has passed is refused (remove the entry instead); one that passes shows as such.
 	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
-	if e, err := c.svc.UpdateAccess(c.ctx, admin, ten.ID, u.ID, service.AccessInput{Expires: &past}); err != nil || !e.Expired {
+	if _, err := c.svc.UpdateAccess(c.ctx, admin, ten.ID, u.ID, service.AccessInput{Expires: &past}); !errors.Is(err, service.ErrInvalid) {
+		t.Fatalf("an end in the past: %v", err)
+	}
+	// An end given in Perth time is the same instant, kept in UTC.
+	perth := time.Now().Add(time.Hour).In(time.FixedZone("AWST", 8*3600)).Truncate(time.Second)
+	if e, err := c.svc.UpdateAccess(c.ctx, admin, ten.ID, u.ID, service.AccessInput{Expires: ptr(perth.Format(time.RFC3339))}); err != nil ||
+		!e.Expires.Equal(perth) || e.Expires.Location() != time.UTC {
+		t.Fatalf("end in +08:00: %v %+v", err, e)
+	}
+	endEntry(t, c.svc, u.ID)
+	if e, err := c.svc.GetAccess(c.ctx, admin, ten.ID, u.ID); err != nil || !e.Expired {
 		t.Fatalf("expire: %v %+v", err, e)
 	}
 	if e, err := c.svc.UpdateAccess(c.ctx, admin, ten.ID, u.ID, service.AccessInput{AllClients: ptr(true), Expires: ptr("")}); err != nil || e.Expired || !e.AllClients || len(e.Clients) != 0 {
@@ -170,11 +185,13 @@ func TestClientAccessDecision(t *testing.T) {
 		t.Errorf("through group: %+v", a)
 	}
 	// A direct entry for another client only adds nothing here; one that has expired is ignored.
-	soon := time.Now().Add(-time.Second).Format(time.RFC3339)
-	if _, err := c.svc.AddAccess(c.ctx, admin, ten.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: u.ID,
-		Roles: &[]string{"editor"}, Expires: &soon}); err != nil {
+	soon := time.Now().Add(time.Hour).Format(time.RFC3339)
+	ue, err := c.svc.AddAccess(c.ctx, admin, ten.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: u.ID,
+		Roles: &[]string{"editor"}, Expires: &soon})
+	if err != nil {
 		t.Fatal(err)
 	}
+	endEntry(t, c.svc, ue.ID)
 	if a := dec(g.ID); !slices.Equal(a.Roles, []string{"viewer"}) {
 		t.Errorf("expired entry counted: %+v", a)
 	}
@@ -206,12 +223,12 @@ func TestListAccessSortSearchAndPaging(t *testing.T) {
 		}
 		return e
 	}
-	exp := time.Now().Add(48 * time.Hour).Format(time.DateOnly)
+	exp := time.Now().Add(48 * time.Hour).Format(time.RFC3339)
 	add(model.SubjectUser, c.aUser.ID, service.AccessInput{Expires: &exp})
 	add(model.SubjectUser, c.aManager.ID, service.AccessInput{})
-	past := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
-	g := add(model.SubjectGroup, grp.ID, service.AccessInput{Expires: &past, Roles: &[]string{"Viewer"}})
-	if !g.Expired || g.Roles[0] != "Viewer" {
+	g := add(model.SubjectGroup, grp.ID, service.AccessInput{Expires: &exp, Roles: &[]string{"Viewer"}})
+	endEntry(t, c.svc, g.ID)
+	if g, err = c.svc.GetAccess(c.ctx, actor(c.aAdmin), ten.ID, g.ID); err != nil || !g.Expired || g.Roles[0] != "Viewer" {
 		t.Errorf("group entry %+v", g.TenantAccess)
 	}
 	// a super admin's access cannot be added
@@ -274,5 +291,71 @@ func TestListAccessSortSearchAndPaging(t *testing.T) {
 	// removed and re-added: a new generation, not a conflict
 	if _, err := c.svc.AddAccess(c.ctx, actor(c.aAdmin), ten.ID, service.AccessInput{SubjectType: model.SubjectGroup, SubjectID: grp.ID}); err != nil {
 		t.Errorf("re-adding: %v", err)
+	}
+}
+
+// endEntry moves access entry id's end into the past, as time passing would: the API refuses to set one there.
+func endEntry(t *testing.T, svc *service.Service, id string) {
+	t.Helper()
+	ctx := context.Background()
+	acc, err := svc.Access.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc.Expires = time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	if err := svc.Access.Update(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The sweep removes entries past their end (and only those), recording each in the organization's audit log as the
+// system's; the reason given when one was added is in that entry's audit record.
+func TestExpireAccess(t *testing.T) {
+	c := newCast(t)
+	sys := service.System
+	ten, err := c.svc.CreateTenant(c.ctx, sys, c.a.ID, service.TenantInput{Name: ptr("staff")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	soon := time.Now().Add(time.Hour).Format(time.RFC3339)
+	ue, err := c.svc.AddAccess(c.ctx, sys, ten.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: c.aUser.ID,
+		Expires: &soon, Reason: ptr("INC-42")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := c.audited(c.a.ID, "tenant.access.add"); len(ev) != 1 || ev[0].Detail["reason"] != "INC-42" || ev[0].Detail["expires"] == "" {
+		t.Fatalf("add audit: %+v", ev)
+	}
+	me, err := c.svc.AddAccess(c.ctx, sys, ten.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: c.aManager.ID, Expires: &soon})
+	if err != nil {
+		t.Fatal(err)
+	}
+	standing, err := c.svc.AddAccess(c.ctx, sys, ten.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: c.aAdmin.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := c.svc.ExpireAccess(c.ctx); err != nil || n != 0 {
+		t.Fatalf("nothing due yet: %d %v", n, err)
+	}
+	endEntry(t, c.svc, ue.ID)
+	endEntry(t, c.svc, me.ID)
+	if n, err := c.svc.ExpireAccess(c.ctx); err != nil || n != 2 {
+		t.Fatalf("expire: %d %v", n, err)
+	}
+	for _, id := range []string{ue.ID, me.ID} {
+		if _, err := c.svc.Access.Get(c.ctx, id); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s still there: %v", id, err)
+		}
+	}
+	if _, err := c.svc.Access.Get(c.ctx, standing.ID); err != nil {
+		t.Errorf("an entry without an end went: %v", err)
+	}
+	ev := c.audited(c.a.ID, "tenant.access.expire")
+	if len(ev) != 2 || ev[0].Actor != "system" || ev[0].Detail["expires"] == "" {
+		t.Fatalf("expire audit: %+v", ev)
+	}
+	// Added again after the sweep: a new generation, not refused.
+	if _, err := c.svc.AddAccess(c.ctx, sys, ten.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: c.aUser.ID, Expires: &soon}); err != nil {
+		t.Fatalf("add again after expiry: %v", err)
 	}
 }

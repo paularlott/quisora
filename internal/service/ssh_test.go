@@ -3329,3 +3329,49 @@ func TestSSHKRLKeepsRevokedHostCertsWithHostCertsOff(t *testing.T) {
 		t.Error("revoked after host certificates were turned off: not listed")
 	}
 }
+
+// An access entry with an end lets its user get certificates of a members-only tenant valid no later than that end;
+// once it passes they are on the revocation list as access removed. An entry without an end lifts the bound.
+func TestSSHTimedAccess(t *testing.T) {
+	w := newSSHWorld(t)
+	closed := w.tenant.Settings
+	closed.MembersOnly = true
+	if _, err := w.svc.UpdateTenant(w.ctx, service.System, w.tenant.ID, service.TenantInput{Settings: &closed}); err != nil {
+		t.Fatal(err)
+	}
+	w.enable(service.SSHSettingsInput{CertTTL: ptr(3600)})
+	u := w.user(w.org.ID, "paul", model.RoleUser)
+	if _, err := w.sign(u); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("a user with no access: %v", err)
+	}
+	end := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	e, err := w.svc.AddAccess(w.ctx, actor(w.admin), w.tenant.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: u.ID,
+		Expires: ptr(end.Format(time.RFC3339))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := w.mustSign(u)
+	if c.Cert.ValidBefore.After(end) {
+		t.Fatalf("certificate valid before %v, past the access's end %v", c.Cert.ValidBefore, end)
+	}
+	if d := time.Until(c.Cert.ValidBefore).Round(time.Minute); d != 20*time.Minute {
+		t.Errorf("certificate valid for %v, want the access's 20m", d)
+	}
+	if got := w.reasonOf(c); got != "" {
+		t.Fatalf("revoked under live access: %q", got)
+	}
+	endEntry(t, w.svc, e.ID)
+	if got := w.reasonOf(c); got != service.SSHReasonAccessRemoved {
+		t.Errorf("after the end: %q", got)
+	}
+	if _, err := w.sign(u); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("signed after the end: %v", err)
+	}
+	// without an end: no bound but the tenant's
+	if _, err := w.svc.UpdateAccess(w.ctx, actor(w.admin), w.tenant.ID, e.ID, service.AccessInput{Expires: ptr("")}); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(w.mustSign(u).Cert.ValidBefore).Round(time.Minute); d != time.Hour {
+		t.Errorf("without an end the certificate is valid for %v, want the tenant's 1h", d)
+	}
+}

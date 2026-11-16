@@ -29,7 +29,7 @@
     </div>
     <div class="field-row">
       {{template "combo-field" (dict "name" "user_type" "label" "User type" "placeholder" "employee, contractor, guest…" "help" "Optional; any short value.")}}
-      {{template "field" (dict "name" "valid_until" "label" "End date" "type" "date" "help" "From this date (00:00 UTC) the user can no longer sign in; within a minute they are disabled and signed out everywhere. Empty: no end.")}}
+      {{template "field" (dict "name" "valid_until" "label" "Account ends" "type" "datetime-local" "help" "Optional. Your time. From then the user can no longer sign in; within a minute they are disabled and signed out everywhere. Empty: no end." "helpBind" "validUntilHelp")}}
     </div>
     <details class="disclosure" :open="workOpen">
       <summary>Work details</summary>
@@ -203,11 +203,11 @@
   <div class="toolbar mb-4">{{template "search" (dict "id" "access-search" "region" "Access" "label" "Search access" "placeholder" "Search by name or email")}}</div>
   <div class="table-wrap" role="region" aria-label="Access table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">
     <table class="table">
-      <caption class="sr-only">Users and groups with access to this tenant's applications</caption>
+      <caption class="sr-only">Users and groups with access to this tenant's clients</caption>
       <thead><tr>
         {{template "sort-th" (dict "key" "name" "label" "Who")}}
         <th scope="col">Roles</th>
-        <th scope="col">Applications</th>
+        <th scope="col">Clients</th>
         {{template "sort-th" (dict "key" "expires" "label" "Ends")}}
         <th scope="col"><span class="sr-only">Actions</span></th>
       </tr></thead>
@@ -249,27 +249,27 @@
       {{template "picker" (dict "id" "f-acc_subject" "list" "acc-picks" "label" "Find a user or group" "listLabel" "Users and groups" "required" true "show" "isAdd" "placeholder" "Name, email address or group" "help" "A group gives access to every member, including people who join later.")}}
 
       {{template "tag-field" (dict "name" "roles" "noun" "role" "label" "Roles" "help" "Optional. Application roles, such as editor or viewer, sent in the roles claim.")}}
-      {{template "tag-field" (dict "help" "Optional. Added to the tags claim for this tenant's applications.")}}
-      {{template "details-field" (dict "name" "authorization_details" "label" "Authorization details" "types" "detailTypes" "placeholder" "[\n  {\n    \"type\": \"urn:example:admin\",\n    \"actions\": [\"read\"]\n  }\n]" "help" "Optional. RFC 9396 authorization details for the access tokens of the applications above that list their type: a JSON array of objects, each with a type. In strings, {{sub}} is the user's id, {{org}} and {{tenant}} the ids of the organization and this tenant. An object with locations goes only into tokens for one of those APIs.")}}
+      {{template "tag-field" (dict "help" "Optional. Added to the tags claim for this tenant's clients.")}}
+      {{template "details-field" (dict "name" "authorization_details" "label" "Authorization details" "types" "detailTypes" "placeholder" "[\n  {\n    \"type\": \"urn:example:admin\",\n    \"actions\": [\"read\"]\n  }\n]" "help" "Optional. RFC 9396 authorization details for the access tokens of the clients above that list their type: a JSON array of objects, each with a type. In strings, {{sub}} is the user's id, {{org}} and {{tenant}} the ids of the organization and this tenant. An object with locations goes only into tokens for one of those APIs.")}}
 
       <fieldset class="fieldset">
-        <legend>Applications</legend>
+        <legend>Clients</legend>
         <div class="field">
           <label class="check" for="f-acc_all">
             <input type="checkbox" role="switch" class="switch" id="f-acc_all" name="acc_all" x-model="form.acc_all" aria-describedby="e-acc_clients">
-            <span class="check-text">All of this tenant's applications<span class="help">Includes applications added later.</span></span>
+            <span class="check-text">All of this tenant's clients<span class="help">Includes clients added later.</span></span>
           </label>
         </div>
         <div class="stack" x-show="pickClients" x-cloak>
           <template x-for="c in clients" :key="c.id">
             <label class="check"><input class="checkbox" type="checkbox" :value="c.id" x-model="form.acc_clients"><span class="check-text" x-text="c.name"></span></label>
           </template>
-          <p class="muted" x-show="noClients" x-cloak>This tenant has no applications yet.</p>
+          <p class="muted" x-show="noClients" x-cloak>This tenant has no clients yet.</p>
         </div>
         <p class="field-error" id="e-acc_clients" x-text="errors.acc_clients"></p>
       </fieldset>
 
-      {{template "field" (dict "name" "acc_expires" "label" "Access ends" "type" "date" "help" "Optional. Access stops at the start of this day. Leave empty for no end.")}}
+      {{template "field" (dict "name" "acc_expires" "label" "Access ends" "type" "datetime-local" "help" "Optional. Your time. Access stops at this time. Leave empty for no end." "helpBind" "expiresHelp")}}
     </div>
     {{template "form-foot" (dict "label" "accessSubmitLabel" "default" "Add access")}}
   </form>

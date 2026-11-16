@@ -11,25 +11,13 @@ import { toast, announce } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { pickerMixin } from '../lib/picker.js'
 import { subscribe, liveRunner } from '../lib/live.js'
-import { fmtDate } from '../lib/format.js'
+import { fmtDateTime, localZoneText, endInput } from '../lib/format.js'
 import { detailsText, checkDetails, describeProblem } from '../lib/authdetails.js'
 
 const enc = encodeURIComponent
 const PICK_LIMIT = 8
 const fullName = (u) => [u.given_name, u.family_name].filter(Boolean).join(' ') || u.username || u.email
 
-// A date input value (YYYY-MM-DD, local) <-> the server's RFC 3339 time (access ends at the start of that local day).
-function dayToTime(day) {
-  if (!day) return ''
-  const [y, m, d] = day.split('-').map(Number)
-  return new Date(y, m - 1, d).toISOString()
-}
-function timeToDay(t) {
-  if (!t) return ''
-  const d = new Date(t)
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
 
 export default function (Alpine) {
   Alpine.store('tenantPage', { tenant: null })
@@ -44,7 +32,7 @@ export default function (Alpine) {
     },
     chosen(p) { this.form.acc_subject = p.id; this.clearErrors() },
   }), {
-    apiBase: '', tenantId: '', clients: [], editing: null,
+    apiBase: '', tenantId: '', clients: [], editing: null, endWas: endInput(''),
 
     init() {
       const d = this.$el.dataset
@@ -65,22 +53,22 @@ export default function (Alpine) {
 
     // ---- the table
     get membersOnly() { const t = Alpine.store('tenantPage').tenant; return !!(t && t.settings.members_only) },
-    get accessIntro() { return 'Only these users and groups can sign in to this tenant’s applications. Roles, tags and authorization details are sent to the applications in tokens.' },
+    get accessIntro() { return 'Only these users and groups can sign in to this tenant’s clients. Roles, tags and authorization details are sent to the clients in tokens.' },
     get accessCountText() { return this.total === 1 ? '1 entry' : this.total + ' entries' },
-    get accessEmptyText() { return 'Nobody can sign in to this tenant’s applications until you give a user or group access.' },
-    clientName(id) { const c = this.clients.find((x) => x.id === id); return c ? c.name : 'Removed application' },
+    get accessEmptyText() { return 'Nobody can sign in to this tenant’s clients until you give a user or group access.' },
+    clientName(id) { const c = this.clients.find((x) => x.id === id); return c ? c.name : 'Removed client' },
     transform(e) {
       const isGroup = e.subject_type === 'group'
       const name = e.name || (isGroup ? 'Deleted group' : 'Deleted user')
       let expiresText = 'No end'
       let expiresClass = 'muted'
       if (e.expires) {
-        expiresText = e.expired ? 'Ended ' + fmtDate(e.expires) : fmtDate(e.expires)
+        expiresText = e.expired ? 'Ended ' + fmtDateTime(e.expires) : fmtDateTime(e.expires)
         expiresClass = e.expired ? 'badge badge-warning' : ''
       }
       return { ...e, whoName: name, whoSub: isGroup ? 'Group' : e.detail || '', isGroup,
         rolesText: (e.roles || []).join(', ') || '—', tagsText: (e.tags || []).join(', '),
-        appsText: e.all_clients ? 'All applications' : (e.clients || []).map((id) => this.clientName(id)).join(', '),
+        appsText: e.all_clients ? 'All clients' : (e.clients || []).map((id) => this.clientName(id)).join(', '),
         expiresText, expiresClass, editLabel: 'Edit access for ' + name, removeLabel: 'Remove access for ' + name }
     },
 
@@ -98,12 +86,15 @@ export default function (Alpine) {
       const covered = this.form.acc_all ? this.clients : this.clients.filter((c) => (this.form.acc_clients || []).includes(c.id))
       return [...new Set(covered.flatMap((c) => c.types))]
     },
+    // The end is typed in the viewer's own time zone, named here.
+    get expiresHelp() { return `Optional. Your time (${localZoneText()}). Access stops at this time, and the user or group members it applies to are signed out of the clients (unless other access still lets them in). Leave empty for no end.` },
     errorKey(f) {
       return { subject_id: 'acc_subject', subject_type: 'acc_subject', expires: 'acc_expires', clients: 'acc_clients', all_clients: 'acc_clients' }[f] || f
     },
 
     openAdd(ev) {
       this.editing = null
+      this.endWas = endInput('')
       this.resetForm({ acc_subject: '', roles: [], tags: [], authorization_details: '', acc_all: true, acc_clients: [], acc_expires: '' })
       this.resetChipText()
       this.resetPicker()
@@ -113,8 +104,9 @@ export default function (Alpine) {
       const row = this.rowFromEvent(ev)
       if (!row) return
       this.editing = row
+      this.endWas = endInput(row.expires)
       this.resetForm({ acc_subject: row.subject_id, roles: [...(row.roles || [])], tags: [...(row.tags || [])], authorization_details: detailsText(row.authorization_details),
-        acc_all: !!row.all_clients, acc_clients: [...(row.clients || [])], acc_expires: timeToDay(row.expires) })
+        acc_all: !!row.all_clients, acc_clients: [...(row.clients || [])], acc_expires: this.endWas.shown })
       this.resetChipText()
       this.openDlg('access-dialog', ev.currentTarget)
     },
@@ -127,7 +119,7 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: describeProblem(first), field: 'authorization_details' }))
         return
       }
-      const body = { roles: f.roles, tags: f.tags, authorization_details: details.value, all_clients: f.acc_all, clients: f.acc_all ? [] : f.acc_clients, expires: dayToTime(f.acc_expires) }
+      const body = { roles: f.roles, tags: f.tags, authorization_details: details.value, all_clients: f.acc_all, clients: f.acc_all ? [] : f.acc_clients, expires: this.endWas.send(f.acc_expires) }
       if (!this.editing) {
         if (!this.pickChoice) {
           this.setErrors(new ApiError(422, { error: 'Choose a user or group from the list.', field: 'acc_subject' }))
@@ -148,7 +140,7 @@ export default function (Alpine) {
       const row = this.rowFromEvent(ev)
       if (!row) return
       const ok = await Alpine.store('confirm').ask({ title: 'Remove access', message: `Remove access for ${row.whoName}?`,
-        detail: 'They can no longer sign in to this tenant’s applications, unless they have access another way (directly or through a group).', confirmLabel: 'Remove access' })
+        detail: 'They can no longer sign in to this tenant’s clients, and are signed out of them, unless they have access another way (directly or through a group).', confirmLabel: 'Remove access' })
       if (!ok) return
       try {
         await del(`${this.apiBase}/tenants/${enc(this.tenantId)}/access/${enc(row.id)}`)

@@ -149,6 +149,9 @@ func modules(ctx context.Context, a *App) []web.Module {
 			if n, err := a.Svc.ExpireUsers(ctx); hk.ok("user end dates", err) && n > 0 {
 				a.Log.Info("users past their end date disabled", "count", n)
 			}
+			if n, err := a.Svc.ExpireAccess(ctx); hk.ok("access entry ends", err) && n > 0 {
+				a.Log.Info("access entries past their end removed", "count", n)
+			}
 			// A change of a group's members whose writer died after committing it is finished here (it is visible
 			// to every reader meanwhile): its membership records are written and the entry cleared.
 			if n, err := a.Svc.FinishGroupChanges(ctx, service.GroupChangeGrace); hk.ok("finishing group changes", err) && n > 0 {

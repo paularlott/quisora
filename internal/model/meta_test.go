@@ -41,6 +41,12 @@ func TestDue(t *testing.T) {
 	if _, ok := Due(KindGroup, map[string]any{"expiring": true, "active": true, "valid_until": end}); ok {
 		t.Error("group due")
 	}
+	if got, ok := Due(KindAccess, (&TenantAccess{TenantID: "t", Expires: end}).Index().Fields); !ok || !got.Equal(end) {
+		t.Errorf("access entry with an end: %v %v", got, ok)
+	}
+	if _, ok := Due(KindAccess, (&TenantAccess{TenantID: "t"}).Index().Fields); ok {
+		t.Error("access entry without an end due")
+	}
 }
 
 func TestMFA(t *testing.T) {

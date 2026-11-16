@@ -2669,6 +2669,39 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/providers/sources:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Providers]
+      summary: Organizations and tenants an organization provider may take its users from
+      description: "Super admins only (or an organization's owner service account, for its own organizations and the
+        primary one). One item per organization and tenant, never this organization's: q matches the start of a name or
+        display name of an organization (at most limit, 20, of them, each with all its tenants) or of a tenant (with its
+        organization); \"organization (tenant\" matches the tenants of the matching organizations whose names start
+        so. total counts the matching organizations and tenants."
+      operationId: get_orgs_org_providers_sources
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [providers]
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProviderSourceList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/providers/{id}:
     parameters:
       - {$ref: "#/components/parameters/Org"}
@@ -4463,8 +4496,18 @@ components:
             type: string
         expires:
           type: string
-          description: "RFC 3339 time, or a date (YYYY-MM-DD: access ends at the start of that day, UTC); empty: no end; omitted
-            on update: unchanged"
+          format: date-time
+          description: "when the access ends: an RFC 3339 time with its offset (2026-11-17T15:00:00+08:00, or Z for UTC),
+            returned in UTC. A new end must be in the future (to end access now, remove it). Access stops at that instant
+            on every node; within a minute the entry is removed, recorded in the audit log (tenant.access.expire), and the
+            people it let in are signed out of the applications they no longer have (back-channel logout, refresh tokens
+            and SSH certificates revoked), as when it is removed or narrowed. Access tokens and SSH certificates issued
+            while only entries with an end allow the user expire by the latest of those ends. Empty: no end; omitted on
+            update: unchanged"
+        reason:
+          type: string
+          maxLength: 500
+          description: why the access is given or changed (a ticket number, an approval), recorded in the audit log only
         roles:
           type: array
           description: application role names (same characters as tags); sent in the roles claim of tokens for the tenant's
@@ -5668,6 +5711,16 @@ components:
         source_org_name:
           type: string
           description: "organization: that organization's display name"
+        source_tenant:
+          type: string
+          description: "organization: the id of the tenant of that organization that holds the provider's sign-in application"
+        source_tenant_name:
+          type: string
+          description: "organization: that tenant's display name"
+        source_members_only:
+          type: boolean
+          description: "organization: that tenant is members-only, so its access list decides who of that organization signs
+            in through the provider, and until when"
         source_groups:
           type: array
           description: "organization: groups of that organization (ids) whose members alone sign in through the provider, at every sign-in; absent: all of its users"
@@ -5743,6 +5796,13 @@ components:
             Changing source_org needs groups of the new organization (or [])"
           items:
             type: string
+        source_tenant:
+          type: string
+          description: "organization: the tenant of that organization (id or name) that holds the provider's sign-in
+            application; empty or absent: its default tenant (and, with a new source_org, that organization's default
+            tenant). Make it a members-only tenant to decide who signs in, and until when, with its access list: an
+            entry with an end ends the guest's sign-ins here too. Changing it makes a new sign-in application, so guests
+            signed in through the old one sign in again"
         tenant:
           type: string
           description: "microsoft: a tenant ID, or organizations (then allowed_tenants is required)"
@@ -5751,6 +5811,24 @@ components:
         type:
           type: string
           enum: [oidc, google, microsoft, github, gitlab, auth0, organization]
+    ProviderSourceList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              org_id: {type: string}
+              org_name: {type: string}
+              org_display_name: {type: string}
+              tenant_id: {type: string}
+              tenant_name: {type: string}
+              tenant_display_name: {type: string}
+              members_only: {type: boolean}
+        total:
+          type: integer
     ProviderList:
       type: object
       required: [items, total]

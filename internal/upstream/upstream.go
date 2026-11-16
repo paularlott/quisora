@@ -421,7 +421,7 @@ func (s *Service) guestSources(ctx context.Context, p *model.Provider, c Claims)
 	if sess.UserID != c.Subject || sess.OrgID != p.SourceOrg || len(sess.Sources) >= model.MaxGuestDepth {
 		return nil, ErrDisabled
 	}
-	return append([]model.GuestSource{{UserID: sess.UserID, Epoch: sess.Epoch}}, sess.Sources...), nil
+	return append([]model.GuestSource{{UserID: sess.UserID, Epoch: sess.Epoch, Client: p.ClientID}}, sess.Sources...), nil
 }
 
 // CancelTenant consumes the state of a sign-in the provider reported as denied or failed (error= on the callback)

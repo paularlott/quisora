@@ -150,6 +150,9 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 				setDefault(mc.Params, "max_statement_time", strconv.Itoa(int(statementTimeout.Seconds())))
 			}
 			setDefault(mc.Params, "innodb_lock_wait_timeout", strconv.Itoa(int(lockTimeout.Seconds())))
+			// UTC sessions: the server's clock is read through NOW() (serverTime), which a zone with daylight saving
+			// would read an hour wrong for the hour clocks go back. Nothing else stores a zoned time.
+			mc.Params["time_zone"] = "'+00:00'" // not the DSN's to change
 			if cfg.RootCAs != nil && mc.Net != "unix" {
 				switch {
 				case mc.TLS == nil: // no tls in the DSN: a CA file asks for verified TLS

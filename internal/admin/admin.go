@@ -179,6 +179,7 @@ func (m *Module) routes() []Route {
 
 		{"GET", o + "/providers", m.listProviders, service.ScopeProviders},
 		{"POST", o + "/providers", m.createProvider, service.ScopeProviders},
+		{"GET", o + "/providers/sources", m.listProviderSources, service.ScopeProviders},
 		{"GET", o + "/providers/{id}", m.getProvider, service.ScopeProviders},
 		{"PATCH", o + "/providers/{id}", m.updateProvider, service.ScopeProviders},
 		{"DELETE", o + "/providers/{id}", m.deleteProvider, service.ScopeProviders},

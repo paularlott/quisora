@@ -33,6 +33,7 @@ scriptling -L lib examples/create_org.py contoso "Contoso Ltd" --service-account
 scriptling -L lib examples/setup_org.py contoso "Contoso Ltd" --admin boss@contoso.example Bo --guests primary <group id>
 scriptling -L lib examples/create_user.py acme grace@acme.example Grace Hopper --username grace --invite
 scriptling -L lib examples/add_to_group.py acme Engineers grace alan
+scriptling -L lib examples/timed_access.py acme give support grace 3 "SUP-4211 approved by sam" --roles support
 ```
 
 `create_org.py` needs a super admin's token, or a service account of the primary organization with `orgs:create`.
@@ -40,7 +41,7 @@ scriptling -L lib examples/add_to_group.py acme Engineers grace alan
 owns the organization it creates and configures it as a super admin would ([owning organizations](../docs/SERVICE-ACCOUNTS.md#owning-organizations-orgsmanage)).
 `list_orgs.py` needs a personal token: service accounts cannot list organizations. As a service account,
 `create_user.py` needs the `users` scope (and `manage_admins` for `--role admin`), and `add_to_group.py` needs
-`users` and `groups`.
+`users` and `groups`; `timed_access.py` needs `access`, `tenants` and `users` ([time-limited access](../docs/TIMED-ACCESS.md)).
 
 ## Using the library
 
@@ -62,8 +63,8 @@ except quisora.QuisoraError as e:
     print(e.status, e.message, e.field)       # 404 Not found. None
 ```
 
-It covers organizations, users (invitations, sign-out, lock-out), groups and their members, service accounts and the
-audit log. Anything else is one call away with `qs.request(method, path, params=..., body=...)`, and
+It covers organizations, sign-in providers, tenants and their access lists (with an end: `give_access(..., hours=3)`),
+users (invitations, sign-out, lock-out), groups and their members, service accounts and the audit log. Anything else is one call away with `qs.request(method, path, params=..., body=...)`, and
 `qs.paginate(path, params)` walks any list. The full API is in the OpenAPI document every server serves at
 `/api/openapi.json` (browsable at `/api-docs/`). The library sends `Api-Version: 2026-10-20`.
 

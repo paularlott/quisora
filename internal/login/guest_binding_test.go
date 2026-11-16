@@ -448,9 +448,15 @@ func TestGuestSignInAddsNoFirstFactor(t *testing.T) {
 		"password": func() (*http.Response, map[string]any) {
 			return pb.api("POST", "/api-internal/account/password", map[string]any{"current": "", "new": "a perfectly fine password"})
 		},
-		"passkey begin":  func() (*http.Response, map[string]any) { return pb.api("POST", "/api-internal/account/passkeys/register/begin", nil) },
-		"passkey finish": func() (*http.Response, map[string]any) { return pb.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{}) },
-		"connect":        func() (*http.Response, map[string]any) { return pb.api("POST", "/api-internal/account/providers/"+g.p.ID+"/connect", nil) },
+		"passkey begin": func() (*http.Response, map[string]any) {
+			return pb.api("POST", "/api-internal/account/passkeys/register/begin", nil)
+		},
+		"passkey finish": func() (*http.Response, map[string]any) {
+			return pb.api("POST", "/api-internal/account/passkeys/register/finish", map[string]any{})
+		},
+		"connect": func() (*http.Response, map[string]any) {
+			return pb.api("POST", "/api-internal/account/providers/"+g.p.ID+"/connect", nil)
+		},
 	} {
 		res, out := call()
 		if res.StatusCode != http.StatusForbidden || str(out, "field") != "guest" {

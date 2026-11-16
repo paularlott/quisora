@@ -45,6 +45,14 @@ class QuisoraError(Exception):
         return f"{self.status}: {self.message}"
 
 
+def _access_end(hours, expires):
+    """An access entry's end for the API: hours from now as a UTC time, or
+    expires as given (RFC 3339 with its offset; "" for no end); None: unchanged."""
+    if hours is not None:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + float(hours) * 3600))
+    return expires
+
+
 def _seg(value):
     """Escape one path segment."""
     return urllib.parse.quote(str(value)).replace("/", "%2F")
@@ -213,7 +221,10 @@ class Client:
         """Create a sign-in provider. For type "organization" (users of another
         organization sign in as guests): source_org, the organization they come
         from, and optionally source_groups (ids of its groups), auto_provision,
-        trust_mfa, name. Other types: issuer, client_id, client_secret, ..."""
+        trust_mfa, name, and source_tenant: the tenant of that organization (id or
+        name) holding the sign-in application (default: its default tenant; a
+        members-only one limits guests to its access list, until each one's end).
+        Other types: issuer, client_id, client_secret, ..."""
         body = dict(fields)
         body["type"] = type
         return self.request("POST", self._org(org) + "/providers", body=body)
@@ -223,6 +234,59 @@ class Client:
 
     def delete_provider(self, org, provider_id):
         return self.request("DELETE", self._org(org) + "/providers/" + _seg(provider_id))
+
+    # --- tenants and their access lists ----------------------------------
+
+    def iter_tenants(self, org):
+        return self.paginate(self._org(org) + "/tenants")
+
+    def find_tenant(self, org, ref):
+        """The tenant of org whose id or name is ref, or None."""
+        for t in self.iter_tenants(org):
+            if t["id"] == ref or t["name"].lower() == ref.lower():
+                return t
+        return None
+
+    def iter_access(self, org, tenant_id):
+        """Who has access to a members-only tenant: users and groups, each with
+        its roles, applications and end ("expires", UTC; absent: no end)."""
+        return self.paginate(self._org(org) + "/tenants/" + _seg(tenant_id) + "/access")
+
+    def give_access(self, org, tenant_id, subject_id, subject_type="user", hours=None, expires=None,
+                    roles=None, clients=None, reason=None):
+        """Give a user (or a group: subject_type="group") access to a tenant's
+        applications: all of them, or the client ids in clients. hours from now,
+        or expires (an RFC 3339 time with its offset), ends it; neither: no end.
+        reason goes to the audit log. Within a minute of its end the access is
+        removed and the people it let in are signed out of the applications."""
+        body = {"subject_type": subject_type, "subject_id": subject_id}
+        end = _access_end(hours, expires)
+        if end is not None:
+            body["expires"] = end
+        if roles is not None:
+            body["roles"] = roles
+        if clients is not None:
+            body["all_clients"] = False
+            body["clients"] = clients
+        if reason is not None:
+            body["reason"] = reason
+        return self.request("POST", self._org(org) + "/tenants/" + _seg(tenant_id) + "/access", body=body)
+
+    def update_access(self, org, tenant_id, access_id, hours=None, expires=None, reason=None, **fields):
+        """Change an access entry: a new end (hours from now, or expires; expires=""
+        takes the end off), roles, tags, all_clients, clients."""
+        body = dict(fields)
+        end = _access_end(hours, expires)
+        if end is not None:
+            body["expires"] = end
+        if reason is not None:
+            body["reason"] = reason
+        return self.request("PATCH", self._org(org) + "/tenants/" + _seg(tenant_id) + "/access/" + _seg(access_id), body=body)
+
+    def remove_access(self, org, tenant_id, access_id):
+        """Take an access entry away now: the people it let in are signed out of
+        the applications they no longer have."""
+        return self.request("DELETE", self._org(org) + "/tenants/" + _seg(tenant_id) + "/access/" + _seg(access_id))
 
     # --- users ----------------------------------------------------------
 

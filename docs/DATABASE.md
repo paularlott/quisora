@@ -25,7 +25,7 @@ indexes), so that lists and filters run without decoding `data`.
 | `user_groups`        | Groups of users. A group's record is also the commit point for changes to its member list.                                         |
 | `group_members`      | Group memberships, one row per user per group. A removed membership is kept for a while, then expires.                             |
 | `tenants`            | Tenants: an organization's applications grouped under shared sign-in rules, with the tenant's SSH certificate settings. Its `ssh_enabled` column (indexed) is true while SSH certificates are on: housekeeping lists the tenants with SSH on by it. |
-| `tenant_access`      | Who may use a tenant's applications: a user or a group, for all of them or for listed ones, with the roles and tags its tokens carry. |
+| `tenant_access`      | Who may use a tenant's applications: a user or a group, for all of them or for listed ones, with the roles and tags its tokens carry, and when the access ends (indexed: the housekeeping sweep removes ended entries). |
 | `clients`            | Applications: OAuth 2 / OpenID Connect clients.                                                                                    |
 | `identity_providers` | Upstream identity providers an organization signs in with (OIDC, Google, Microsoft, GitHub, GitLab, Auth0, another organization). Client secrets are sealed with the master key. |
 | `passkeys`           | Users' WebAuthn passkeys.                                                                                                          |

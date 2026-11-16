@@ -128,3 +128,69 @@ func TestFieldIndex(t *testing.T) {
 		t.Fatalf("with the index dropped the filter still found %d: it is not read from the index", n)
 	}
 }
+
+// Access entries with an end are due at it (model.Due), apart from users due then too; one given no end is not.
+func TestDueIndexAccess(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenBadger(ctx, t.TempDir(), BadgerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	put := func(subject string, end time.Time) *model.TenantAccess {
+		t.Helper()
+		a := &model.TenantAccess{Meta: model.Meta{ID: model.AccessID("t1", subject), Created: now}, OrgID: "org1", TenantID: "t1",
+			SubjectType: model.SubjectUser, SubjectID: subject, AllClients: true, Expires: end}
+		r, err := store.Encode(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Put(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	put("later", now.Add(time.Hour))
+	put("second", now.Add(-time.Minute))
+	first := put("first", now.Add(-time.Hour))
+	put("standing", time.Time{})
+	past := now.Add(-2 * time.Hour)
+	u := &model.User{Meta: model.Meta{ID: model.NewID(), Created: now}, OrgID: "org1", Username: "u", Email: "u@x.example",
+		Role: model.RoleUser, Active: true, ValidUntil: &past}
+	r, _ := store.Encode(u)
+	if err := s.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	subjects := func() []string {
+		t.Helper()
+		recs, err := s.ListDue(ctx, model.KindAccess, now, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range recs {
+			var a model.TenantAccess
+			if err := store.Decode(r, &a); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, a.SubjectID)
+		}
+		return out
+	}
+	if got := subjects(); len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("due: %v, want [first second]", got)
+	}
+	cur, err := s.Get(ctx, model.KindAccess, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Expires = time.Time{} // its end taken off
+	r, _ = store.Encode(first)
+	if err := s.CompareAndPut(ctx, r, cur.Version); err != nil {
+		t.Fatal(err)
+	}
+	if got := subjects(); len(got) != 1 || got[0] != "second" {
+		t.Fatalf("after first's end was taken off: %v", got)
+	}
+}

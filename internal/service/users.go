@@ -731,8 +731,8 @@ func dropUnchanged(u *model.User, in *UserInput) {
 		case v == "" && u.ValidUntil == nil:
 			in.ValidUntil = nil
 		case v != "" && u.ValidUntil != nil:
-			// the form shows the end as a date: the same day is the same end
-			if t, err := parseEndDate(v); err == nil && t.UTC().Format(time.DateOnly) == u.ValidUntil.UTC().Format(time.DateOnly) {
+			// the same instant, however written, is no change
+			if t, err := parseEndDate(v); err == nil && t.Equal(*u.ValidUntil) {
 				in.ValidUntil = nil
 			}
 		}
@@ -751,12 +751,11 @@ func CurbsAdmin(u *model.User, in UserInput) bool {
 	if in.Role != nil && in.Role.Rank() < u.Role.Rank() || in.Active != nil && !*in.Active && u.Active {
 		return true
 	}
-	// An end date that comes sooner ends the account as surely as disabling it, only later. (The console shows the
-	// end as a date: the same day is the same end; a value that does not parse is refused by the update itself.)
+	// An end date that comes sooner ends the account as surely as disabling it, only later. (A value that does not
+	// parse is refused by the update itself.)
 	if in.ValidUntil != nil && *in.ValidUntil != "" {
 		t, err := parseEndDate(*in.ValidUntil)
-		return err == nil && (u.ValidUntil == nil ||
-			t.Format(time.DateOnly) < u.ValidUntil.UTC().Format(time.DateOnly))
+		return err == nil && (u.ValidUntil == nil || t.Before(*u.ValidUntil))
 	}
 	return false
 }
@@ -979,7 +978,8 @@ func (s *Service) mayChange(ctx context.Context, a *Actor, u *model.User, in Use
 // demote, disable, end-date or delete a super admin: only another super admin does that.
 var errSparesSuperAdmins = Invalid("user", "automatic changes never demote, disable, end-date or delete a super admin")
 
-// parseEndDate reads an end date: an RFC 3339 time or a date (YYYY-MM-DD, the start of that day UTC).
+// parseEndDate reads an end date: an RFC 3339 time, which names its offset, or a date (YYYY-MM-DD), the start of that
+// day in UTC (what SCIM directories and scripts send). Returned in UTC, to the second.
 func parseEndDate(v string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, v)
 	if err != nil {
@@ -987,7 +987,7 @@ func parseEndDate(v string) (time.Time, error) {
 			return time.Time{}, err
 		}
 	}
-	return t.UTC(), nil
+	return t.UTC().Truncate(time.Second), nil
 }
 
 // DeleteUser deletes a user and everything that belongs to them.
@@ -1187,6 +1187,13 @@ func (s *Service) endUserSessions(ctx context.Context, userID string, a *Actor) 
 // failures are returned together with the count of those that did go, so the caller can say the removal is partly done
 // (a grant left behind still refreshes; a consent left behind still skips the consent screen).
 func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) (int, error) {
+	return s.revokeAppAccess(ctx, userID, clientID, true)
+}
+
+// revokeAppAccess is RevokeAppAccess, removing the user's remembered consent to the application too when
+// forgetConsent: the user removing the application does, losing access to it (endLostAccess) does not, as the user
+// took nothing back.
+func (s *Service) revokeAppAccess(ctx context.Context, userID, clientID string, forgetConsent bool) (int, error) {
 	// The fence first: each of the user's sessions counts one more removal of the application (model.Session.AppFences).
 	// An authorization code or approved device sign-in from before it then makes no grant, as a grant is written only
 	// while its session is as checked (CreateSessionGrant); one made before it is in the listing below.
@@ -1203,9 +1210,11 @@ func (s *Service) RevokeAppAccess(ctx context.Context, userID, clientID string) 
 			mine = append(mine, g)
 		}
 	}
-	consent, err := s.Consents.Get(ctx, model.ConsentID(userID, clientID))
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return 0, mapStore(err)
+	var consent *model.Consent
+	if forgetConsent {
+		if consent, err = s.Consents.Get(ctx, model.ConsentID(userID, clientID)); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return 0, mapStore(err)
+		}
 	}
 	if len(mine) == 0 && consent == nil {
 		return 0, nil

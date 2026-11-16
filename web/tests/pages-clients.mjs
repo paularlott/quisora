@@ -22,7 +22,7 @@ export const CLIENT_PAGES = [
     async (p) => {
       const t = await ownTenant(p)
       const alan = (await apiCall(p, 'GET', `${API}/users?q=alan`)).items[0]
-      await apiCall(p, 'POST', `${API}/tenants/${t.id}/access`, { subject_type: 'user', subject_id: alan.id, roles: ['editor'], tags: ['team:blue'], expires: '2099-01-01' })
+      await apiCall(p, 'POST', `${API}/tenants/${t.id}/access`, { subject_type: 'user', subject_id: alan.id, roles: ['editor'], tags: ['team:blue'], expires: '2099-01-01T00:00:00Z' })
       await apiCall(p, 'POST', `${API}/clients`, { name: 'Portal', tenant_id: t.id, redirect_uris: ['https://portal.example/cb'] })
       await gotoTenant(p, t.slug)
     },
@@ -31,7 +31,7 @@ export const CLIENT_PAGES = [
       await p.locator('#f-acc_subject').fill('a')
       await p.locator('#acc-picks [role=option]').first().waitFor()
       await p.keyboard.press('ArrowDown')
-      await p.getByRole('switch', { name: /All of this tenant's applications/ }).uncheck()
+      await p.getByRole('switch', { name: /All of this tenant's clients/ }).uncheck()
       await p.locator('#f-roles').fill('bad role!')
       await p.keyboard.press('Enter')
       await p.waitForTimeout(400)

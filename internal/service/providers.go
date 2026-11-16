@@ -38,6 +38,10 @@ type ProviderInput struct {
 	// alone may (empty: all of its users). Super admins only.
 	SourceOrg    *string   `json:"source_org"`
 	SourceGroups *[]string `json:"source_groups"`
+	// SourceTenant is the tenant of the source organization (id or name) that holds the sign-in application: its access
+	// list decides who of that organization may sign in this way, and until when. Empty: its default tenant. Choosing
+	// another organization without one starts again from that organization's default tenant.
+	SourceTenant *string `json:"source_tenant"`
 }
 
 // maxSourceGroups bounds the groups an organization provider admits (Provider.SourceGroups).
@@ -216,7 +220,7 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 		p.Tenant, p.AllowedTenants = "", nil
 	}
 	if org {
-		if err := s.applySourceOrg(ctx, p, in.SourceOrg, in.SourceGroups); err != nil {
+		if err := s.applySourceOrg(ctx, p, in.SourceOrg, in.SourceGroups, in.SourceTenant); err != nil {
 			return err
 		}
 		if ok, err := s.ownerMaySource(ctx, a, p.SourceOrg); err != nil {
@@ -226,7 +230,7 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 		}
 		return nil
 	}
-	p.SourceOrg, p.SourceGroups = "", nil
+	p.SourceOrg, p.SourceGroups, p.SourceTenant = "", nil, ""
 	if p.OIDC() {
 		iss, err := providerIssuer(p.Type, issuer, p.Tenant)
 		if err != nil {
@@ -269,7 +273,7 @@ func (s *Service) ownerMaySource(ctx context.Context, a *Actor, srcID string) (b
 // fixed, and an unnamed provider is named after the source organization, which the sign-in page offers as "Continue
 // with <name>". Its groups, when chosen, must be groups of that organization. Its client credentials come later
 // (issueSignInClient), once everything else is known to be valid.
-func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *string, groups *[]string) error {
+func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *string, groups *[]string, tenant *string) error {
 	was, wasGroups := p.SourceOrg, p.SourceGroups
 	if ref != nil {
 		p.SourceOrg = strings.TrimSpace(*ref)
@@ -289,6 +293,9 @@ func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *st
 	p.SourceOrg, p.Issuer, p.Scopes = src.ID, s.Cfg.OrgIssuer(src.ID), slices.Clone(orgProviderScopes)
 	if p.Name == "" {
 		p.Name = src.DisplayName
+	}
+	if err := s.applySourceTenant(ctx, p, src, src.ID != was, tenant); err != nil {
+		return err
 	}
 	if groups != nil {
 		gs := []string{}
@@ -322,8 +329,44 @@ func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *st
 	return nil
 }
 
+// applySourceTenant settles an organization provider's source tenant (Provider.SourceTenant): a tenant of src, by id or
+// name, or src's default tenant when none is given or the organization changed without one (another's tenant never
+// carries over).
+func (s *Service) applySourceTenant(ctx context.Context, p *model.Provider, src *model.Org, orgChanged bool, ref *string) error {
+	v := ""
+	switch {
+	case ref != nil:
+		v = strings.TrimSpace(*ref)
+	case !orgChanged:
+		v = p.SourceTenant
+	}
+	if v == "" {
+		t, err := s.DefaultTenant(ctx, src.ID)
+		if err != nil {
+			return err
+		}
+		p.SourceTenant = t.ID
+		return nil
+	}
+	var t *model.Tenant
+	var err error
+	if model.IsID(v) {
+		t, err = s.Tenants.Get(ctx, v)
+	} else {
+		t, err = s.Tenants.GetByUnique(ctx, model.TenantNameKey(src.ID, v))
+	}
+	if errors.Is(err, store.ErrNotFound) || err == nil && t.OrgID != src.ID {
+		return Invalid("source_tenant", "choose a tenant of "+src.DisplayName)
+	}
+	if err != nil {
+		return mapStore(err)
+	}
+	p.SourceTenant = t.ID
+	return nil
+}
+
 // issueSignInClient makes the application of p's source organization that p signs in with: a confidential client of
-// the organization's default tenant, whose only redirect URI is p's callback address, trusted (first party) so its
+// p's source tenant (Provider.SourceTenant), whose only redirect URI is p's callback address, trusted (first party) so its
 // users are not asked for consent, as a super admin set it up. Its secret is sealed into p. It is a write in another
 // organization, apart from the write of p: callers make it first, so a failure leaves at most an unused client, which
 // they remove (removeSignInClient) when they know p was not written, and the orphan sweep removes when they cannot tell.
@@ -335,7 +378,8 @@ func (s *Service) issueSignInClient(ctx context.Context, a *Actor, p *model.Prov
 	name := "Sign-in to " + dest.DisplayName
 	desc := "Lets the users of this organization sign in to " + dest.DisplayName + " (provider " + p.Name + "). Made and removed with that provider."
 	firstParty := true
-	in := ClientInput{Name: &name, Description: &desc, FirstParty: &firstParty,
+	tenant := p.SourceTenant
+	in := ClientInput{Name: &name, Description: &desc, FirstParty: &firstParty, TenantID: &tenant,
 		RedirectURIs: &[]string{s.Cfg.Server.PublicURL + model.ProviderCallbackPath(p.OrgID, p.ID)},
 		GrantTypes:   &[]string{"authorization_code"}, Scopes: &orgProviderScopes}
 	c, secret, err := s.createClient(ctx, a, p.SourceOrg, in, clientMade{provider: p.ID})
@@ -451,17 +495,20 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	}
 	before := model.ProviderAuthority(p)
 	was := snapshot(p)
-	oldSource, oldClient := p.SourceOrg, p.ClientID
+	oldSource, oldClient, oldTenant := p.SourceOrg, p.ClientID, ""
 	if p.Type != model.ProviderOrganization {
 		oldSource, oldClient = "", ""
+	} else if c, err := s.Clients.Get(ctx, oldClient); err == nil && c.OrgID == oldSource {
+		oldTenant = c.TenantID // where its sign-in application is: the tenant it was made in
 	}
 	if err := s.applyProvider(ctx, a, p, in); err != nil {
 		return nil, err
 	}
-	// An organization provider whose source organization changed (or that just became one) signs in with a client of
-	// the new source organization, made before the provider is written, and the old one is removed after.
+	// An organization provider whose source organization or tenant changed (or that just became one) signs in with a
+	// client of the new source tenant, made before the provider is written, and the old one is removed after: the
+	// guests signed in through the old one stop counting with it (their sign-ins stand on it: SourcesHold).
 	orgNow := p.Type == model.ProviderOrganization
-	newClient := orgNow && (oldClient == "" || p.SourceOrg != oldSource)
+	newClient := orgNow && (oldClient == "" || p.SourceOrg != oldSource || p.SourceTenant != oldTenant)
 	if newClient {
 		if err := s.issueSignInClient(ctx, a, p); err != nil {
 			return nil, err
@@ -536,4 +583,130 @@ func (s *Service) purgeIdentities(ctx context.Context, id string) int {
 		}
 	}
 	return n
+}
+
+// ProviderSource is an organization and one of its tenants that an organization provider may take its users from
+// (Provider.SourceOrg and SourceTenant): what the provider form's picker offers, as "organization (tenant)".
+type ProviderSource struct {
+	OrgID             string `json:"org_id"`
+	OrgName           string `json:"org_name"`
+	OrgDisplayName    string `json:"org_display_name"`
+	TenantID          string `json:"tenant_id"`
+	TenantName        string `json:"tenant_name"`
+	TenantDisplayName string `json:"tenant_display_name"`
+	MembersOnly       bool   `json:"members_only"`
+}
+
+// maxSourceOrgs and maxSourceTenants bound one answer of ProviderSources: a few organizations matching what was typed,
+// each with its tenants, never a listing of the whole server.
+const (
+	maxSourceOrgs    = 20
+	maxSourceTenants = 50
+)
+
+// ProviderSources returns what an organization provider of orgID may take its users from, as (organization, tenant)
+// pairs, for a super admin choosing one in the provider form; an organization's owner (OwnerActor) gets only the
+// organizations it may source from (ownerMaySource). q matches the start of a name or display name, either:
+//
+//   - of an organization (up to limit of them, by name), giving each of its tenants;
+//   - of a tenant, of any organization (up to maxSourceTenants), giving it with its organization;
+//   - or both, written "organization (tenant": the tenants of the matching organizations whose names start so.
+//
+// orgID itself is never offered. total counts the organizations and tenants whose names match (a pair may count under
+// both), so a caller seeing more than it got can say to type more.
+func (s *Service) ProviderSources(ctx context.Context, a *Actor, orgID, q string, limit int) ([]ProviderSource, int, error) {
+	if !s.canAdminOrg(a, orgID) || !a.IsSuper() {
+		return nil, 0, ErrForbidden
+	}
+	if limit <= 0 || limit > maxSourceOrgs {
+		limit = maxSourceOrgs
+	}
+	q = strings.TrimSpace(q)
+	orgQ, tenantQ, both := q, "", false
+	if i := strings.Index(q, "("); i >= 0 {
+		orgQ = strings.TrimSpace(q[:i])
+		tenantQ = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(q[i+1:]), ")")))
+		both = true
+	}
+	allowed := func(o *model.Org) (bool, error) {
+		if o.ID == orgID {
+			return false, nil
+		}
+		return s.ownerMaySource(ctx, a, o.ID)
+	}
+	out := []ProviderSource{}
+	seen := map[string]bool{}
+	add := func(o *model.Org, t *model.Tenant) {
+		if seen[t.ID] {
+			return
+		}
+		seen[t.ID] = true
+		out = append(out, ProviderSource{OrgID: o.ID, OrgName: o.Name, OrgDisplayName: o.DisplayName, TenantID: t.ID,
+			TenantName: t.Name, TenantDisplayName: t.DisplayName, MembersOnly: t.Settings.MembersOnly})
+	}
+	tenantMatches := func(t *model.Tenant) bool {
+		return tenantQ == "" || strings.HasPrefix(strings.ToLower(t.Name), tenantQ) || strings.HasPrefix(strings.ToLower(t.DisplayName), tenantQ)
+	}
+
+	// organizations whose names match, each with its tenants
+	orgs, orgTotal, err := s.Orgs.List(ctx, store.ListQuery{Search: orgQ, Sort: "name", Limit: limit + 1})
+	if err != nil {
+		return nil, 0, mapStore(err)
+	}
+	n := 0
+	for _, o := range orgs {
+		if ok, err := allowed(o); err != nil {
+			return nil, 0, err
+		} else if !ok {
+			orgTotal--
+			continue
+		}
+		if n == limit {
+			break
+		}
+		n++
+		ts, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: o.ID, Sort: "name", Limit: maxSourceTenants})
+		if err != nil {
+			return nil, 0, mapStore(err)
+		}
+		for _, t := range ts {
+			if tenantMatches(t) {
+				add(o, t)
+			}
+		}
+	}
+
+	// tenants whose names match, of any organization (not when the organization was written out)
+	tenantTotal := 0
+	if !both && q != "" {
+		ts, total, err := s.Tenants.List(ctx, store.ListQuery{Search: q, Sort: "name", Limit: maxSourceTenants})
+		if err != nil {
+			return nil, 0, mapStore(err)
+		}
+		tenantTotal = total
+		for _, t := range ts {
+			o, err := s.Org(ctx, t.OrgID)
+			if errors.Is(err, ErrNotFound) || errors.Is(err, store.ErrNotFound) {
+				tenantTotal--
+				continue
+			}
+			if err != nil {
+				return nil, 0, err
+			}
+			if ok, err := allowed(o); err != nil {
+				return nil, 0, err
+			} else if !ok {
+				tenantTotal--
+				continue
+			}
+			add(o, t)
+		}
+	}
+	total := orgTotal + tenantTotal
+	if a.Owner != "" {
+		// an owner may source from a few organizations only: a count of every match would tell it how many others
+		// there are
+		total = len(out)
+	}
+	return out, max(total, len(out)), nil
 }

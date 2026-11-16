@@ -15,7 +15,7 @@ import accessComponent from './access.js'
 import sshComponent, { certNote, CERT_STATUS } from './ssh.js'
 import { listFieldMixin, listRows, listValues } from '../lib/listfield.js'
 import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TEXT } from '../lib/live.js'
-import { fmtDate, fmtDateTime, relTime, isSet, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
+import { fmtDate, fmtDateTime, relTime, isSet, localZoneText, endInput, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
 import { skinPreviewMixin } from '../lib/skinpreview.js'
 import { pictureMixin } from '../lib/picture.js'
@@ -312,9 +312,8 @@ function localeName(tag) {
 const WORK_LABELS = { title: 'Job title', department: 'Department', organization: 'Organization', division: 'Division',
   cost_center: 'Cost centre', employee_number: 'Employee number' }
 const SOON_MS = 7 * 24 * 3600 * 1000 // an end date this close is pointed out
+const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/
 
-// The date part (UTC) of an end date, for a date input.
-const dateOnly = (iso) => (iso ? new Date(iso).toISOString().slice(0, 10) : '')
 
 function userDialogMixin(Alpine) {
   return mix(tagsMixin(), comboMixin({
@@ -327,7 +326,8 @@ function userDialogMixin(Alpine) {
       },
     },
   }), {
-    editingUser: null, apiBase: '', workOpen: false,
+    editingUser: null, apiBase: '', workOpen: false, endWas: endInput(''),
+    get validUntilHelp() { return `Optional. Your time (${localZoneText()}). From then the user can no longer sign in; within a minute they are disabled and signed out everywhere. Empty: no end.` },
     // Server field names of work details (work.title, work.manager_id) to this form's fields.
     errorKey(f) { return !f || !f.startsWith('work.') ? f : f === 'work.manager_id' ? 'manager_id' : 'work_' + f.slice(5) },
     // The profile and work fields of the form, for a request body.
@@ -335,13 +335,14 @@ function userDialogMixin(Alpine) {
       const f = this.form
       const work = { manager_id: f.manager_id || '' }
       for (const k of WORK_FIELDS) work[k] = f['work_' + k] || ''
-      return { locale: f.locale || '', zoneinfo: f.zoneinfo || '', user_type: f.user_type || '', valid_until: f.valid_until || '', work,
+      return { locale: f.locale || '', zoneinfo: f.zoneinfo || '', user_type: f.user_type || '', valid_until: this.endWas.send(f.valid_until || ''), work,
         phone_number: f.phone_number || '', phone_number_verified: !!f.phone_number_verified && !!(f.phone_number || '').trim() }
     },
     fillProfile(u) {
       const w = (u && u.work) || {}
       for (const k of WORK_FIELDS) this.form['work_' + k] = w[k] || ''
-      this.form.valid_until = dateOnly(u && u.valid_until)
+      this.endWas = endInput(u && u.valid_until)
+      this.form.valid_until = this.endWas.shown
       this.form.phone_number = (u && u.phone_number) || ''
       this.form.phone_number_verified = !!(u && u.phone_number_verified)
       this.form.status_reason = ''
@@ -478,7 +479,7 @@ const PROVIDER_TYPES = {
 const providerTypeText = (t) => (PROVIDER_TYPES[t] || PROVIDER_TYPES.oidc).text
 // The issuer's host alone (accounts.google.com, not https://accounts.google.com): the full address is in the edit dialog.
 const issuerHost = (u) => { try { return new URL(u).host || u } catch { return u || '' } }
-const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'organization' ? 'Users of ' + (p.source_org_name || 'another organization') : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : issuerHost(p.issuer)
+const providerSub = (p) => p.type === 'github' ? 'github.com' : p.type === 'organization' ? 'Users of ' + (p.source_org_name || 'another organization') + (p.source_tenant_name ? ` (${p.source_tenant_name}${p.source_members_only ? ', members only' : ''})` : '') : p.type === 'microsoft' ? 'Entra ID \u00b7 ' + (p.tenant === 'organizations' ? (p.allowed_tenants || []).length + ' allowed tenants' : p.tenant) : issuerHost(p.issuer)
 const shapeProvider = (p) => ({ id: p.id, name: p.name, enabled: p.enabled, typeText: providerTypeText(p.type), stateText: p.enabled ? 'enabled' : 'disabled' })
 
 // Whether a tenant signs SSH certificates, as the tenants list shows it (the list API gives the settings once SSH was ever turned on).
@@ -1775,7 +1776,17 @@ export default function (Alpine) {
   }))
 
   // ---- Providers --------------------------------------------------------------------------------------------------
-  Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), pickerMixin({
+  // The organization provider's source: an organization and one of its tenants, looked up as the super admin types
+  // (one request per search, a few organizations each with their tenants: never every organization of the server).
+  const sourceSource = {
+    async search(q) {
+      const r = await get(`${this.apiBase}/providers/sources${qs({ q, limit: 8 })}`)
+      return r.items.map((x) => ({ value: `${x.org_id}/${x.tenant_id}`, org: x.org_display_name || x.org_name,
+        label: `${x.org_display_name || x.org_name} (${x.tenant_display_name || x.tenant_name})`,
+        detail: x.members_only ? 'Members only: its access list decides who signs in' : 'Everyone in the organization' }))
+    },
+  }
+  Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), comboMixin({ source: sourceSource }), pickerMixin({
     // groups of the organization whose users sign in through an organization provider
     async search(q) {
       if (!this.form.source_org) return { items: [] }
@@ -1797,21 +1808,22 @@ export default function (Alpine) {
       if (id) this.dropGroup(id)
     },
   }), {
-    editing: null, apiBase: '', publicUrl: '', orgId: '', newId: '', isSuper: false, orgs: [], orgsLoaded: false, groupNames: {},
+    editing: null, apiBase: '', publicUrl: '', orgId: '', newId: '', isSuper: false, groupNames: {},
     init() {
       this.apiBase = this.$el.dataset.base; this.publicUrl = this.$el.dataset.public; this.orgId = this.$el.dataset.orgId
       this.isSuper = !!this.$el.dataset.super
       this.initTable()
     },
-    // The organizations a provider may take its users from: the others, by display name (only super admins set one up).
-    async loadOrgs() {
-      if (!this.isSuper || this.orgsLoaded) return
-      try {
-        const r = await get(`/api/orgs${qs({ sort: 'name', limit: 100 })}`)
-        this.orgs = r.items.filter((o) => o.id !== this.orgId).map((o) => ({ id: o.id, label: o.display_name || o.name }))
-        this.orgsLoaded = true
-      } catch (e) { toast(e.message, 'error') }
+    // The source picker's value is "organization/tenant": split into the two fields the server takes.
+    comboChanged(name) {
+      if (name !== 'source') return
+      const [org, tenant] = (this.form.source || '').split('/')
+      const moved = (org || '') !== this.form.source_org
+      this.form.source_org = org || ''
+      this.form.source_tenant = tenant || ''
+      if (moved) this.sourceOrgChanged()
     },
+    get sourceOrgLabel() { const l = this.combo.source.label || ''; const i = l.lastIndexOf(' ('); return i > 0 ? l.slice(0, i) : l },
     transform(p) {
       const b = activeBadge(p.enabled, 'Enabled', 'Disabled')
       return { ...p, copyCallbackLabel: 'Copy callback URL of ' + p.name, createdText: fmtDate(p.created), statusText: b.text, statusClass: b.cls, typeText: providerTypeText(p.type),
@@ -1859,7 +1871,7 @@ export default function (Alpine) {
     get isMicrosoft() { return this.form.type === 'microsoft' },
     get isOrg() { return this.form.type === 'organization' },
     get multiTenant() { return this.isMicrosoft && (this.form.tenant || '').trim().toLowerCase() === 'organizations' },
-    get namePlaceholder() { return this.isOrg ? (this.orgs.find((o) => o.id === this.form.source_org) || {}).label || this.ptype.name : this.ptype.name },
+    get namePlaceholder() { return this.isOrg ? this.sourceOrgLabel || this.ptype.name : this.ptype.name },
     get nameHelp() {
       return this.isOrg ? 'Shown on the sign-in page after \u201cContinue with\u201d. Leave empty for the organization\u2019s own name.'
         : `Shown on the sign-in page. Leave empty for \u201c${this.ptype.name}\u201d.`
@@ -1890,15 +1902,15 @@ export default function (Alpine) {
     get dialogTitle() { return this.editing ? 'Edit provider' : 'New sign-in provider' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create provider' },
     toForm(p) {
-      return { type: p.type, name: p.name, issuer: p.issuer || '', source_org: p.source_org || '', source_groups: [...(p.source_groups || [])], client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
+      return { type: p.type, name: p.name, issuer: p.issuer || '', source: p.source_org ? `${p.source_org}/${p.source_tenant || ''}` : '', source_org: p.source_org || '', source_tenant: p.source_tenant || '', source_groups: [...(p.source_groups || [])], client_id: p.client_id || '', client_secret: '', scopes: [...(p.scopes || [])],
         allowed_domains: [...(p.allowed_domains || [])], tenant: p.tenant || '', allowed_tenants: listRows(p.allowed_tenants, 'Tenant ID', true), auto_provision: !!p.auto_provision, trust_mfa: !!p.trust_mfa, link_by_email: p.link_by_email !== false, enabled: p.enabled !== false }
     },
     async openCreate(ev) {
       const opener = ev.currentTarget
-      await this.loadOrgs()
       this.editing = null
       this.newId = newId()
       this.resetForm(this.toForm({ type: 'oidc', name: '', scopes: ['openid', 'profile', 'email'], enabled: true }))
+      this.comboSet('source', '', '')
       this.resetChipText()
       this.groupNames = {}
       this.resetPicker()
@@ -1907,9 +1919,9 @@ export default function (Alpine) {
     async edit(ev) {
       const p = this.rowFromEvent(ev)
       const opener = ev.currentTarget
-      await this.loadOrgs()
       this.editing = p
       this.resetForm(this.toForm(p))
+      this.comboSet('source', this.form.source, p.source_org ? `${p.source_org_name || p.source_org} (${p.source_tenant_name || 'Deleted tenant'})` : '')
       this.resetChipText()
       this.groupNames = {}
       this.resetPicker()
@@ -1919,13 +1931,17 @@ export default function (Alpine) {
     },
     // a server message about one tenant goes on its row (it starts with the tenant ID)
     listError(err) { return err.field === 'allowed_tenants' && this.setListError(err.field, err.message) },
-    errorKey(f) { return f === 'source_groups' ? 'source_group' : f },
+    errorKey(f) { return f === 'source_groups' ? 'source_group' : f === 'source_org' || f === 'source_tenant' ? 'source' : f },
     async submit() {
       if (!this.tagsReady()) { this.focusTagInput(); return }
       const f = this.form
+      if (f.type === 'organization' && this.comboPending('source')) {
+        this.setErrors(new ApiError(422, { error: 'Choose an organization and tenant from the list.', field: 'source' }))
+        return
+      }
       const body = { type: f.type, name: f.name, allowed_domains: f.allowed_domains,
         auto_provision: f.auto_provision, trust_mfa: f.trust_mfa, link_by_email: f.link_by_email, enabled: f.enabled }
-      if (f.type === 'organization') { body.source_org = f.source_org; body.source_groups = f.source_groups } // its client is made with it: no client ID, secret or scopes
+      if (f.type === 'organization') { body.source_org = f.source_org; body.source_tenant = f.source_tenant; body.source_groups = f.source_groups } // its client is made with it: no client ID, secret or scopes
       else { body.client_id = f.client_id; body.scopes = f.scopes }
       if (PROVIDER_TYPES[f.type] && PROVIDER_TYPES[f.type].address) body.issuer = f.issuer
       if (f.type === 'microsoft') { body.tenant = f.tenant; body.allowed_tenants = listValues(f.allowed_tenants) }
@@ -2086,7 +2102,7 @@ export default function (Alpine) {
     'provider.update', 'server.signout', 'service_account.create', 'service_account.delete',
     'service_account.secret.rotate', 'service_account.update', 'signout.sweep', 'ssh.ca.create', 'ssh.ca.remove',
     'ssh.ca.rotate', 'ssh.cert.issue', 'ssh.cert.refused', 'ssh.cert.revoke', 'ssh.host.issue', 'ssh.host.refused',
-    'ssh.settings.update', 'tenant.access.add', 'tenant.access.remove',
+    'ssh.settings.update', 'tenant.access.add', 'tenant.access.expire', 'tenant.access.remove',
     'tenant.access.update', 'tenant.create', 'tenant.delete', 'tenant.update', 'user.app.revoke',
     'user.create', 'user.delete', 'user.email.add', 'user.email.primary', 'user.email.remove', 'user.email.verify',
     'user.expire', 'user.invite', 'user.invite.break_glass', 'user.locked_out', 'user.passkey.remove',
@@ -2227,7 +2243,8 @@ export default function (Alpine) {
       return this.applyFilters()
     },
     transform(a) {
-      const d = a.detail ? Object.entries(a.detail).map(([k, v]) => `${k}: ${v}`).join(', ') : ''
+      // times in the detail are UTC (RFC 3339): shown in the viewer's time zone, as the When column is
+      const d = a.detail ? Object.entries(a.detail).map(([k, v]) => `${k}: ${RFC3339_RE.test(v) ? fmtDateTime(v) : v}`).join(', ') : ''
       return { ...a, timeText: fmtDateTime(a.created), detailText: d || '—', actorText: a.actor || 'system', ipText: a.ip || '—', targetText: a.target || '—',
         orgText: a.org_name || (a.org_id ? a.org_id : 'No organization') }
     },

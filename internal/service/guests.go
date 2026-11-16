@@ -50,8 +50,54 @@ func (s *Service) sourcesHold(ctx context.Context, sources []model.GuestSource, 
 		if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
 			return false, err
 		}
+		if src.Client != "" {
+			if ok, err := s.mayUseSignInClient(ctx, u, src.Client); err != nil || !ok {
+				return false, err
+			}
+		}
 	}
 	return true, nil
+}
+
+// mayUseSignInClient reports whether u may still use clientID, the sign-in application of their organization that a
+// guest sign-in came through (model.GuestSource.Client): it is there, enabled, of u's organization, and u's access to
+// its tenant allows it (ClientAccess), so access that ended there (an entry past its end, removed or narrowed, the
+// tenant made members-only) ends the guest's sign-in with it, at its next check. An error is a read that failed: no
+// verdict.
+func (s *Service) mayUseSignInClient(ctx context.Context, u *model.User, clientID string) (bool, error) {
+	c, err := s.Clients.Get(ctx, clientID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil // the provider moved to another application (or went): sign in again through it
+	}
+	if err != nil {
+		return false, mapStore(err)
+	}
+	if c.OrgID != u.OrgID || !c.Enabled {
+		return false, nil
+	}
+	t, err := s.ClientTenant(ctx, c)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !t.Settings.MembersOnly {
+		return true, nil // open to everyone in the organization: nothing more to read
+	}
+	groups, err := s.UserGroupsOf(ctx, []*model.User{u})
+	if err != nil {
+		return false, err
+	}
+	ids := make([]string, 0, len(groups[u.ID]))
+	for _, g := range groups[u.ID] {
+		ids = append(ids, g.ID)
+	}
+	app, err := s.ClientAccess(ctx, t, c, u, ids)
+	if err != nil {
+		return false, mapStore(err)
+	}
+	return app.Allowed, nil
 }
 
 // tokenSources are what a personal API token that a made now stands on (model.APIToken.Sources): the accounts a's
@@ -74,7 +120,7 @@ func (s *Service) tokenSources(ctx context.Context, a *Actor) ([]model.GuestSour
 		} else if !ok {
 			return nil, ErrForbidden
 		}
-		out = append(out, model.GuestSource{UserID: src.UserID, Epoch: cred})
+		out = append(out, model.GuestSource{UserID: src.UserID, Epoch: cred, Client: src.Client})
 	}
 	return out, nil
 }
@@ -96,22 +142,35 @@ func (s *Service) endGuestSessionsFrom(ctx context.Context, orgID, userID string
 		return
 	}
 	for _, guest := range s.guestsOf(ctx, orgID, userID) {
-		if seen[guest.ID] {
-			continue
-		}
-		seen[guest.ID] = true
-		was, _, err := s.moveSessionEpoch(ctx, guest.ID, nil)
-		if err == nil {
-			err = s.endSessionsOf(ctx, guest.ID, was)
-		}
-		detail := map[string]string{"source_org": orgID, "source_user": userID}
-		if err != nil {
-			detail["result"], detail["error"] = "incomplete", err.Error()
-			s.Log.WithError(err).Error("a guest account's sessions could not all be ended", "user", guest.ID,
-				"source_user", userID)
-		}
-		s.AuditUser(ctx, System, guest, "user.sessions.revoke", detail)
-		s.endGuestSessionsFrom(ctx, guest.OrgID, guest.ID, seen, depth+1)
+		s.endGuest(ctx, guest, orgID, userID, seen, depth)
+	}
+}
+
+// endGuest ends the sessions of guest, the guest account of userID of orgID, and of its own guests in turn.
+func (s *Service) endGuest(ctx context.Context, guest *model.User, orgID, userID string, seen map[string]bool, depth int) {
+	if seen[guest.ID] {
+		return
+	}
+	seen[guest.ID] = true
+	was, _, err := s.moveSessionEpoch(ctx, guest.ID, nil)
+	if err == nil {
+		err = s.endSessionsOf(ctx, guest.ID, was)
+	}
+	detail := map[string]string{"source_org": orgID, "source_user": userID}
+	if err != nil {
+		detail["result"], detail["error"] = "incomplete", err.Error()
+		s.Log.WithError(err).Error("a guest account's sessions could not all be ended", "user", guest.ID,
+			"source_user", userID)
+	}
+	s.AuditUser(ctx, System, guest, "user.sessions.revoke", detail)
+	s.endGuestSessionsFrom(ctx, guest.OrgID, guest.ID, seen, depth+1)
+}
+
+// endGuestThrough ends the sessions of the guest account that the user userID of c's organization signs in to through
+// c, an organization provider's sign-in client, when they have one: they may no longer use c (endLostAccess).
+func (s *Service) endGuestThrough(ctx context.Context, c *model.Client, userID string) {
+	if g := s.guestThrough(ctx, c, c.OrgID, userID); g != nil {
+		s.endGuest(ctx, g, c.OrgID, userID, map[string]bool{userID: true}, 0)
 	}
 }
 

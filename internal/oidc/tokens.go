@@ -75,11 +75,15 @@ type issue struct {
 	details []byte // the access token's authorization_details (authDetails), set by mint
 }
 
-// accessExpiry is when the access token of is expires.
+// accessExpiry is when the access token of is expires: its usual lifetime, cut short by an end asked for and by the end
+// of the timed access entries that alone give the user the application (service.AppAccess.Until).
 func (p *Provider) accessExpiry(is *issue, now time.Time) time.Time {
 	exp := now.Add(p.cfg.Tokens.Access())
 	if !is.expires.IsZero() && is.expires.Before(exp) {
-		return is.expires
+		exp = is.expires
+	}
+	if is.app != nil && !is.app.Until.IsZero() && is.app.Until.Before(exp) {
+		exp = is.app.Until
 	}
 	return exp
 }

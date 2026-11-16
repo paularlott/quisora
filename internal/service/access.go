@@ -29,8 +29,15 @@ type AccessInput struct {
 	AuthorizationDetails *json.RawMessage `json:"authorization_details"`
 	AllClients           *bool            `json:"all_clients"`
 	Clients              *[]string        `json:"clients"`
-	Expires              *string          `json:"expires"` // RFC 3339 time or a date (YYYY-MM-DD, ends at the start of that day UTC); "" = no end
+	// Expires is when the access ends: an RFC 3339 time with its offset (2026-11-17T15:00:00+08:00, or Z for UTC),
+	// stored in UTC; "" for no end. A new end must be in the future: to end access now, remove it.
+	Expires *string `json:"expires"`
+	// Reason is why the access was given or changed (a ticket number, an approval), recorded in the audit log only.
+	Reason *string `json:"reason"`
 }
+
+// maxAccessReason bounds AccessInput.Reason.
+const maxAccessReason = 500
 
 // AccessEntry is a TenantAccess with the subject resolved for display.
 type AccessEntry struct {
@@ -107,21 +114,54 @@ func (s *Service) applyAccess(ctx context.Context, t *model.Tenant, acc *model.T
 		return Invalid("clients", "choose at least one application, or allow all of them")
 	}
 	if in.Expires != nil {
-		v := strings.TrimSpace(*in.Expires)
-		switch {
-		case v == "":
-			acc.Expires = time.Time{}
-		default:
-			t, err := time.Parse(time.RFC3339, v)
-			if err != nil {
-				if t, err = time.Parse(time.DateOnly, v); err != nil {
-					return Invalid("expires", "use a date (YYYY-MM-DD) or an RFC 3339 time, or leave it empty for no end")
-				}
-			}
-			acc.Expires = t.UTC()
+		end, err := parseAccessEnd(*in.Expires)
+		if err != nil {
+			return err
 		}
+		// An end being set must be ahead: one already passed would give nothing, and the sweep would remove the
+		// entry at once. An end unchanged (an edit of something else of an entry the sweep has not removed yet) is
+		// kept as it is.
+		if !end.IsZero() && !end.Equal(acc.Expires) && !end.After(time.Now()) {
+			return Invalid("expires", "must be in the future: to end access now, remove it")
+		}
+		acc.Expires = end
+	}
+	if in.Reason != nil && len(*in.Reason) > maxAccessReason {
+		return Invalid("reason", "at most "+itoa(maxAccessReason)+" characters")
 	}
 	return nil
+}
+
+// parseAccessEnd reads an access entry's end (AccessInput.Expires): an RFC 3339 time, which always names its offset,
+// so the instant is never a guess about the caller's time zone; returned in UTC, to the second. "" is no end.
+func parseAccessEnd(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, Invalid("expires", "use an RFC 3339 time with its offset, such as 2026-11-17T15:00:00+08:00 "+
+			"or 2026-11-17T07:00:00Z, or leave it empty for no end")
+	}
+	if t.Year() > 9999 || t.Year() < 2000 {
+		return time.Time{}, Invalid("expires", "out of range")
+	}
+	return t.UTC().Truncate(time.Second), nil
+}
+
+// accessAudit is the audit detail of a change of an access entry: who it is for, its end (UTC) and the reason given.
+func accessAudit(subjectType, name string, acc *model.TenantAccess, in AccessInput) map[string]string {
+	d := map[string]string{subjectType: name}
+	if !acc.Expires.IsZero() {
+		d["expires"] = acc.Expires.UTC().Format(time.RFC3339)
+	}
+	if in.Reason != nil {
+		if r := strings.TrimSpace(*in.Reason); r != "" {
+			d["reason"] = r
+		}
+	}
+	return d
 }
 
 // accessSubject resolves the user or group an access is for, within the tenant's org.
@@ -265,7 +305,7 @@ func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in A
 	if _, err := s.Access.Get(ctx, acc.ID); err == nil {
 		return nil, alreadyThere
 	}
-	if err := s.audited(ctx, a, t.OrgID, "tenant.access.add", t.Name, map[string]string{in.SubjectType: name},
+	if err := s.audited(ctx, a, t.OrgID, "tenant.access.add", t.Name, accessAudit(in.SubjectType, name, acc, in),
 		func() error { return s.Access.Create(ctx, acc) }); err != nil {
 		if errors.Is(err, store.ErrStale) {
 			return nil, alreadyThere // added concurrently
@@ -288,15 +328,36 @@ func (s *Service) UpdateAccess(ctx context.Context, a *Actor, tenantID, id strin
 	if err != nil {
 		return nil, mapStore(err)
 	}
+	before := *e.TenantAccess
+	before.Clients = slices.Clone(before.Clients)
 	if err := s.applyAccess(ctx, t, e.TenantAccess, in); err != nil {
 		return nil, err
 	}
-	if err := s.audited(ctx, a, t.OrgID, "tenant.access.update", t.Name, map[string]string{e.SubjectType: e.Name},
+	if err := s.audited(ctx, a, t.OrgID, "tenant.access.update", t.Name, accessAudit(e.SubjectType, e.Name, e.TenantAccess, in),
 		func() error { return s.Access.Update(ctx, e.TenantAccess) }); err != nil {
 		return nil, mapStore(err)
 	}
+	if narrower(&before, e.TenantAccess) {
+		s.endLostAccessLater(ctx, t, &before)
+	}
 	e.Expired = !e.Live(time.Now())
 	return e, nil
+}
+
+// narrower reports whether access entry after gives less than before did: fewer applications, or an end where there
+// was none or an earlier one. The people it let in may then have lost an application (endLostAccess).
+func narrower(before, after *model.TenantAccess) bool {
+	if before.AllClients && !after.AllClients {
+		return true
+	}
+	if !before.AllClients {
+		for _, c := range before.Clients {
+			if !after.AllClients && !slices.Contains(after.Clients, c) {
+				return true
+			}
+		}
+	}
+	return !after.Expires.IsZero() && (before.Expires.IsZero() || after.Expires.Before(before.Expires))
 }
 
 // RemoveAccess takes a user's or group's access away.
@@ -309,8 +370,14 @@ func (s *Service) RemoveAccess(ctx context.Context, a *Actor, tenantID, id strin
 	if t, _ := s.Tenants.Get(ctx, e.TenantID); t != nil {
 		name = t.Name
 	}
-	return mapStore(s.audited(ctx, a, e.OrgID, "tenant.access.remove", name, map[string]string{e.SubjectType: e.Name},
-		func() error { return s.Access.Delete(ctx, id) }))
+	if err := s.audited(ctx, a, e.OrgID, "tenant.access.remove", name, map[string]string{e.SubjectType: e.Name},
+		func() error { return s.Access.Delete(ctx, id) }); err != nil {
+		return mapStore(err)
+	}
+	if t, err := s.Tenants.Get(ctx, e.TenantID); err == nil {
+		s.endLostAccessLater(ctx, t, e.TenantAccess)
+	}
+	return nil
 }
 
 // AppAccess is what a user gets for one application: whether they may sign in to it, and the roles, tags and
@@ -320,6 +387,10 @@ type AppAccess struct {
 	Roles   []string
 	Tags    []string
 	Details []model.AuthDetail
+	// Until is when the access ends when only entries with an end allow it: the latest of their ends. Zero when an
+	// entry without an end allows it (or the tenant is open). What is issued under the access (access tokens, SSH
+	// certificates) expires by it.
+	Until time.Time
 }
 
 // ClientAccess decides a user's access to client c of tenant t: the union of the user's own entry and
@@ -348,6 +419,8 @@ func (s *Service) clientAccess(ctx context.Context, t *model.Tenant, c *model.Cl
 	ids = append(ids, groupIDs...)
 	now := time.Now()
 	var roles, tags [][]string
+	standing := false // an entry without an end allows it
+	var until time.Time
 	for _, id := range ids {
 		acc, seen := read[id]
 		if !seen {
@@ -361,6 +434,11 @@ func (s *Service) clientAccess(ctx context.Context, t *model.Tenant, c *model.Cl
 			continue
 		}
 		res.Allowed = true
+		if acc.Expires.IsZero() {
+			standing = true
+		} else if acc.Expires.After(until) {
+			until = acc.Expires
+		}
 		roles = append(roles, acc.Roles)
 		tags = append(tags, acc.Tags)
 		// Validated when saved, so one that no longer reads is skipped rather than failing the user's sign-in.
@@ -370,6 +448,9 @@ func (s *Service) clientAccess(ctx context.Context, t *model.Tenant, c *model.Cl
 				res.Details = append(res.Details, d)
 			}
 		}
+	}
+	if res.Allowed && !standing {
+		res.Until = until
 	}
 	res.Roles = model.MergeTags(roles...)
 	res.Tags = model.MergeTags(tags...)

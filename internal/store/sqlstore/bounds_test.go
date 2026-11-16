@@ -30,9 +30,9 @@ func TestConnectionsAreBounded(t *testing.T) {
 		case "postgres":
 			q, want = "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')", []string{"10s", "5s"}
 		case "mysql":
-			q, want = "SELECT @@SESSION.max_execution_time, @@SESSION.innodb_lock_wait_timeout", []string{"10000", "5"}
+			q, want = "SELECT @@SESSION.max_execution_time, @@SESSION.innodb_lock_wait_timeout, @@SESSION.time_zone", []string{"10000", "5", "+00:00"}
 		case "mariadb":
-			q, want = "SELECT @@SESSION.max_statement_time, @@SESSION.innodb_lock_wait_timeout", []string{"10", "5"}
+			q, want = "SELECT @@SESSION.max_statement_time, @@SESSION.innodb_lock_wait_timeout, @@SESSION.time_zone", []string{"10", "5", "+00:00"}
 		}
 		for _, db := range []*sql.DB{s.wdb, s.rdb} {
 			got := make([]string, len(want))

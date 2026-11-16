@@ -73,7 +73,7 @@ func (s *Service) ResealSecrets(ctx context.Context, budget time.Duration) (res 
 	if key := s.Sealer.ActiveKeyID(); st.prog.Key != key {
 		// The keys changed (or this process just began leading): what was found before says nothing of them. Say so
 		// before reading anything: the status must not go on showing a finished re-seal for a moment that is over.
-		st.begin(ResealProgress{Key: key, Started: time.Now()})
+		st.begin(ResealProgress{Key: key, Started: time.Now().UTC()})
 	}
 	if err := s.flushReseal(ctx); err != nil || st.prog.Done() {
 		return res, err
@@ -90,7 +90,7 @@ func (s *Service) ResealSecrets(ctx context.Context, budget time.Duration) (res 
 		st.step, st.after = st.step+1, ""
 	}
 	if st.step == len(steps) { // every record has been seen: the walk is over
-		st.prog.Checked, st.prog.Stale, st.prog.Unopenable = time.Now(), st.stale, st.unopenable
+		st.prog.Checked, st.prog.Stale, st.prog.Unopenable = time.Now().UTC(), st.stale, st.unopenable
 		st.step, st.stale, st.unopenable, st.synced = 0, 0, 0, false
 	}
 	return res, s.flushReseal(ctx)

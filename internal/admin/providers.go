@@ -15,9 +15,12 @@ import (
 // organization, which the console lists it by (the reader may not be allowed to list organizations).
 type providerView struct {
 	*model.Provider
-	HasSecret     bool   `json:"has_secret"`
-	CallbackURL   string `json:"callback_url"`
-	SourceOrgName string `json:"source_org_name,omitempty"`
+	HasSecret        bool   `json:"has_secret"`
+	CallbackURL      string `json:"callback_url"`
+	SourceOrgName    string `json:"source_org_name,omitempty"`
+	SourceTenantName string `json:"source_tenant_name,omitempty"`
+	// SourceMembersOnly says the source tenant lets in only those on its access list (and only until their access ends).
+	SourceMembersOnly bool `json:"source_members_only,omitempty"`
 }
 
 func (m *Module) providerViewOf(ctx context.Context, p *model.Provider) providerView {
@@ -27,7 +30,31 @@ func (m *Module) providerViewOf(ctx context.Context, p *model.Provider) provider
 			v.SourceOrgName = o.DisplayName
 		}
 	}
+	if p.SourceTenant != "" {
+		if t, err := m.s.Svc.Tenants.Get(ctx, p.SourceTenant); err == nil && t.OrgID == p.SourceOrg {
+			v.SourceTenantName, v.SourceMembersOnly = t.DisplayName, t.Settings.MembersOnly
+			if v.SourceTenantName == "" {
+				v.SourceTenantName = t.Name
+			}
+		}
+	}
 	return v
+}
+
+// listProviderSources answers the provider form's organization picker: organizations matching q, each with its
+// tenants (service.ProviderSources).
+func (m *Module) listProviderSources(w http.ResponseWriter, r *http.Request) {
+	org, a, found := m.orgFor(w, r)
+	if !found {
+		return
+	}
+	q := listQuery(r)
+	items, total, err := m.s.Svc.ProviderSources(r.Context(), a, org.ID, q.Search, q.Limit)
+	if err != nil {
+		web.WriteError(w, err)
+		return
+	}
+	writeList(w, items, total)
 }
 
 func (m *Module) providerViews(ctx context.Context, ps []*model.Provider) []providerView {

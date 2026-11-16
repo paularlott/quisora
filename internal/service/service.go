@@ -113,8 +113,8 @@ type Actor struct {
 	ClientID string   // set when acting as an OAuth client (client_credentials)
 	// Owner is the organization a service account acts in as its owner, a super admin there for this request
 	// (OwnerActor); "" for every other actor.
-	Owner string
-	TokenID  string   // the personal API token the actor authenticated with: recorded with every audit event
+	Owner   string
+	TokenID string // the personal API token the actor authenticated with: recorded with every audit event
 	// App is the application (OAuth client id) a user acts through, such as an AI client of Quisora's MCP server:
 	// recorded with every audit event, so what was done through it can be told apart and its access revoked.
 	App string

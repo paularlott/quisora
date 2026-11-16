@@ -117,10 +117,16 @@ func UniquePartition(k Kind, v string) (key string, ok bool) {
 
 // Due reports when a housekeeping job must look at a record of kind k with index fields f, and whether it must at
 // all. Backends whose filtered queries read a whole kind index records by it (store.DueLister). Users: an active
-// account with an end date is disabled then (Service.ExpireUsers).
+// account with an end date is disabled then (Service.ExpireUsers). Access entries: one with an end is removed then,
+// and the people it let in signed out of what they no longer have (Service.ExpireAccess).
 func Due(k Kind, f map[string]any) (time.Time, bool) {
-	if k == KindUser && f["expiring"] == true && f["active"] == true {
+	switch {
+	case k == KindUser && f["expiring"] == true && f["active"] == true:
 		if t, ok := f["valid_until"].(time.Time); ok {
+			return t, true
+		}
+	case k == KindAccess && f["expiring"] == true:
+		if t, ok := f["ends"].(time.Time); ok {
 			return t, true
 		}
 	}

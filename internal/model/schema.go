@@ -102,6 +102,8 @@ var Schemas = map[Kind]Schema{
 	}},
 	KindAccess: {KindAccess, []Field{
 		{Name: "tenant_id", Type: FieldString, Index: true}, // a tenant's access entries (ListAccess)
+		{Name: "expiring", Type: FieldBool, Index: true},    // the entries with an end (ExpireAccess), across organizations
+		{Name: "ends", Type: FieldTime, Sort: true},         // Expires: the name "expires" is the store's own (record expiry)
 	}},
 	KindClient: {KindClient, []Field{
 		{Name: "name", Type: FieldString, Search: true, Sort: true, SortIndex: true},

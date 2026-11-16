@@ -370,3 +370,143 @@ func TestOrganizationProviderGroups(t *testing.T) {
 		t.Fatalf("cleared: %v %v", p.SourceGroups, err)
 	}
 }
+
+// An organization provider's sign-in application is in its source tenant: the source organization's default tenant
+// unless one is chosen (by id or name), never a tenant of another organization. Choosing another tenant makes a new
+// application there and removes the old one; choosing another organization starts again from its default tenant.
+func TestOrganizationProviderSourceTenant(t *testing.T) {
+	c := orgProviderEnv(t)
+	sup := actor(c.super)
+	def, _ := c.svc.DefaultTenant(c.ctx, c.primary.ID)
+	vendor, err := c.svc.CreateTenant(c.ctx, service.System, c.primary.ID, service.TenantInput{Name: ptr("vendor")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := c.svc.CreateTenant(c.ctx, service.System, c.b.ID, service.TenantInput{Name: ptr("elsewhere")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := c.svc.CreateProvider(c.ctx, sup, c.a.ID, orgProvider(c.primary.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTenant := func(p *model.Provider) string {
+		t.Helper()
+		cl, err := c.svc.Clients.Get(c.ctx, p.ClientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cl.TenantID
+	}
+	if p.SourceTenant != def.ID || clientTenant(p) != def.ID {
+		t.Fatalf("default: provider %q, client %q, want %q", p.SourceTenant, clientTenant(p), def.ID)
+	}
+	for name, ref := range map[string]string{"another organization's": other.ID, "unknown": "no-such-tenant", "unknown id": model.NewID()} {
+		_, err := c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr(ref)})
+		var fe *service.FieldError
+		if !errors.As(err, &fe) || fe.Field != "source_tenant" {
+			t.Errorf("%s tenant: %v", name, err)
+		}
+	}
+	was := p.ClientID
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr("vendor")}); err != nil {
+		t.Fatal(err)
+	}
+	if p.SourceTenant != vendor.ID || clientTenant(p) != vendor.ID || p.ClientID == was {
+		t.Fatalf("moved to vendor: provider %q, client %q (%s, was %s)", p.SourceTenant, clientTenant(p), p.ClientID, was)
+	}
+	if _, err := c.svc.Clients.Get(c.ctx, was); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the old sign-in application is still there: %v", err)
+	}
+	if n := len(clientsOf(t, c, c.primary.ID)); n != 1 {
+		t.Errorf("%d sign-in applications in the source organization, want 1", n)
+	}
+	// an edit of something else keeps the application
+	same := p.ClientID
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{Name: ptr("Vendor support")}); err != nil || p.ClientID != same {
+		t.Fatalf("an unrelated edit made a new application: %v %s %s", err, p.ClientID, same)
+	}
+	// another organization: its default tenant
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceOrg: &c.b.ID}); err != nil {
+		t.Fatal(err)
+	}
+	bdef, _ := c.svc.DefaultTenant(c.ctx, c.b.ID)
+	if p.SourceTenant != bdef.ID || clientTenant(p) != bdef.ID {
+		t.Fatalf("another organization: provider %q, client %q, want %q", p.SourceTenant, clientTenant(p), bdef.ID)
+	}
+	// an administrator who is not a super admin changes nothing of it
+	if _, err := c.svc.UpdateProvider(c.ctx, actor(c.aAdmin), p.ID, service.ProviderInput{SourceTenant: ptr("elsewhere")}); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("an administrator moved it: %v", err)
+	}
+}
+
+// The provider form's picker: organizations matching what was typed (not the provider's own), each with its tenants,
+// for super admins only.
+func TestProviderSources(t *testing.T) {
+	c := orgProviderEnv(t)
+	if _, err := c.svc.CreateTenant(c.ctx, service.System, c.b.ID, service.TenantInput{Name: ptr("support")}); err != nil {
+		t.Fatal(err)
+	}
+	all, total, err := c.svc.ProviderSources(c.ctx, actor(c.super), c.a.ID, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgs := map[string]int{}
+	for _, s := range all {
+		orgs[s.OrgID]++
+		if s.OrgID == c.a.ID {
+			t.Errorf("the provider's own organization is offered: %+v", s)
+		}
+	}
+	if orgs[c.b.ID] != 2 || orgs[c.primary.ID] == 0 || total < len(all) {
+		t.Errorf("sources %v, total %d", orgs, total)
+	}
+	got, _, err := c.svc.ProviderSources(c.ctx, actor(c.super), c.a.ID, "org-b", 0)
+	if err != nil || len(got) != 2 || got[0].OrgID != c.b.ID {
+		t.Errorf("search: %v %+v", err, got)
+	}
+	if one, total, err := c.svc.ProviderSources(c.ctx, actor(c.super), c.a.ID, "", 1); err != nil || total < 2 || len(orgs) < 2 ||
+		func() bool {
+			o := map[string]bool{}
+			for _, s := range one {
+				o[s.OrgID] = true
+			}
+			return len(o) != 1
+		}() {
+		t.Errorf("limit 1: %v %d %+v", err, total, one)
+	}
+	pairs := func(q string) []string {
+		t.Helper()
+		got, _, err := c.svc.ProviderSources(c.ctx, actor(c.super), c.a.ID, q, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, s := range got {
+			out = append(out, s.OrgName+"/"+s.TenantName)
+		}
+		return out
+	}
+	// by a tenant's name, in any organization (and not the provider's own)
+	if _, err := c.svc.CreateTenant(c.ctx, service.System, c.a.ID, service.TenantInput{Name: ptr("support-own")}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pairs("Supp"); !slices.Equal(got, []string{"org-b/support"}) {
+		t.Errorf("by tenant name: %v", got)
+	}
+	// both, as the picker shows a choice: "organization (tenant"
+	if got := pairs("org-b (sup"); !slices.Equal(got, []string{"org-b/support"}) {
+		t.Errorf("organization and tenant: %v", got)
+	}
+	if got := pairs("org-b (default)"); !slices.Equal(got, []string{"org-b/default"}) {
+		t.Errorf("organization and whole tenant name: %v", got)
+	}
+	if got := pairs("org-b (zzz"); len(got) != 0 {
+		t.Errorf("no such tenant: %v", got)
+	}
+	for _, u := range []*model.User{c.aAdmin, c.pAdmin, c.aUser} {
+		if _, _, err := c.svc.ProviderSources(c.ctx, actor(u), c.a.ID, "", 0); !errors.Is(err, service.ErrForbidden) {
+			t.Errorf("%s: %v", u.Username, err)
+		}
+	}
+}

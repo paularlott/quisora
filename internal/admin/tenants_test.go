@@ -309,10 +309,10 @@ func TestTenantAccessAPI(t *testing.T) {
 	alan := w.users["user"]
 
 	r := ad.post(T, map[string]any{"subject_type": "user", "subject_id": alan.ID, "roles": []string{"editor"}, "tags": []string{"t1"},
-		"all_clients": false, "clients": []string{cl.str("id")}, "expires": "2099-01-01"})
+		"all_clients": false, "clients": []string{cl.str("id")}, "expires": "2099-01-01T08:30:00+08:00"})
 	want(t, r, 201)
 	if r.str("name") == "" || r.str("detail") != alan.Email || r.JSON["all_clients"] != false || r.JSON["expired"] != false ||
-		!strings.HasPrefix(r.str("expires"), "2099-01-01T00:00:00") {
+		r.str("expires") != "2099-01-01T00:30:00Z" {
 		t.Fatalf("add: %s", r.Raw)
 	}
 	aid := r.str("id")

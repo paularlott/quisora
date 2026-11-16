@@ -441,7 +441,17 @@ test('providers: another organization’s provider takes only members of chosen 
   const groups = dlg.locator('#f-source_group')
   await expect(groups).toBeVisible()
   await expect(dlg.locator('#h-source_group')).toHaveText('Choose the organization first.')
-  await dlg.locator('#f-source_org').selectOption(acme.id)
+  // the organization and tenant are found by typing, not picked from a list of every organization
+  const source = dlg.getByRole('combobox', { name: 'Organization (tenant)' })
+  // by the tenant's name, and by "organization (tenant"
+  await source.fill('Partn')
+  await expect(dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Partners\\)`) })).toBeVisible()
+  await source.fill(`${acme.display_name} (Cust`)
+  await expect(dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Customer apps\\)`) })).toBeVisible()
+  await expect(dlg.locator('#l-source [role=option]')).toHaveCount(1)
+  await source.fill(acme.display_name)
+  await dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Default\\)`) }).click()
+  await expect(source).toHaveValue(`${acme.display_name} (Default)`)
   await groups.fill('Engin')
   await dlg.getByRole('option', { name: /Engineering/ }).click()
   const chips = dlg.getByRole('list', { name: 'Groups whose members may sign in' })
@@ -453,19 +463,25 @@ test('providers: another organization’s provider takes only members of chosen 
   await expect(dlg).toBeHidden()
   const made = (await apiCall(page, 'GET', `/api/orgs/northwind/providers?q=${encodeURIComponent(name)}`)).items[0]
   expect(made.source_org).toBe(acme.id)
+  expect(made.source_tenant_name).toBe('Default')
   expect(made.source_groups).toEqual([eng.id])
   try {
     // the list says so, and the dialog shows the group by name again
     const row = page.getByRole('row', { name: new RegExp(name) })
     await expect(row).toContainText('1 group only')
+    await expect(row).toContainText(`Users of ${acme.display_name} (Default)`)
     await row.getByRole('button', { name: 'Edit ' + name }).click()
     const edit = page.getByRole('dialog', { name: 'Edit provider' })
     await expect(edit.getByRole('list', { name: 'Groups whose members may sign in' })).toContainText('Engineering')
     // another organization's groups never carry over
-    const other = await edit.locator('#f-source_org option').evaluateAll((os, a) => os.map((o) => o.value).find((v) => v && v !== a), acme.id)
-    await edit.locator('#f-source_org').selectOption(other)
+    const esource = edit.getByRole('combobox', { name: 'Organization (tenant)' })
+    await expect(esource).toHaveValue(`${acme.display_name} (Default)`)
+    const other = (await apiCall(page, 'GET', '/api/orgs?limit=50')).items.find((o) => o.id !== acme.id && o.name !== 'northwind')
+    await esource.fill(other.display_name)
+    await edit.getByRole('option', { name: new RegExp(`^${other.display_name} \\(`) }).first().click()
     await expect(edit.getByRole('list', { name: 'Groups whose members may sign in' })).toBeHidden()
-    await edit.locator('#f-source_org').selectOption(acme.id)
+    await esource.fill(acme.display_name)
+    await edit.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Default\\)`) }).click()
     await expect(edit.getByRole('button', { name: 'Remove Engineering' })).toHaveCount(0)
     await edit.getByRole('button', { name: 'Cancel' }).click()
   } finally {
@@ -511,5 +527,36 @@ test('users: administrators set the external ID (for provisioning); a taken one 
     await signIn(page, 'admin')
     await page.goto(`${A}/users`, { waitUntil: 'load' })
     for (const u of [one, two]) await apiCall(page, 'DELETE', `${API}/users/${u.id}`)
+  }
+})
+
+test('users: the account end is a date and time in the viewer’s own time zone, kept in UTC; one set to the second through the API survives an edit', async ({ page }) => {
+  await signIn(page, 'admin')
+  await page.goto(`${A}/users`, { waitUntil: 'load' })
+  const tag = uniq('end').toLowerCase()
+  const u = await apiCall(page, 'POST', `${API}/users`, { email: `${tag}@example.com`, given_name: 'Ends', invite: { email: false } })
+  try {
+    await page.goto(`${A}/users/${u.id}`, { waitUntil: 'load' })
+    await page.getByRole('button', { name: 'Edit user' }).click()
+    const dlg = page.getByRole('dialog', { name: 'Edit user' })
+    await expect(dlg.locator('#h-valid_until')).toContainText('UTC')
+    await dlg.locator('#f-valid_until').fill('2099-07-08T09:30')
+    const want = await page.evaluate(() => new Date('2099-07-08T09:30').toISOString())
+    await dlg.getByRole('button', { name: 'Save changes' }).click()
+    await expect(dlg).toBeHidden()
+    const saved = (await apiCall(page, 'GET', `${API}/users/${u.id}`)).valid_until
+    expect(new Date(saved).getTime()).toBe(new Date(want).getTime())
+    expect(saved.endsWith('Z')).toBe(true)
+
+    const exact = '2099-09-10T11:12:13Z'
+    await apiCall(page, 'PATCH', `${API}/users/${u.id}`, { valid_until: exact })
+    await page.reload({ waitUntil: 'load' })
+    await page.getByRole('button', { name: 'Edit user' }).click()
+    await dlg.locator('#f-family_name').fill('Changed')
+    await dlg.getByRole('button', { name: 'Save changes' }).click()
+    await expect(dlg).toBeHidden()
+    expect((await apiCall(page, 'GET', `${API}/users/${u.id}`)).valid_until).toBe(exact)
+  } finally {
+    await apiCall(page, 'DELETE', `${API}/users/${u.id}`)
   }
 })

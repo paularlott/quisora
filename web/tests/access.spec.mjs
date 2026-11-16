@@ -61,9 +61,12 @@ test('access: add a user by keyboard with roles, tags, some applications and an 
   await expect(dlg.getByRole('list', { name: 'Current roles' }).getByRole('listitem')).toHaveCount(2)
   await page.locator('#f-tags').fill('team:blue')
   await page.keyboard.press('Enter')
-  await dlg.getByRole('switch', { name: /All of this tenant's applications/ }).uncheck()
+  await dlg.getByRole('switch', { name: /All of this tenant's clients/ }).uncheck()
   await dlg.getByRole('checkbox', { name: 'Billing' }).check()
-  await page.locator('#f-acc_expires').fill('2099-03-04')
+  // the end is the viewer's own time, and the form names their time zone
+  await expect(page.locator('#h-acc_expires')).toContainText('UTC')
+  await page.locator('#f-acc_expires').fill('2099-03-04T15:30')
+  const wantEnd = await page.evaluate(() => new Date('2099-03-04T15:30').toISOString())
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
   await dlg.getByRole('button', { name: 'Add access' }).click()
@@ -80,7 +83,20 @@ test('access: add a user by keyboard with roles, tags, some applications and an 
   expect(saved.roles).toEqual(['editor', 'viewer'])
   expect(saved.all_clients).toBe(false)
   expect(saved.clients).toEqual([t.billing.id])
-  expect(saved.expires).toBeTruthy()
+  expect(new Date(saved.expires).getTime()).toBe(new Date(wantEnd).getTime()) // that instant, kept in UTC
+  expect(saved.expires.endsWith('Z')).toBe(true)
+
+  // an end set through the API to the second survives an edit of something else in the console
+  const exact = '2099-05-06T07:08:09Z'
+  await apiCall(page, 'PATCH', `${API}/tenants/${t.id}/access/${saved.id}`, { expires: exact })
+  await page.reload({ waitUntil: 'load' })
+  await page.getByRole('button', { name: 'Edit access for Alan Turing' }).click()
+  const keep = page.getByRole('dialog', { name: 'Edit access' })
+  await page.locator('#f-tags').fill('team:red')
+  await page.keyboard.press('Enter')
+  await keep.getByRole('button', { name: 'Save changes' }).click()
+  await expect(keep).toBeHidden()
+  expect((await apiCall(page, 'GET', `${API}/tenants/${t.id}/access/${saved.id}`)).expires).toBe(exact)
 
   // adding the same user again is refused at the choice list
   await add.click()
@@ -96,12 +112,12 @@ test('access: add a user by keyboard with roles, tags, some applications and an 
   const ed = page.getByRole('dialog', { name: 'Edit access' })
   await expect(ed).toContainText('Alan Turing')
   await expect(ed.getByRole('combobox', { name: 'Find a user or group' })).toBeHidden()
-  await ed.getByRole('switch', { name: /All of this tenant's applications/ }).check()
+  await ed.getByRole('switch', { name: /All of this tenant's clients/ }).check()
   await page.locator('#f-acc_expires').fill('')
   await ed.getByRole('button', { name: 'Save changes' }).click()
   await expect(ed).toBeHidden()
   await expect(edit).toBeFocused()
-  await expect(row).toContainText('All applications')
+  await expect(row).toContainText('All clients')
   await expect(row).toContainText('No end')
 
   // remove asks first
