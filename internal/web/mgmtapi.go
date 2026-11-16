@@ -152,6 +152,13 @@ func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Han
 				WriteJSON(w, http.StatusUnauthorized, ErrorBody{Error: "The access token is invalid or has expired."})
 				return
 			}
+			// A service account calling on an organization it owns (it created it and holds orgs:manage) is a super
+			// admin there for this request, holding every organization scope, and reaches the organization's routes
+			// that are closed to service accounts (its settings, branding, email templates, sign-out, audit log). Only
+			// a route that names an organization does this: the server's own routes have none.
+			if up := service.OwnerActor(a, org); up != nil {
+				a = up
+			}
 			// A personal token needs the admin scope, but the backup download its own (and only that one does: admin is
 			// not enough for it); a service account the route's.
 			need := service.ScopeAdmin
@@ -160,6 +167,9 @@ func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Han
 				need = scope
 			case r.URL.Path == "/api/backup":
 				need = service.ScopeBackup
+			}
+			if need == "" && a.Owner != "" {
+				need = AnyScope
 			}
 			if need == "" {
 				s.auditRefused(r, a, "service accounts cannot make this call")

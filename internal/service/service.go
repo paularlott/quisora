@@ -111,6 +111,9 @@ type Actor struct {
 	Unscoped bool
 	Scopes   []string // the scopes of a token-authenticated actor (ignored when Unscoped)
 	ClientID string   // set when acting as an OAuth client (client_credentials)
+	// Owner is the organization a service account acts in as its owner, a super admin there for this request
+	// (OwnerActor); "" for every other actor.
+	Owner string
 	TokenID  string   // the personal API token the actor authenticated with: recorded with every audit event
 	// App is the application (OAuth client id) a user acts through, such as an AI client of Quisora's MCP server:
 	// recorded with every audit event, so what was done through it can be told apart and its access revoked.
@@ -159,7 +162,12 @@ func (a *Actor) HasScope(scope string) bool {
 // Scoped reports whether the actor is limited to its Scopes (authenticated by a token).
 func (a *Actor) Scoped() bool { return !a.Unscoped }
 
-// IsSuper reports whether the actor is a super admin (always a member of the primary org).
+// personOrOwner reports whether a may make the changes to organization orgID that are a person's (its branding and
+// email templates): any actor but a service account, and the service account that owns orgID (OwnerActor).
+func (a *Actor) personOrOwner(orgID string) bool { return a.ClientID == "" || a.Owner == orgID }
+
+// IsSuper reports whether the actor is a super admin (always a member of the primary org, but for the owner of an
+// organization a service account created, OwnerActor, which is one in that organization only).
 func (a *Actor) IsSuper() bool { return a != nil && a.Role == model.RoleSuperAdmin }
 
 // Service is the business layer.
@@ -426,6 +434,12 @@ func (s *Service) auditEvent(ctx context.Context, a *Actor, c change) (*model.Au
 		d := make(map[string]string, len(detail)+1)
 		maps.Copy(d, detail)
 		d["token_id"] = a.TokenID
+		e.Detail, detail = d, d
+	}
+	if a.Owner != "" { // a service account acting as a super admin of an organization it created (OwnerActor)
+		d := make(map[string]string, len(detail)+1)
+		maps.Copy(d, detail)
+		d["acting_as"] = "owner"
 		e.Detail, detail = d, d
 	}
 	if a.App != "" { // which application did it, for the user (revoking its access is the answer to a misuse)

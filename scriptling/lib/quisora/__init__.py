@@ -183,7 +183,10 @@ class Client:
     def create_org(self, name, display_name=None, settings=None, service_account=None):
         """Create an organization (super admin, or a service account with orgs:create).
         service_account, e.g. {"name": "setup", "scopes": ["users", "groups"]}, makes
-        its first service account: the answer carries its secret, shown once."""
+        its first service account: the answer carries its secret, shown once. An
+        account that also holds orgs:manage then owns the organization: it may call
+        every organization route on it as a super admin would (settings and
+        organization providers included), with the same credentials."""
         return self.request("POST", "/api/orgs", body=_drop_none({
             "name": name, "display_name": display_name, "settings": settings,
             "service_account": service_account}))
@@ -195,6 +198,31 @@ class Client:
     def delete_org(self, org, cascade=False):
         """Delete an organization; cascade also deletes everything in it."""
         return self.request("DELETE", self._org(org), params={"cascade": "1" if cascade else None})
+
+    def update_branding(self, org, **fields):
+        """Change the organization's branding: logo_light, logo_dark (data: URLs),
+        primary_color ("#rrggbb"), skin."""
+        return self.request("PATCH", self._org(org) + "/branding", body=fields)
+
+    # --- sign-in providers ----------------------------------------------
+
+    def iter_providers(self, org):
+        return self.paginate(self._org(org) + "/providers")
+
+    def create_provider(self, org, type, **fields):
+        """Create a sign-in provider. For type "organization" (users of another
+        organization sign in as guests): source_org, the organization they come
+        from, and optionally source_groups (ids of its groups), auto_provision,
+        trust_mfa, name. Other types: issuer, client_id, client_secret, ..."""
+        body = dict(fields)
+        body["type"] = type
+        return self.request("POST", self._org(org) + "/providers", body=body)
+
+    def update_provider(self, org, provider_id, **fields):
+        return self.request("PATCH", self._org(org) + "/providers/" + _seg(provider_id), body=fields)
+
+    def delete_provider(self, org, provider_id):
+        return self.request("DELETE", self._org(org) + "/providers/" + _seg(provider_id))
 
     # --- users ----------------------------------------------------------
 

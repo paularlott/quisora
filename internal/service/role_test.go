@@ -369,6 +369,8 @@ func TestRoleIsSetOnlyByApplyRole(t *testing.T) {
 						continue // applyRole itself
 					case x != nil && x.Name == "a" && filepath.Base(f) == "login.go":
 						continue // a request's actor takes its role from its user: not a change of the user's role
+					case x != nil && x.Name == "up" && filepath.Base(f) == "serviceaccounts.go":
+						continue // an owner's request actor (OwnerActor): a service account's, never a user's role
 					case x != nil && (x.Name == "in" || x.Name == "d"):
 						continue // the role asked for in a UserInput (the service decides it), not the user's
 					}

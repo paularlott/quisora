@@ -14,12 +14,17 @@ import (
 // that calls the management API and SCIM with client_credentials tokens, and holds only the scopes it was granted:
 // each management route names the one it needs, and a route that names none is closed to it (the organization's
 // settings, the audit log, the server's keys and backups). It acts as an administrator of its own organization within
-// those scopes, and never as a super admin: without ScopeManageAdmins it manages users and managers only, as SCIM does.
+// those scopes: without ScopeManageAdmins it manages users and managers only, as SCIM does. The one exception is an
+// account of the primary organization with ScopeOrgsManage, which acts as a super admin in the organizations it
+// created, and only in them (OwnerActor).
 const (
 	// ScopeOrgsCreate creates organizations, each with an optional first service account (CreateOrgWithServiceAccount).
 	ScopeOrgsCreate = "orgs:create"
 	// ScopeOrgsDelete deletes the organizations the account created (model.Org.CreatedBy).
-	ScopeOrgsDelete   = "orgs:delete"
+	ScopeOrgsDelete = "orgs:delete"
+	// ScopeOrgsManage makes the account the owner of the organizations it created (model.Org.CreatedBy): a management
+	// API request on one of them runs as a super admin there, with every organization scope (OwnerActor).
+	ScopeOrgsManage   = "orgs:manage"
 	ScopeUsers        = "users"         // users and managers: their details, emails, provider links, sessions, tokens
 	ScopeManageAdmins = "manage_admins" // with users: the organization's administrators too
 	ScopeGroups       = "groups"        // groups and their members
@@ -40,8 +45,32 @@ const (
 var (
 	ServiceAccountScopes = []string{ScopeUsers, ScopeManageAdmins, ScopeGroups, ScopeProviders, ScopeTenants, ScopeClients,
 		ScopeAccess, ScopeImport, ScopeSCIM, ScopeServiceAccounts, ScopeSSH, ScopeSSHHost}
-	PrimaryServiceAccountScopes = []string{ScopeOrgsCreate, ScopeOrgsDelete}
+	PrimaryServiceAccountScopes = []string{ScopeOrgsCreate, ScopeOrgsDelete, ScopeOrgsManage}
 )
+
+// OwnerActor returns the actor a service account's management API request on organization o runs as when the account
+// owns o: it holds ScopeOrgsManage and created o (model.Org.CreatedBy, the account's id, which rotating its secret or
+// keys keeps). The owner is a super admin there, holding every organization scope, so it configures o as a super admin
+// would by hand. The reach is the request's: the caller (web.Server.RequireManagement) asks only for a route that names
+// an organization, so routes of the server (keys, backups, the cluster, skins, every organization's audit log) and
+// other organizations never see the role. Its one reach out of o, an organization provider's client in the provider's
+// source organization, is limited to the primary organization and o's fellow organizations (ownerMaySource). Nil when
+// a is not o's owner.
+func OwnerActor(a *Actor, o *model.Org) *Actor {
+	if a == nil || o == nil || a.ClientID == "" || o.Primary || o.CreatedBy != a.ClientID || !a.HasScope(ScopeOrgsManage) {
+		return nil
+	}
+	up := *a
+	up.Role = model.RoleSuperAdmin
+	up.Scopes = slices.Clone(a.Scopes)
+	for _, sc := range ServiceAccountScopes {
+		if !slices.Contains(up.Scopes, sc) {
+			up.Scopes = append(up.Scopes, sc)
+		}
+	}
+	up.Owner = o.ID
+	return &up
+}
 
 // ServiceAccountInput is the editable part of a service account; nil leaves a field as it is.
 type ServiceAccountInput struct {

@@ -7,9 +7,11 @@ pipelines, importers. It gets short-lived access tokens from its organization's 
 no person, so it keeps working when someone leaves, and it holds only the scopes it was granted, nothing a role
 implies.
 
-A service account acts as an administrator of its own organization within its scopes, and never as a super admin. It
-has no tenant and is not an application: it does not appear in the list of clients. The server's own
-administration (keys, backups, cluster, the audit log, the organization's settings) is closed to it.
+A service account acts as an administrator of its own organization within its scopes. It has no tenant and is not an
+application: it does not appear in the list of clients. The server's own administration (keys, backups, cluster, the
+audit log, the organization's settings) is closed to it. The one exception is an account of the primary organization
+with `orgs:manage`, which acts as a super admin in the organizations it created, and only there
+([owning organizations](#owning-organizations-orgsmanage)).
 
 ## Making one
 
@@ -66,10 +68,11 @@ operation's `serviceAccount` security requirement.
 | `service_accounts` | Manage the organization's service accounts, granting none more than it holds | any |
 | `orgs:create` | Create organizations (with the default settings: only a super admin chooses them) | the primary organization only |
 | `orgs:delete` | Delete the organizations it created | the primary organization only |
+| `orgs:manage` | Act as a super admin in the organizations it created, and only in them ([owning organizations](#owning-organizations-orgsmanage)) | the primary organization only |
 
 Any service account may also read its own organization, its tenants and its applications, whatever its scopes. The
 organization's settings, the audit log, emergency sign-out and the server's keys, backups and status are closed to
-service accounts.
+service accounts (but for an owner, in the organizations it owns, below).
 
 SCIM provisioning is a service account with the `scim` scope: Entra ID, Okta and similar tools use its `client_id` and
 secret. The SCIM rules for what a provisioning client may touch
@@ -80,15 +83,16 @@ are unchanged: it never reaches a super admin, and it manages administrators onl
 - Creating, changing, rotating and deleting service accounts is for organization administrators, super admins and
   accounts with `service_accounts`.
 - A service account grants only scopes it holds itself, so a chain of accounts never widens.
-- Only super admins grant `import`, `orgs:create` and `orgs:delete`; the last two exist only on the primary
-  organization.
+- Only super admins grant `import`, `orgs:create`, `orgs:delete` and `orgs:manage`; the last three exist only on the
+  primary organization.
 - Whoever changes, rotates or deletes an account must be able to grant every scope it holds, so an administrator cannot
   reach an account that holds `import`.
 - The one exception is the first service account made with a new organization (below): whoever creates the
   organization (a super admin, or an account with `orgs:create`) may give it any of the organization's scopes,
   `import` and `service_accounts` included.
 - A service account is not asked to re-authenticate for the sensitive changes a person must confirm; what it may do was
-  decided when it was granted its scopes. Granting `manage_admins` or `orgs:delete` is therefore a decision to take seriously.
+  decided when it was granted its scopes. Granting `manage_admins`, `orgs:delete` or `orgs:manage` is therefore a
+  decision to take seriously.
 - For the same reason a person creates, changes or rotates the secret of a service account only after a recent
   re-authentication in the console, and a personal API token cannot do it at all: an account's scopes outlive the token,
   and its secret never expires.
@@ -131,6 +135,41 @@ account on the primary organization, made by a super admin:
 5. To remove the organization, it calls `DELETE /api/orgs/customer-42?cascade=1` with the primary organization's
    account. An account with `orgs:delete` deletes only organizations it created itself; it cannot delete the primary
    organization or one a person made.
+
+## Owning organizations (`orgs:manage`)
+
+A simpler way to run the pipeline above: one account of the primary organization with `orgs:create` and
+`orgs:manage` creates each organization and then configures it itself, with the same credentials, as a super admin
+would by hand. No `setup` account is needed (it may still make one, for a tool that lives with the customer).
+
+- The account **owns** the organizations it created (it is their `created_by`). On a management API request that names
+  one of them (`/api/orgs/<it>/…`) it acts as a super admin of that organization, holding every organization scope:
+  users of every role, groups, tenants, applications, providers, service accounts, SSH, and the routes closed to other
+  service accounts (the organization's settings, branding, email templates, emergency sign-out and audit log).
+- **Only there.** On any other organization (the primary one, one a person created, one another account created) it
+  is the service account it always was, and the server's own routes (keys, backups, cluster, skins, the audit log of
+  every organization, the list of organizations) stay closed to it. It cannot make super admins, and gives no
+  organization it owns a service account with the primary organization's scopes.
+- **Organization providers.** A provider of type `organization` lets users of another organization sign in as guests,
+  and makes an application in that source organization. An owner may choose as the source only the primary
+  organization or another organization it owns (anything else is `422` on `source_org`), and cannot change or delete a
+  provider whose source is an organization it does not own (`403`): it never writes to an organization it has no say in.
+- **Ownership is the account's**, kept by its id: rotating its secret or changing its keys keeps it, so the pipeline can
+  change its organizations for as long as the account exists. Deleting the account leaves its organizations to the
+  super admins. Prefer `private_key_jwt` for an owner: its key set can hold the old and the new key while they change,
+  where a rotated secret stops at once.
+- Everything it does is audited in the organization as `service:<name>`, with `acting_as: owner` in the detail.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" "$QUISORA/api/orgs" \
+  -d '{"name": "customer-42", "display_name": "Customer 42"}'
+curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "$QUISORA/api/orgs/customer-42" -d '{"settings": {"require_mfa": true}}'
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "$QUISORA/api/orgs/customer-42/providers" -d '{"type": "organization", "source_org": "primary", "auto_provision": true}'
+```
+
+The [Scriptling](../scriptling/README.md) example `setup_org.py` does this.
 
 ## Rotating credentials
 

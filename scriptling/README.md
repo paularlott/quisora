@@ -30,11 +30,14 @@ scriptling -L lib examples/list_orgs.py
 scriptling -L lib examples/list_users.py acme
 scriptling -L lib examples/list_users.py acme al --role admin
 scriptling -L lib examples/create_org.py contoso "Contoso Ltd" --service-account setup users,groups
+scriptling -L lib examples/setup_org.py contoso "Contoso Ltd" --admin boss@contoso.example Bo --guests primary <group id>
 scriptling -L lib examples/create_user.py acme grace@acme.example Grace Hopper --username grace --invite
 scriptling -L lib examples/add_to_group.py acme Engineers grace alan
 ```
 
 `create_org.py` needs a super admin's token, or a service account of the primary organization with `orgs:create`.
+`setup_org.py` needs a service account of the primary organization with `orgs:create` and `orgs:manage`, which then
+owns the organization it creates and configures it as a super admin would ([owning organizations](../docs/SERVICE-ACCOUNTS.md#owning-organizations-orgsmanage)).
 `list_orgs.py` needs a personal token: service accounts cannot list organizations. As a service account,
 `create_user.py` needs the `users` scope (and `manage_admins` for `--role admin`), and `add_to_group.py` needs
 `users` and `groups`.

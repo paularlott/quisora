@@ -50,11 +50,12 @@ func (s *Service) OrgLogo(ctx context.Context, orgID string) (*model.OrgLogo, er
 	return l, mapStore(err)
 }
 
-// UpdateBranding changes organization orgID's branding: its admins and the super admins, never a service account (it
-// may give an organization it creates its branding, OrgInput.Branding; changes are a person's). The primary
-// organization's skin and footer, which every other organization inherits, only the super admins.
+// UpdateBranding changes organization orgID's branding: its admins and the super admins, never a service account but
+// the organization's owner (OwnerActor): an account that creates an organization may give it its branding then
+// (OrgInput.Branding), and later changes are a person's or the owner's. The primary organization's skin and footer,
+// which every other organization inherits, only the super admins.
 func (s *Service) UpdateBranding(ctx context.Context, a *Actor, orgID string, in BrandingInput) (*model.Org, error) {
-	if !s.canAdminOrg(a, orgID) || a.ClientID != "" {
+	if !s.canAdminOrg(a, orgID) || !a.personOrOwner(orgID) {
 		return nil, ErrForbidden
 	}
 	o, err := s.Orgs.Get(ctx, orgID)

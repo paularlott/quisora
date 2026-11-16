@@ -27,7 +27,7 @@ security:
   - bearer: [admin]
 tags:
   - name: Organizations
-    description: Organizations hold users, groups, tenants, clients and sign-in providers. Creating, renaming and deleting them is for super admins; on the primary organization a service account with the orgs:create scope creates them, and one with orgs:delete deletes the ones it created.
+    description: Organizations hold users, groups, tenants, clients and sign-in providers. Creating, renaming and deleting them is for super admins; on the primary organization a service account with the orgs:create scope creates them, one with orgs:delete deletes the ones it created, and one with orgs:manage manages the ones it created as a super admin would.
   - name: Users
     description: People who sign in, with their email addresses, invitations, sessions, linked providers, passkeys and personal API tokens.
   - name: Groups
@@ -98,7 +98,7 @@ paths:
     post:
       tags: [Organizations]
       summary: Create an organization (super admin, or a service account with orgs:create)
-      description: "Create an organization (super admin, or a service account of the primary organization with the orgs:create scope). The optional service_account is the organization's first service account, with any of the service account scopes, import included (orgs:create and orgs:delete are only for the primary organization's own accounts). The response carries its secret, shown once (none for private_key_jwt). If the account cannot be created the organization is not left behind. A service account that creates an organization is the only one that may delete it again."
+      description: "Create an organization (super admin, or a service account of the primary organization with the orgs:create scope). The optional service_account is the organization's first service account, with any of the service account scopes, import included (orgs:create, orgs:delete and orgs:manage are only for the primary organization's own accounts). The response carries its secret, shown once (none for private_key_jwt). If the account cannot be created the organization is not left behind. A service account that creates an organization is the only one that may delete it again."
       operationId: post_orgs
       security:
         - session: []
@@ -2795,7 +2795,7 @@ paths:
     post:
       tags: [Service accounts]
       summary: Create a service account
-      description: "Create a service account; the response carries its secret, shown once (none with private_key_jwt, where jwks or jwks_uri is required). name and scopes are required. A caller may grant only scopes it may hold itself: only super admins grant import (a service account grants only what it holds), and orgs:create and orgs:delete only on the primary organization"
+      description: "Create a service account; the response carries its secret, shown once (none with private_key_jwt, where jwks or jwks_uri is required). name and scopes are required. A caller may grant only scopes it may hold itself: only super admins grant import (a service account grants only what it holds), and orgs:create, orgs:delete and orgs:manage only on the primary organization"
       operationId: post_orgs_org_service-accounts
       security:
         - session: []
@@ -4297,7 +4297,7 @@ components:
       scheme: bearer
       type: http
     serviceAccount:
-      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization, never as a super admin, and holds only the scopes it was granted. Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), manage_admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), ssh (tenants' SSH certificate authorities: settings, keys and certificates), ssh:host (signing host certificates only), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create and orgs:delete (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
+      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization and holds only the scopes it was granted; the one exception is an account of the primary organization with orgs:manage, which acts as a super admin, with every organization scope, in the organizations it created and only there (their settings, branding, email templates, emergency sign-out, audit log and organization providers included; an organization provider's source must be the primary organization or another organization it created). Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), manage_admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), ssh (tenants' SSH certificate authorities: settings, keys and certificates), ssh:host (signing host certificates only), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create, orgs:delete and orgs:manage (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
       flows:
         clientCredentials:
           scopes:
@@ -4315,6 +4315,7 @@ components:
             service_accounts: The organization's service accounts
             orgs:create: Create organizations (primary organization only)
             orgs:delete: Delete the organizations it created (primary organization only)
+            orgs:manage: Act as a super admin in the organizations it created, and only in them (primary organization only)
           tokenUrl: /o/{org}/oauth/token
       type: oauth2
     session:

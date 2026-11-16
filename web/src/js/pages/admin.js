@@ -1964,6 +1964,7 @@ export default function (Alpine) {
     { value: 'service_accounts', help: 'This organization’s service accounts, granting no more than it holds.' },
     { value: 'orgs:create', help: 'Create organizations.', superOnly: true, primaryOnly: true },
     { value: 'orgs:delete', help: 'Delete the organizations it created.', superOnly: true, primaryOnly: true },
+    { value: 'orgs:manage', help: 'Act as a super admin in the organizations it created, and only in them.', superOnly: true, primaryOnly: true },
   ]
   const SERVICE_METHODS = { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT' }
   Alpine.data('adminServiceAccounts', () => mix(tableMixin(), formMixin(), dialogMixin(), {

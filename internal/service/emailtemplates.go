@@ -27,9 +27,10 @@ type EmailTemplateView struct {
 }
 
 // EmailTemplates returns organization orgID's email templates: its administrators and the super admins, never a
-// service account (the templates are a person's to change, UpdateEmailTemplates).
+// service account but the organization's owner (OwnerActor): the templates are a person's to change
+// (UpdateEmailTemplates).
 func (s *Service) EmailTemplates(ctx context.Context, a *Actor, orgID string) (*EmailTemplateView, error) {
-	if !s.canAdminOrg(a, orgID) || a.ClientID != "" {
+	if !s.canAdminOrg(a, orgID) || !a.personOrOwner(orgID) {
 		return nil, ErrForbidden
 	}
 	own, err := s.ownEmailTemplates(ctx, orgID)
@@ -46,10 +47,10 @@ func (s *Service) EmailTemplates(ctx context.Context, a *Actor, orgID string) (*
 // UpdateEmailTemplates replaces organization orgID's own email templates with in: a part left empty, or the same as
 // the one it would inherit, is inherited (and follows the inherited one when that changes). Refused, with the part at
 // fault, unless every email renders and shows what it must (mailtpl.Check). Its administrators and the super admins,
-// never a service account; the primary organization's, which every other organization inherits, only the super
-// admins.
+// never a service account but the organization's owner (OwnerActor); the primary organization's, which every other
+// organization inherits, only the super admins.
 func (s *Service) UpdateEmailTemplates(ctx context.Context, a *Actor, orgID string, in model.EmailTemplateSet) (*EmailTemplateView, error) {
-	if !s.canAdminOrg(a, orgID) || a.ClientID != "" {
+	if !s.canAdminOrg(a, orgID) || !a.personOrOwner(orgID) {
 		return nil, ErrForbidden
 	}
 	o, err := s.Orgs.Get(ctx, orgID)
@@ -101,9 +102,10 @@ func (s *Service) UpdateEmailTemplates(ctx context.Context, a *Actor, orgID stri
 
 // PreviewEmailTemplates checks draft, organization orgID's own templates as they are being edited (not stored), as
 // UpdateEmailTemplates would, and returns the set the organization would send with them, to render previews and test
-// emails from. Its administrators and the super admins, never a service account.
+// emails from. Its administrators and the super admins, never a service account but the organization's owner
+// (OwnerActor).
 func (s *Service) PreviewEmailTemplates(ctx context.Context, a *Actor, orgID string, draft model.EmailTemplateSet) (model.EmailTemplateSet, error) {
-	if !s.canAdminOrg(a, orgID) || a.ClientID != "" {
+	if !s.canAdminOrg(a, orgID) || !a.personOrOwner(orgID) {
 		return model.EmailTemplateSet{}, ErrForbidden
 	}
 	inherited, _, err := s.inheritedEmailTemplates(ctx, orgID)

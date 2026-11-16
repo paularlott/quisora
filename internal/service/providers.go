@@ -216,7 +216,15 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 		p.Tenant, p.AllowedTenants = "", nil
 	}
 	if org {
-		return s.applySourceOrg(ctx, p, in.SourceOrg, in.SourceGroups)
+		if err := s.applySourceOrg(ctx, p, in.SourceOrg, in.SourceGroups); err != nil {
+			return err
+		}
+		if ok, err := s.ownerMaySource(ctx, a, p.SourceOrg); err != nil {
+			return err
+		} else if !ok {
+			return Invalid("source_org", "choose the primary organization or another organization this account created")
+		}
+		return nil
 	}
 	p.SourceOrg, p.SourceGroups = "", nil
 	if p.OIDC() {
@@ -235,6 +243,25 @@ func (s *Service) applyProvider(ctx context.Context, a *Actor, p *model.Provider
 		return Invalid("client_secret", "required")
 	}
 	return nil
+}
+
+// ownerMaySource reports whether a may have an organization provider whose source is organization srcID: the
+// provider's client lives in its source (issueSignInClient), so making, moving or removing it is a write there. Every
+// actor that gets this far is a super admin; an organization's owner (OwnerActor) is one only in the organizations it
+// created, so its sources are the primary organization (its own) and those. A source that no longer exists holds
+// nothing to write to.
+func (s *Service) ownerMaySource(ctx context.Context, a *Actor, srcID string) (bool, error) {
+	if a.Owner == "" || srcID == "" {
+		return true, nil
+	}
+	src, err := s.Orgs.Get(ctx, srcID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return true, nil
+	case err != nil:
+		return false, mapStore(err)
+	}
+	return src.Primary || src.CreatedBy == a.ClientID, nil
 }
 
 // applySourceOrg settles an organization provider: its source organization must exist and be another one (an
@@ -415,6 +442,13 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	if p.Type == model.ProviderOrganization && !a.IsSuper() {
 		return nil, ErrForbidden // its client is in another organization
 	}
+	if p.Type == model.ProviderOrganization {
+		if ok, err := s.ownerMaySource(ctx, a, p.SourceOrg); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, ErrForbidden // its client is in an organization the owner has no say in
+		}
+	}
 	before := model.ProviderAuthority(p)
 	was := snapshot(p)
 	oldSource, oldClient := p.SourceOrg, p.ClientID
@@ -470,6 +504,13 @@ func (s *Service) DeleteProvider(ctx context.Context, a *Actor, id string) error
 	}
 	if p.Type == model.ProviderOrganization && !a.IsSuper() {
 		return ErrForbidden // its client is in another organization
+	}
+	if p.Type == model.ProviderOrganization {
+		if ok, err := s.ownerMaySource(ctx, a, p.SourceOrg); err != nil {
+			return err
+		} else if !ok {
+			return ErrForbidden // its client is in an organization the owner has no say in
+		}
 	}
 	// The links to it stand on it: sign-in through a deleted provider is impossible, and the orphan sweep removes them.
 	if err := s.audited(ctx, a, p.OrgID, "provider.delete", p.Name, nil, func() error { return s.Providers.Delete(ctx, id) }); err != nil {
