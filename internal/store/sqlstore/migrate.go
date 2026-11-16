@@ -29,8 +29,15 @@ type migration struct {
 // release; nothing has been released yet, so it changes in place until then.
 func (s *Store) migrations() []migration {
 	return []migration{
-		{ddl: s.initialSchema},
+		{ddl: s.initialSchema, data: s.initialFeed},
 	}
+}
+
+// initialFeed gives a new store its id (feed_id; the one row of feedTable), bound like every other value: DDL runs
+// without arguments, so it is not one of initialSchema's statements.
+func (s *Store) initialFeed(ctx context.Context, ex execer) error {
+	_, err := ex.ExecContext(ctx, s.d.bind(s.d.insertIgnore(feedTable, "id, feed_id", "1, ?")), model.NewID())
+	return err
 }
 
 func (s *Store) initialSchema() []string {
@@ -45,7 +52,6 @@ func (s *Store) initialSchema() []string {
 			" NOT NULL,\n  id "+d.keyType(191)+" NOT NULL,\n  PRIMARY KEY (kind, value)\n)"+uniqueSuffix(d),
 		"CREATE TABLE IF NOT EXISTS "+feedTable+" (\n  id INT NOT NULL PRIMARY KEY,\n  feed_id "+d.keyType(64)+
 			" NOT NULL\n)"+tableSuffix(d),
-		d.insertIgnore(feedTable, "id, feed_id", "1, '"+model.NewID()+"'"),
 	)
 	return out
 }
