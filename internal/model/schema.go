@@ -88,7 +88,18 @@ var Schemas = map[Kind]Schema{
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "tags", Type: FieldString, Words: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
-		{Name: "pending", Type: FieldBool, Index: true}, // groups with committed member changes not yet materialized
+		{Name: "pending", Type: FieldBool, Index: true},     // groups with committed member changes not yet materialized
+		{Name: "requests", Type: FieldBool, Index: true},    // groups whose members may ask for access
+		{Name: "approvers", Type: FieldString, Index: true}, // the groups an approver group decides for
+	}},
+	KindAccessRequest: {KindAccessRequest, []Field{
+		{Name: "user_id", Type: FieldString, Index: true},   // a person's requests
+		{Name: "approvers", Type: FieldString, Index: true}, // an approver group's queue
+		{Name: "tenant_id", Type: FieldString, Index: true},
+		{Name: "state", Type: FieldString, Index: true},
+		{Name: "pending", Type: FieldBool, Index: true},
+		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
+		{Name: "due", Type: FieldTime, Sort: true}, // lapsing, then removal (ExpireAccessRequests)
 	}},
 	KindMember: {KindMember, []Field{
 		{Name: "group_id", Type: FieldString, Index: true}, // a group's members (SCIM, counts)
@@ -228,7 +239,7 @@ func Unscoped(k Kind) bool { return unscopedKinds[k] }
 // Kinds returns every registered kind in a stable order.
 func Kinds() []Kind {
 	return []Kind{KindOrg, KindUser, KindGroup, KindMember, KindTenant, KindAccess, KindClient, KindProvider, KindPasskey, KindIdentity, KindSession,
-		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindSSHRevokedSignIn, KindUserPicture, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindSkin, KindLock,
+		KindGrant, KindConsent, KindAPIToken, KindKey, KindSSHKey, KindSSHCert, KindSSHRevokedSignIn, KindUserPicture, KindAccessRequest, KindAudit, KindLink, KindSignIn, KindOrgLogo, KindEmailTemplates, KindSkin, KindLock,
 		KindReplay, KindEphemeral, KindQueue}
 }
 
@@ -247,6 +258,8 @@ func NewEntity(k Kind) Entity {
 		return &Tenant{}
 	case KindAccess:
 		return &TenantAccess{}
+	case KindAccessRequest:
+		return &AccessRequest{}
 	case KindClient:
 		return &Client{}
 	case KindProvider:

@@ -70,6 +70,11 @@ func modules(ctx context.Context, a *App) []web.Module {
 		mailer.SetService(a.Server.Svc) // invitation/reset links are durable service records: any node, any restart
 		lopts.Mail = mailer
 		adminMail = adminMailer{mailer}
+		a.Svc.OnAccessRequest = func(ctx context.Context, n service.AccessRequestNotice) {
+			if err := mailer.SendAccessRequest(ctx, n); err != nil {
+				a.Log.WithError(err).Warn("an access request email could not be sent", "request", n.Request.ID, "event", n.Event)
+			}
+		}
 	} else {
 		a.Log.Info("email is off (no smtp-host): invitation links are shown to administrators to share")
 	}
@@ -151,6 +156,9 @@ func modules(ctx context.Context, a *App) []web.Module {
 			}
 			if n, err := a.Svc.ExpireAccess(ctx); hk.ok("access entry ends", err) && n > 0 {
 				a.Log.Info("access entries past their end removed", "count", n)
+			}
+			if n, err := a.Svc.ExpireAccessRequests(ctx); hk.ok("access requests", err) && n > 0 {
+				a.Log.Info("access requests lapsed or removed", "count", n)
 			}
 			// A change of a group's members whose writer died after committing it is finished here (it is visible
 			// to every reader meanwhile): its membership records are written and the entry cleared.

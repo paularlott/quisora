@@ -119,3 +119,54 @@ func TestOrgTemplates(t *testing.T) {
 		t.Fatalf("test email: %+v", msg)
 	}
 }
+
+// The access request emails: a new request goes to the approver group's members (not to the person who asked, when
+// they are one), a decision and an early end to the person who asked, each with the tenant, length and link.
+func TestSendAccessRequest(t *testing.T) {
+	cap := newCapture()
+	m := newMailer(t, nil, cap)
+	ctx := context.Background()
+	pat, org := userAndOrg(t, m, "pat@example.com")
+	sam, err := m.Svc.CreateUser(ctx, service.System, org.ID, service.UserInput{Username: ptr("sam"), GivenName: ptr("Sam"), Email: ptr("sam@example.com")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvers, err := m.Svc.CreateGroupWithMembers(ctx, service.System, org.ID, service.GroupInput{DisplayName: ptr("Leads")}, []string{sam.ID, pat.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn, err := m.Svc.CreateTenant(ctx, service.System, org.ID, service.TenantInput{Name: ptr("ops"), DisplayName: ptr("Ops tools")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &model.AccessRequest{OrgID: org.ID, TenantID: tn.ID, UserID: pat.ID, Approvers: approvers.ID, Length: 4 * 3600,
+		Reason: "INC-1", State: model.RequestPending}
+	if err := m.SendAccessRequest(ctx, service.AccessRequestNotice{Event: "new", Request: r, By: "Pat"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := cap.wait(t)
+	if msg.To != "sam@example.com" || !strings.Contains(msg.Subject, "asks for access to Ops tools") || !strings.Contains(msg.Text, "for 4 hours") ||
+		!strings.Contains(msg.Text, "Why: INC-1") || !strings.Contains(msg.Text, "/o/"+org.ID+"/account/approvals") {
+		t.Fatalf("new: %+v", msg)
+	}
+	r.State, r.Ends, r.Note = model.RequestApproved, time.Date(2026, 11, 18, 15, 0, 0, 0, time.UTC), "ok"
+	if err := m.SendAccessRequest(ctx, service.AccessRequestNotice{Event: "approved", Request: r, By: "Sam"}); err != nil {
+		t.Fatal(err)
+	}
+	msg = cap.wait(t)
+	if msg.To != "pat@example.com" || !strings.Contains(msg.Subject, "was approved") || !strings.Contains(msg.Text, "until 18 Nov 2026 15:00 UTC") ||
+		!strings.Contains(msg.Text, "Their note: ok") || !strings.Contains(msg.Text, "/o/"+org.ID+"/account/requests") {
+		t.Fatalf("approved: %+v", msg)
+	}
+	if err := m.SendAccessRequest(ctx, service.AccessRequestNotice{Event: "ended", Request: r, By: "Sam"}); err != nil {
+		t.Fatal(err)
+	}
+	if msg = cap.wait(t); msg.To != "pat@example.com" || !strings.Contains(msg.Text, "Sam ended your access to Ops tools") {
+		t.Fatalf("ended: %+v", msg)
+	}
+	select {
+	case extra := <-cap.ch:
+		t.Fatalf("an extra email: %+v", extra)
+	default:
+	}
+}

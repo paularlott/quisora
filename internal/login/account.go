@@ -85,6 +85,7 @@ func (m *Module) registerAccount(s *web.Server) {
 	h("DELETE /api-internal/account/picture", m.deletePicture)
 
 	h("GET /api-internal/account/apps", m.listApps)
+	m.registerAccessRequests(h)
 	h("DELETE /api-internal/account/apps/{client}", m.revokeApp)
 }
 
@@ -1442,10 +1443,11 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 		web.WriteError(w, err)
 		return
 	}
+	asks, _ := m.s.Svc.AccessRequestRoles(r.Context(), a.u)
 	scopes := []string{}
 	for _, sc := range service.APITokenScopes {
 		if sc == service.ScopeAPI && !apiOK || (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && !a.actor.Role.Privileged() ||
-			service.SuperOnlyScope(sc) && !a.actor.IsSuper() {
+			service.SuperOnlyScope(sc) && !a.actor.IsSuper() || sc == service.ScopeAccessRequests && !asks {
 			continue
 		}
 		scopes = append(scopes, sc)

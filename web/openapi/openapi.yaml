@@ -36,6 +36,8 @@ tags:
     description: Groups of applications that share sign-in rules and resources.
   - name: Tenant access
     description: Which users and groups may use a tenant's applications, with their roles, tags and end dates.
+  - name: Access requests
+    description: People asking for access to a tenant for a while, and the approver group's members (or a service account) deciding. Approving gives a timed access entry.
   - name: SSH certificates
     description: "A tenant's SSH certificate authority: its settings, CA keys, issued certificates, and signing host certificates. Servers trust the tenant's CA keys (TrustedUserCAKeys); the public endpoints under /o/{org}/ssh/{tenant} serve them, and `quisora ssh` is the client."
   - name: Clients
@@ -1485,6 +1487,268 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Access requests]
+      summary: Your own access requests
+      description: "The caller's requests, newest first. A personal API token needs access_requests (or admin); service accounts cannot call it."
+      operationId: get_orgs_org_access_requests
+      security:
+        - session: []
+        - bearer: [access_requests]
+        - bearer: [admin]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequestList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Access requests]
+      summary: Ask for access to a tenant
+      description: "Ask for access to a members-only tenant of the organization for one of the lengths your groups offer, with a reason. Refused when you have access to it with no end, or a request for it waiting already. The approver group's members are emailed."
+      operationId: post_orgs_org_access_requests
+      security:
+        - session: []
+        - bearer: [access_requests]
+        - bearer: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessRequestInput"}
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequest"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/options:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Access requests]
+      summary: What you can ask for
+      description: "Who may approve your requests (one entry per approver group, with the lengths it offers), and the members-only tenants whose name starts with q."
+      operationId: get_orgs_org_access_requests_options
+      security:
+        - session: []
+        - bearer: [access_requests]
+        - bearer: [admin]
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequestOptions"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/{id}/cancel:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+      - {name: id, in: path, required: true, description: "the request id", schema: {type: string}}
+    post:
+      tags: [Access requests]
+      summary: Cancel your waiting request
+      description: "The requester withdraws a request nobody has decided yet."
+      operationId: post_orgs_org_access_requests_id_cancel
+      security:
+        - session: []
+        - bearer: [access_requests]
+        - bearer: [admin]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequest"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/pending:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Access requests]
+      summary: Requests waiting for your decision
+      description: "For a service account with access_requests:approve: the waiting requests of the groups that let service accounts approve. For a person signed in: those of the approver groups they are in, never their own. Oldest first."
+      operationId: get_orgs_org_access_requests_pending
+      security:
+        - session: []
+        - serviceAccount: [access_requests:approve]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequestList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/{id}/approve:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+      - {name: id, in: path, required: true, description: "the request id", schema: {type: string}}
+    post:
+      tags: [Access requests]
+      summary: Approve a request
+      description: "Gives the requester access to the tenant until now plus the length asked for (a timed access entry with the tenant's access defaults, or a later end for the timed one they have), in one step with the request. A person must have confirmed it is them just now; a personal API token never approves. Optional note for the requester."
+      operationId: post_orgs_org_access_requests_id_approve
+      security:
+        - session: []
+        - serviceAccount: [access_requests:approve]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessRequestDecision"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequest"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/{id}/deny:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+      - {name: id, in: path, required: true, description: "the request id", schema: {type: string}}
+    post:
+      tags: [Access requests]
+      summary: Deny a request
+      description: "As approving, but gives nothing; the note is shown to the requester."
+      operationId: post_orgs_org_access_requests_id_deny
+      security:
+        - session: []
+        - serviceAccount: [access_requests:approve]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessRequestDecision"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequest"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/{id}/end:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+      - {name: id, in: path, required: true, description: "the request id", schema: {type: string}}
+    post:
+      tags: [Access requests]
+      summary: End the access a request gave, now
+      description: "By the requester (a personal API token with access_requests will do), an administrator, a member of its approver group (after confirming it is them) or a service account that may decide it. Removes the requester's timed access entry on the tenant and signs them out of its clients; access with no end is refused."
+      operationId: post_orgs_org_access_requests_id_end
+      security:
+        - session: []
+        - bearer: [access_requests]
+        - bearer: [admin]
+        - serviceAccount: [access_requests:approve]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequest"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/access-requests/all:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Access requests]
+      summary: Every access request of the organization
+      description: "Administrators: newest first; state narrows it (pending, approved, denied, cancelled, lapsed, ended). Closed requests are kept for 90 days."
+      operationId: get_orgs_org_access_requests_all
+      security:
+        - session: []
+        - bearer: [admin]
+        - serviceAccount: [access]
+      parameters:
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: state, in: query, schema: {type: string, enum: [pending, approved, denied, cancelled, lapsed, ended]}}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessRequestList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
         "422": {$ref: "#/components/responses/ValidationFailed"}
         "503": {$ref: "#/components/responses/Unavailable"}
   /api/orgs/{org}/groups:
@@ -4325,12 +4589,12 @@ components:
   securitySchemes:
     bearer:
       bearerFormat: qsr_<id>_<secret>
-      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope; creating users with a password hash, an authenticator secret or provider links: the import scope too, super admins only). The
+      description: "Personal API token with the admin scope (the backup download: the backup scope; SCIM: the scim scope; creating users with a password hash, an authenticator secret or provider links: the import scope too, super admins only; a person's own access requests: the access_requests scope will do). The
         owning user's role still limits every call. A service account's access token is sent the same way: see the serviceAccount scheme."
       scheme: bearer
       type: http
     serviceAccount:
-      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization and holds only the scopes it was granted; the one exception is an account of the primary organization with orgs:manage, which acts as a super admin, with every organization scope, in the organizations it created and only there (their settings, branding, email templates, emergency sign-out, audit log and organization providers included; an organization provider's source must be the primary organization or another organization it created). Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), manage_admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), ssh (tenants' SSH certificate authorities: settings, keys and certificates), ssh:host (signing host certificates only), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create, orgs:delete and orgs:manage (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
+      description: "A service account's access token (client credentials, from the token endpoint of its organization: /o/{org}/oauth/token, with its client_id and secret or a private_key_jwt assertion; the token endpoint is in the account's token_endpoint), sent as a bearer token to this API and to SCIM. The account acts as an administrator of its own organization and holds only the scopes it was granted; the one exception is an account of the primary organization with orgs:manage, which acts as a super admin, with every organization scope, in the organizations it created and only there (their settings, branding, email templates, emergency sign-out, audit log and organization providers included; an organization provider's source must be the primary organization or another organization it created). Each operation lists the scope it needs in its serviceAccount requirement: users (users and managers), manage_admins (with users: administrators too), groups, providers, tenants, clients (also the self-registered applications), access (tenants' access lists), access_requests:approve (deciding the access requests of the groups that allow it), ssh (tenants' SSH certificate authorities: settings, keys and certificates), ssh:host (signing host certificates only), import (with users: password hashes, authenticator secrets and provider links on user create), scim (SCIM), service_accounts (the organization's service accounts, granting none more than it holds), and on the primary organization orgs:create, orgs:delete and orgs:manage (the organizations it created). An empty requirement (serviceAccount with no scope) means any service account may call it: reading its organization, its tenants and its applications. An operation without a serviceAccount requirement is closed to service accounts (the organization's settings, the audit log, emergency sign-out, the server's keys, backups and status, the list of all organizations). A scope taken from an account, or the account disabled or deleted, stops its tokens at once. Its actions are audited as service:<name>."
       flows:
         clientCredentials:
           scopes:
@@ -4341,6 +4605,7 @@ components:
             tenants: Tenants
             clients: Applications (OAuth clients) and the self-registered ones
             access: Tenants' access lists
+            "access_requests:approve": Approve or deny access requests, for the groups that let service accounts
             ssh: Tenants' SSH certificate authorities (settings, keys, certificates)
             "ssh:host": Sign SSH host certificates
             import: With users, password hashes, authenticator secrets and provider links on user create (granted by super admins)
@@ -5244,6 +5509,144 @@ components:
         field:
           type: string
           description: the input field the error is about, when there is one
+    AccessRequest:
+      type: object
+      properties:
+        id: {type: string}
+        org_id: {type: string}
+        tenant_id: {type: string}
+        tenant_name: {type: string}
+        tenant_display_name: {type: string}
+        user_id: {type: string}
+        user_name: {type: string}
+        user_email: {type: string}
+        approvers:
+          type: string
+          description: the id of the group whose members decide
+        approvers_name: {type: string}
+        length:
+          type: integer
+          description: seconds of access asked for
+        length_text: {type: string}
+        reason: {type: string}
+        state:
+          type: string
+          enum: [pending, approved, denied, cancelled, lapsed, ended]
+        lapses:
+          type: string
+          format: date-time
+          description: when a pending request lapses (a day after it was made)
+        decided_by:
+          type: string
+          description: who approved, denied or cancelled it (a user id, or a service account's client id)
+        decided_by_name: {type: string}
+        decided_via:
+          type: string
+          enum: [account, api]
+        decided_at: {type: string, format: date-time}
+        note: {type: string}
+        ends:
+          type: string
+          format: date-time
+          description: when the access an approval gave ends (UTC)
+        ended_by: {type: string}
+        ended_by_name: {type: string}
+        ended_at: {type: string, format: date-time}
+        live:
+          type: boolean
+          description: the access an approval gave still lasts
+        created: {type: string, format: date-time}
+        updated: {type: string, format: date-time}
+    AccessRequestList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/AccessRequest"}
+        total:
+          type: integer
+    AccessRequestInput:
+      type: object
+      required: [tenant_id, length, reason]
+      properties:
+        tenant_id:
+          type: string
+          description: a members-only tenant of the organization, by id or name
+        approvers:
+          type: string
+          description: the approver group to ask (an id from options); may be left out when there is one
+        length:
+          type: integer
+          description: "seconds, one of the lengths the requester's groups offer: 3600, 14400, 28800, 86400, 259200,
+            604800, 1209600 or 2592000 (1 hour to 1 month)"
+        reason:
+          type: string
+          maxLength: 500
+    AccessRequestDecision:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+          description: shown to the requester
+    AccessRequestOptions:
+      type: object
+      properties:
+        approvers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              name: {type: string}
+              lengths:
+                type: array
+                items: {type: integer}
+        tenants:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              name: {type: string}
+              display_name: {type: string}
+              description: {type: string}
+    GroupRequests:
+      type: object
+      description: "a group's access request settings: its members may ask for access to a members-only tenant, and the
+        approvers group's members decide. While set, this group and the approver group are protected: only
+        administrators (and provisioning by an administrator) change their members"
+      properties:
+        enabled:
+          type: boolean
+          description: "in GroupInput: false turns access requests off"
+        approvers:
+          type: string
+          description: the id of another group of the organization, whose members approve
+        lengths:
+          type: array
+          description: seconds; empty or absent for all of them
+          items:
+            type: integer
+            description: 3600, 14400, 28800, 86400, 259200, 604800, 1209600 or 2592000
+        service_accounts:
+          type: boolean
+          description: service accounts with access_requests:approve may decide these requests too
+    AccessDefaults:
+      type: object
+      description: "a tenant's defaults for new access entries: each field an entry does not give is copied from here
+        when it is made (a snapshot: changing them changes no entry); empty fields mean none"
+      properties:
+        roles:
+          type: array
+          items: {type: string}
+        tags:
+          type: array
+          items: {type: string}
+        authorization_details:
+          type: array
+          items: {type: object}
     Group:
       type: object
       properties:
@@ -5256,6 +5659,9 @@ components:
         members:
           type: integer
           description: number of users in the group
+        access_requests:
+          allOf: [{$ref: "#/components/schemas/GroupRequests"}]
+          description: its access request settings; null when its members may not ask for access
         org_id:
           type: string
         tags:
@@ -5277,6 +5683,9 @@ components:
     GroupInput:
       type: object
       properties:
+        access_requests:
+          allOf: [{$ref: "#/components/schemas/GroupRequests"}]
+          description: 'administrators only; {"enabled": false} turns them off'
         display_name:
           type: string
         external_id:
@@ -6478,6 +6887,7 @@ components:
           description: "the organization provider (of another organization) this tenant was made for: it holds that
             provider's sign-in application only (no other application, resources or SSH), and its access list decides
             who of this organization signs in to that one; made and removed with the provider"
+        access_defaults: {$ref: "#/components/schemas/AccessDefaults"}
         ssh:
           description: the tenant's SSH certificate authority settings (see SSH certificates); absent until SSH has been enabled
           allOf:
@@ -6491,6 +6901,7 @@ components:
     TenantInput:
       type: object
       properties:
+        access_defaults: {$ref: "#/components/schemas/AccessDefaults"}
         description:
           type: string
         display_name:

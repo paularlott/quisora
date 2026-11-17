@@ -197,6 +197,7 @@
     <div>
       <h2 class="section-title" id="access-h">Access <span class="badge badge-plain ml-1" x-text="accessCountText"></span></h2>
       <p class="muted mt-1 max-w-prose" x-text="accessIntro"></p>
+      <p class="muted mt-1 max-w-prose"><span x-text="defaultsText"></span> <button type="button" class="btn btn-ghost btn-sm" @click="openDefaults">{{template "icon" "pencil"}} Edit defaults</button></p>
     </div>
     <button type="button" class="btn btn-primary" @click="openAdd">{{template "icon" "plus"}} Add access</button>
   </div>
@@ -272,6 +273,18 @@
       {{template "field" (dict "name" "acc_expires" "label" "Access ends" "type" "datetime-local" "help" "Optional. Your time. Access stops at this time. Leave empty for no end." "helpBind" "expiresHelp")}}
     </div>
     {{template "form-foot" (dict "label" "accessSubmitLabel" "default" "Add access")}}
+  </form>
+  {{template "dialog-end"}}
+
+  {{template "dialog-start" (dict "id" "defaults-dialog" "title" "Defaults for new access" "size" "lg")}}
+  <form @submit.prevent="submitDefaults" novalidate>
+    <div class="dialog-body">
+      <p class="muted">Each user or group given access to this tenant gets these, unless the access gives its own. They are copied in when access is given, so changing them here changes no existing access. Access given by an approved request gets them too.</p>
+      {{template "tag-field" (dict "name" "dft_roles" "noun" "role" "label" "Roles" "help" "Application roles, such as editor or viewer, sent in the roles claim.")}}
+      {{template "tag-field" (dict "name" "dft_tags" "label" "Tags" "help" "Added to the tags claim for this tenant's clients.")}}
+      {{template "details-field" (dict "name" "dft_details" "label" "Authorization details" "types" "detailTypes" "placeholder" "[\n  {\n    \"type\": \"urn:example:admin\",\n    \"actions\": [\"read\"]\n  }\n]" "help" "RFC 9396 authorization details for the access tokens of this tenant's clients that list their type: a JSON array of objects, each with a type.")}}
+    </div>
+    {{template "form-foot" (dict "label" "defaultsLabel" "default" "Save defaults")}}
   </form>
   {{template "dialog-end"}}
 </section>

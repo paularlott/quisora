@@ -1,9 +1,9 @@
 # Time-limited access
 
 A tenant's access list (members-only tenants) can give a user or group access **until a set time**: three hours to deal
-with an incident, a day to help a customer. Quisora does not decide who should have it. An administrator gives it in the
-console, or an external tool that approves requests its own way (a ticketing system, a chat bot, a CRM) gives it through
-the management API, and Quisora enforces the end.
+with an incident, a day to help a customer. An administrator gives it in the console; an external tool that approves
+requests its own way (a ticketing system, a chat bot, a CRM) gives it through the management API; or a person asks for it
+in Quisora and an approver group decides ([access requests](ACCESS-REQUESTS.md)). Quisora enforces the end.
 
 ## Giving it
 

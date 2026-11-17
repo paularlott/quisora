@@ -33,6 +33,10 @@ const (
 	Verify   = "verify"
 	Recovery = "recovery"
 	Code     = "code"
+
+	AccessRequestNew     = "access_request_new"
+	AccessRequestDecided = "access_request_decided"
+	AccessRequestEnded   = "access_request_ended"
 )
 
 // Email describes one of the emails, for the console.
@@ -51,6 +55,9 @@ var Emails = []Email{
 	{Verify, "Address verification", "Sent to confirm an email address: opening its link verifies the address.", "Link"},
 	{Recovery, "Recovery code used", "Sent when a recovery code was used to sign in, with how many are left. Its link opens the account page.", ""},
 	{Code, "Sign-in code", "Sent when a sign-in asks for a code by email as its second factor.", "Code"},
+	{AccessRequestNew, "Access request", "Sent to the approvers when someone asks for access to a tenant. Its link opens their Approvals page.", ""},
+	{AccessRequestDecided, "Access request decided", "Sent to the person who asked when their request is approved or denied. Its link opens their Request access page.", ""},
+	{AccessRequestEnded, "Access ended", "Sent when someone else ends the access a request gave. Its link opens their Request access page.", ""},
 }
 
 // Names are the emails' names, in the order of Emails.
@@ -82,6 +89,16 @@ type Data struct {
 	Code         string // the sign-in code (the sign-in code email)
 	LogoURL      string // the absolute URL of the organization's logo, else of the server's
 	PrimaryColor string // the organization's primary colour (#rrggbb), else the built-in one
+
+	// The access request emails:
+	Requester string // who asked
+	Tenant    string // the tenant they asked for
+	Length    string // how long, such as "4 hours"
+	Reason    string // why they asked
+	Decision  string // "approved" or "denied"
+	Ends      string // when the access ends, such as "18 Nov 2026 15:00 UTC"
+	By        string // who decided, or ended it
+	Note      string // what the approver wrote
 }
 
 // DefaultColor is Data.PrimaryColor for an organization without a colour of its own: the built-in emails' accent.
@@ -288,6 +305,9 @@ func Sample(name string, d Data) Data {
 		d.Code = "123456"
 		d.Link = ""
 		return d
+	case AccessRequestNew, AccessRequestDecided, AccessRequestEnded:
+		d.Requester, d.Tenant, d.Length, d.Reason = "Pat Example", "Customer B", "4 hours", "SUP-4211: their sign-in fails"
+		d.Decision, d.Ends, d.By, d.Note = "approved", "18 Nov 2026 15:00 UTC", "Sam Approver", "Fine for this ticket"
 	}
 	if d.Link == "" {
 		d.Link = "https://id.example.com/preview-only"
@@ -303,7 +323,8 @@ func Render(set model.EmailTemplateSet, name string, d Data) (Message, error) {
 	e := set.Emails[name]
 	f := "emails." + name + "."
 	sub, err := renderSubject(e.Subject, Data{Site: d.Site, Org: d.Org, Name: d.Name, Expires: d.Expires, Left: d.Left,
-		LogoURL: d.LogoURL, PrimaryColor: d.PrimaryColor}) // never the link or the code
+		LogoURL: d.LogoURL, PrimaryColor: d.PrimaryColor, Requester: d.Requester, Tenant: d.Tenant, Length: d.Length,
+		Decision: d.Decision, By: d.By}) // never the link or the code
 	if err != nil {
 		return Message{}, &Error{f + "subject", explain(err)}
 	}

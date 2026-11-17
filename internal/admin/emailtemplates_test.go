@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paularlott/quisora/internal/mailtpl"
+
 	"github.com/paularlott/quisora/internal/service"
 	"github.com/paularlott/quisora/internal/web"
 )
@@ -19,7 +21,7 @@ func TestEmailTemplatesAPI(t *testing.T) {
 	r := ad.get(ET)
 	want(t, r, 200)
 	inherited := r.JSON["inherited"].(map[string]any)
-	if r.JSON["primary"] != false || r.JSON["mail_enabled"] != false || len(r.JSON["emails"].([]any)) != 5 ||
+	if r.JSON["primary"] != false || r.JSON["mail_enabled"] != false || len(r.JSON["emails"].([]any)) != len(mailtpl.Emails) ||
 		!strings.Contains(inherited["layout_html"].(string), `{{template "body" .}}`) {
 		t.Fatalf("get: %s", r.Raw)
 	}

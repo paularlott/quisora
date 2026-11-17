@@ -109,7 +109,9 @@ func (m *Module) renderDraft(w http.ResponseWriter, r *http.Request) (*model.Org
 // previewPaths are the pages the links of the previews open: the real pages, without a token (so they only say the
 // link is not valid), or the account page; "" for the sign-in code, which has no link.
 var previewPaths = map[string]string{mailtpl.Invite: "/invite?token=preview", mailtpl.Reset: "/reset?token=preview",
-	mailtpl.Verify: "/verify-email?token=preview", mailtpl.Recovery: "/account", mailtpl.Code: ""}
+	mailtpl.Verify: "/verify-email?token=preview", mailtpl.Recovery: "/account", mailtpl.Code: "",
+	mailtpl.AccessRequestNew: "/account/approvals", mailtpl.AccessRequestDecided: "/account/requests",
+	mailtpl.AccessRequestEnded: "/account/requests"}
 
 // previewEmailTemplate renders one email from the templates as they are being edited, with made-up values: its subject,
 // HTML and text (POST /api/orgs/{org}/email-templates/preview). Nothing is saved or sent.

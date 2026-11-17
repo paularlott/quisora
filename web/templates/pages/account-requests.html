@@ -1,0 +1,60 @@
+{{template "base" .}}
+{{define "content"}}
+<div class="stack-lg" x-data="accessRequests">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
+      <h1 class="page-title">Request access</h1>
+      <p class="page-sub">Ask for access to a tenant for a while. Someone in the approver group decides, and you get an email when they do. Your access ends by itself at the end of the time you asked for.</p>
+    </div>
+  </div>
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+
+  <section class="glass-card" aria-labelledby="ask-h" x-show="canAsk" x-cloak>
+    <h2 class="section-title mb-4" id="ask-h">Ask for access</h2>
+    <form class="stack" @submit.prevent="ask" novalidate>
+      {{template "combo-field" (dict "name" "tenant_id" "label" "Tenant" "placeholder" "Type a tenant’s name" "help" "Only the tenants that people must be given access to are listed.")}}
+      <div class="field" x-show="manyApprovers" x-cloak>
+        <label class="label" for="f-approvers">Request approval from</label>
+        <select class="select" id="f-approvers" name="approvers" x-model="form.approvers" @change="approversChanged" :aria-invalid="invalid.approvers" aria-describedby="e-approvers">
+          <template x-for="g in approvers" :key="g.id"><option :value="g.id" x-text="g.name"></option></template>
+        </select>
+        <p class="field-error" id="e-approvers" x-text="errors.approvers"></p>
+      </div>
+      <p class="help" x-show="oneApprover" x-cloak x-text="approverText"></p>
+      <div class="field">
+        <label class="label" for="f-length">For how long</label>
+        <select class="select" id="f-length" name="length" x-model="form.length" :aria-invalid="invalid.length" aria-describedby="e-length">
+          <template x-for="l in lengths" :key="l.value"><option :value="l.value" x-text="l.label"></option></template>
+        </select>
+        <p class="field-error" id="e-length" x-text="errors.length"></p>
+      </div>
+      {{template "textarea-field" (dict "name" "reason" "label" "Why you need it" "required" true "rows" "3" "help" "The approvers see this, for example a ticket number and what you need to do. At most 500 characters.")}}
+      <div><button type="submit" class="btn btn-primary" :disabled="busy" x-text="askLabel">Send request</button></div>
+    </form>
+  </section>
+  <p class="muted" x-show="cannotAsk" x-cloak>You cannot ask for access: you are not in a group whose members may. An administrator can change that.</p>
+
+  <section class="glass-card" aria-labelledby="mine-h">
+    <h2 class="section-title mb-4" id="mine-h">Your requests</h2>
+    <p class="muted" x-show="isEmpty" x-cloak>You have not asked for access yet.</p>
+    <div class="table-wrap" role="region" aria-label="Your requests" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Your requests</caption>
+        <thead><tr><th scope="col">Tenant</th><th scope="col">How long</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row" class="cell-title"><span x-text="row.tenant_display_name"></span><span class="cell-sub" x-text="row.reason"></span></th>
+            <td x-text="row.length_text"></td>
+            <td><span :class="row.badgeClass" x-text="row.stateText"></span><span class="cell-sub" x-text="row.detail"></span></td>
+            <td class="actions">
+              <button type="button" class="btn btn-secondary btn-sm" x-show="row.canCancel" :data-id="row.id" :aria-label="row.cancelLabel" @click="cancel">Cancel</button>
+              <button type="button" class="btn btn-secondary btn-sm" x-show="row.live" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button>
+            </td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{{end}}

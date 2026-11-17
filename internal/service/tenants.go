@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -31,6 +32,8 @@ type TenantInput struct {
 	Settings    *model.TenantSettings `json:"settings"`
 	// Resources are the APIs the tenant owns (resource indicators: an MCP server's URL, say), unique within the organization.
 	Resources *[]string `json:"resources"`
+	// AccessDefaults are the roles, tags and authorization details each new access entry takes unless it gives its own.
+	AccessDefaults *AccessDefaultsInput `json:"access_defaults"`
 }
 
 func tenantConflict(err error) error {
@@ -44,7 +47,45 @@ func tenantConflict(err error) error {
 	return mapStore(err)
 }
 
+// AccessDefaultsInput sets a tenant's access defaults (model.AccessDefaults): each field given replaces that default
+// ([] or null clears it), each field absent keeps it.
+type AccessDefaultsInput struct {
+	Roles                *[]string        `json:"roles"`
+	Tags                 *[]string        `json:"tags"`
+	AuthorizationDetails *json.RawMessage `json:"authorization_details"`
+}
+
+// applyAccessDefaults settles t's access defaults from in (nil: unchanged), checked as an access entry's are.
+func applyAccessDefaults(t *model.Tenant, in *AccessDefaultsInput) error {
+	if in == nil {
+		return nil
+	}
+	var d model.AccessDefaults
+	if t.AccessDefaults != nil {
+		d = model.AccessDefaults{Roles: slices.Clone(t.AccessDefaults.Roles), Tags: slices.Clone(t.AccessDefaults.Tags),
+			AuthorizationDetails: slices.Clone(t.AccessDefaults.AuthorizationDetails)}
+	}
+	if err := applyRoles(&d.Roles, in.Roles); err != nil {
+		return err
+	}
+	if err := applyTags(&d.Tags, in.Tags); err != nil {
+		return err
+	}
+	if err := applyAuthDetails(&d.AuthorizationDetails, in.AuthorizationDetails); err != nil {
+		return err
+	}
+	if len(d.Roles) == 0 && len(d.Tags) == 0 && len(d.AuthorizationDetails) == 0 {
+		t.AccessDefaults = nil
+		return nil
+	}
+	t.AccessDefaults = &d
+	return nil
+}
+
 func (s *Service) applyTenant(ctx context.Context, t *model.Tenant, in TenantInput) error {
+	if err := applyAccessDefaults(t, in.AccessDefaults); err != nil {
+		return err
+	}
 	if in.Name != nil {
 		name := strings.TrimSpace(*in.Name)
 		if !model.ValidOrgName(name) {

@@ -324,6 +324,7 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	// Profile pictures: the manager's a transparent PNG, the administrator's and a few members' gradient photos. The
 	// other demo accounts (alan, katherine, dorothy, ...) have none, so both states can be seen.
 	seedPictures(ctx, svc, out["manager"], out["admin"], members[1], members[2], members[4], members[5])
+	seedAccessRequests(ctx, svc, acme, out["user"], out["manager"], members[0])
 	curTenant := customers.ID
 
 	client := func(name, desc, method string, grants []string, uris []string) *model.Client {
@@ -547,4 +548,30 @@ func demoSkin(ctx context.Context, svc *service.Service, super *model.User, v st
 	}
 	_, err = svc.UpdateBranding(ctx, a, id, service.BrandingInput{Skin: &name})
 	return err
+}
+
+// seedAccessRequests sets up access requests: "On-call" (alan and another member) may ask for access, approved by
+// "On-call leads" (grace); "Ops tools" is a members-only tenant whose new access gets the support role; alan's request
+// waits for a decision, the other member's was approved.
+func seedAccessRequests(ctx context.Context, svc *service.Service, acme *model.Org, alan, grace, other *model.User) {
+	sys := service.System
+	leads, err := svc.CreateGroupWithMembers(ctx, sys, acme.ID, service.GroupInput{DisplayName: ptr("On-call leads")}, []string{grace.ID})
+	must(err)
+	_, err = svc.CreateGroupWithMembers(ctx, sys, acme.ID, service.GroupInput{DisplayName: ptr("On-call"),
+		AccessRequests: &service.GroupRequestsInput{Enabled: true, Approvers: leads.ID, Lengths: []int{3600, 4 * 3600, 86400}}},
+		[]string{alan.ID, other.ID})
+	must(err)
+	set := model.TenantSettings{MembersOnly: true, PasswordLogin: true, PasswordReset: true, PasskeyLogin: true, AllProviders: true}
+	ops, err := svc.CreateTenant(ctx, sys, acme.ID, service.TenantInput{Name: ptr("ops-tools"), DisplayName: ptr("Ops tools"),
+		Description: ptr("Production consoles, by request"), Settings: &set,
+		AccessDefaults: &service.AccessDefaultsInput{Roles: &[]string{"support"}}})
+	must(err)
+	_, err = svc.CreateAccessRequest(ctx, service.ActorForUser(alan, ""), service.AccessRequestInput{TenantID: ops.ID, Length: 4 * 3600,
+		Reason: "INC-2041: payments stuck for one customer"})
+	must(err)
+	r, err := svc.CreateAccessRequest(ctx, service.ActorForUser(other, ""), service.AccessRequestInput{TenantID: ops.ID, Length: 86400,
+		Reason: "SUP-311: export a customer's audit log"})
+	must(err)
+	_, err = svc.DecideAccessRequest(ctx, service.ActorForUser(grace, ""), r.ID, true, "Fine for this ticket", true)
+	must(err)
 }

@@ -121,6 +121,7 @@ func (m *Module) registerPages(s *web.Server) {
 	page("GET /admin/orgs/{org}/clients", m.pageClientsMoved)
 	page("GET /admin/orgs/{org}/providers", m.orgPage("admin-providers", "Providers", "providers", true, nil))
 	page("GET /admin/orgs/{org}/service-accounts", m.orgPage("admin-service-accounts", "Service accounts", "service-accounts", true, nil))
+	page("GET /admin/orgs/{org}/access-requests", m.orgPage("admin-access-requests", "Access requests", "access-requests", true, nil))
 	page("GET /admin/orgs/{org}/audit", m.orgPage("admin-audit", "Audit log", "audit", true, nil))
 	page("GET /admin/orgs/{org}/emails", m.orgPage("admin-emails", "Emails", "emails", true, nil))
 	s.Mux.HandleFunc("GET /admin/email-preview", emailPreviewFrame)

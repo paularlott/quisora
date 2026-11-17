@@ -36,6 +36,7 @@ scriptling -L lib examples/create_user.py acme grace@acme.example Grace Hopper -
 scriptling -L lib examples/add_to_group.py acme Engineers grace alan
 scriptling -L lib examples/timed_access.py acme give support grace 3 "SUP-4211 approved by sam" --roles support
 QUISORA_APP_CLIENT_ID=… QUISORA_APP_CLIENT_SECRET=… scriptling -L lib examples/guest_token.py acme <access token>
+scriptling -L lib examples/approve_requests.py acme SUP-,INC-
 ```
 
 `create_org.py` needs a super admin's token, or a service account of the primary organization with `orgs:create`.
@@ -45,6 +46,9 @@ owns the organization it creates and configures it as a super admin would ([owni
 `list_orgs.py` needs a personal token: service accounts cannot list organizations. As a service account,
 `create_user.py` needs the `users` scope (and `manage_admins` for `--role admin`), and `add_to_group.py` needs
 `users` and `groups`; `timed_access.py` needs `access`, `tenants` and `users` ([time-limited access](../docs/TIMED-ACCESS.md)).
+`approve_requests.py` is an approval bot: a service account with `access_requests:approve` approves the waiting
+[access requests](../docs/ACCESS-REQUESTS.md) whose reason starts with one of the prefixes (`--deny` denies the
+others), for the groups whose settings let service accounts approve.
 `guest_token.py` is an application's side, not the management API's: it asks with the application's own client id and
 secret, and names a guest's home organization and tenant when the application asked for the `idp` scope.
 
@@ -69,6 +73,7 @@ except quisora.QuisoraError as e:
 ```
 
 It covers organizations, sign-in providers, tenants and their access lists (with an end: `give_access(..., hours=3)`),
+access requests (`request_access`, `pending_access_requests`, `approve_access_request`, …),
 users (invitations, sign-out, lock-out), groups and their members, service accounts and the audit log. Anything else is one call away with `qs.request(method, path, params=..., body=...)`, and
 `qs.paginate(path, params)` walks any list.
 

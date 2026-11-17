@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -18,7 +19,78 @@ type GroupInput struct {
 	DisplayName *string   `json:"display_name"`
 	ExternalID  *string   `json:"external_id"`
 	Tags        *[]string `json:"tags"`
+	// AccessRequests are the group's access request settings (model.GroupRequests): administrators only.
+	AccessRequests *GroupRequestsInput `json:"access_requests"`
 }
+
+// GroupRequestsInput sets a group's access request settings: with Enabled, its members may ask for access to a
+// members-only tenant, for one of Lengths (seconds, of model.AccessLengths; none: all of them), decided by a member
+// of the Approvers group, or by a service account with access_requests:approve when ServiceAccounts. Enabled false
+// turns them off.
+type GroupRequestsInput struct {
+	Enabled         bool   `json:"enabled"`
+	Approvers       string `json:"approvers"`
+	Lengths         []int  `json:"lengths"`
+	ServiceAccounts bool   `json:"service_accounts"`
+}
+
+// applyGroupRequests settles g's access request settings from in (nil: unchanged).
+func (s *Service) applyGroupRequests(ctx context.Context, g *model.Group, in *GroupRequestsInput) error {
+	if in == nil {
+		return nil
+	}
+	if !in.Enabled {
+		g.Requests = nil
+		return nil
+	}
+	id := strings.TrimSpace(in.Approvers)
+	if id == "" {
+		return Invalid("access_requests", "choose the group whose members approve the requests")
+	}
+	if id == g.ID {
+		return Invalid("access_requests", "choose another group to approve the requests: nobody approves their own")
+	}
+	ag, err := s.Groups.Get(ctx, id)
+	if errors.Is(err, store.ErrNotFound) || err == nil && ag.OrgID != g.OrgID {
+		return Invalid("access_requests", "choose an approver group of this organization")
+	}
+	if err != nil {
+		return mapStore(err)
+	}
+	lengths := []int{}
+	for _, l := range model.AccessLengths { // in the standard order, each once
+		if slices.Contains(in.Lengths, l) {
+			lengths = append(lengths, l)
+		}
+	}
+	for _, l := range in.Lengths {
+		if !slices.Contains(model.AccessLengths, l) {
+			return Invalid("access_requests", "a length of "+itoa(l)+" seconds is not offered: choose from 1 hour, 4 hours, 8 hours, 1 day, 3 days, 1 week, 2 weeks and 1 month")
+		}
+	}
+	if len(lengths) == 0 {
+		lengths = slices.Clone(model.AccessLengths)
+	}
+	g.Requests = &model.GroupRequests{Approvers: ag.ID, Lengths: lengths, ServiceAccounts: in.ServiceAccounts}
+	return nil
+}
+
+// groupProtected reports whether g's members may be changed by administrators only: its members may ask for access,
+// or it approves another group's requests (otherwise a manager could add someone to either and approve their way in).
+func (s *Service) groupProtected(ctx context.Context, g *model.Group) (bool, error) {
+	if g.Requests != nil {
+		return true, nil
+	}
+	l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "approvers", Value: g.ID}}})
+	if err != nil {
+		return false, mapStore(err)
+	}
+	return len(l) > 0, nil
+}
+
+// errProtectedGroup refuses a change of the members of a protected group (groupProtected) by someone who is not an
+// administrator.
+var errProtectedGroup = Invalid("members", "only administrators can change the members of a group used for access requests")
 
 // MaxMembersPerChange bounds the memberships one change of a group may add and remove, so the change entry kept in
 // the group's record (model.Group.Pending) stays small. A larger change is refused with ErrTooLarge; make it in parts.
@@ -99,6 +171,9 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 	if err := applyGroup(g, in); err != nil {
 		return nil, err
 	}
+	if err := s.applyGroupRequests(ctx, g, in.AccessRequests); err != nil {
+		return nil, err
+	}
 	members = dedupe(members)
 	if len(members) > MaxMembersPerChange {
 		return nil, ErrTooLarge
@@ -161,6 +236,11 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	}
 	if err := s.clientMayAffectMembers(ctx, a, g); err != nil {
 		return err // deleting the group removes every member from it
+	}
+	if l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "approvers", Value: g.ID}}}); err != nil {
+		return mapStore(err)
+	} else if len(l) > 0 {
+		return Invalid("access_requests", g.DisplayName+" approves the access requests of "+l[0].DisplayName+": choose other approvers there first")
 	}
 	return mapStore(s.audited(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil, func() error { return s.Groups.DeleteIf(ctx, id, g.Version) }))
 }
@@ -346,14 +426,25 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 	if err := applyGroup(&next, in); err != nil {
 		return nil, err
 	}
+	if err := s.applyGroupRequests(ctx, &next, in.AccessRequests); err != nil {
+		return nil, err
+	}
 	tagsChanged := !slices.Equal(model.NormTags(next.Tags), model.NormTags(g.Tags))
-	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged
+	requestsChanged := !reflect.DeepEqual(next.Requests, g.Requests)
+	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged || requestsChanged
 	if fieldsChanged && !s.canAdminOrg(a, g.OrgID) {
 		return nil, ErrForbidden // a manager adds and removes members, and changes nothing else
 	}
 	add, remove = dedupe(add), dedupe(remove)
 	if len(add)+len(remove) > MaxMembersPerChange {
 		return nil, ErrTooLarge
+	}
+	if len(add)+len(remove) > 0 && !s.canAdminOrg(a, g.OrgID) {
+		if protected, err := s.groupProtected(ctx, g); err != nil {
+			return nil, err
+		} else if protected {
+			return nil, errProtectedGroup
+		}
 	}
 	// A change another writer left pending is finished first: its entries are committed and the writes idempotent,
 	// so finishing them changes nothing a reader could see; it lets the commit below drop them from the record. One

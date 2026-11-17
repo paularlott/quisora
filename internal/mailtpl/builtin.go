@@ -82,6 +82,50 @@ If it was not you, tell your administrator at once: someone has your password an
 				"Open your account",
 				`If it was not you, tell your administrator at once: someone has your password and your recovery codes.`),
 		},
+		AccessRequestNew: {
+			Subject: "{{.Requester}} asks for access to {{.Tenant}} in {{.Site}}",
+			Text: `{{.Requester}} asks for access to {{.Tenant}} for {{.Length}}.
+
+Why: {{.Reason}}
+
+Approve or deny it on your Approvals page:
+
+{{.Link}}
+
+If nobody decides within a day, the request lapses.
+`,
+			HTML: linkHTML(`<strong>{{.Requester}}</strong> asks for access to <strong>{{.Tenant}}</strong> for {{.Length}}.</p>
+<p style="margin:0 0 24px;line-height:1.5">Why: {{.Reason}}`,
+				"Approve or deny",
+				`If nobody decides within a day, the request lapses.`),
+		},
+		AccessRequestDecided: {
+			Subject: "Your access to {{.Tenant}} in {{.Site}} was {{.Decision}}",
+			Text: `{{if eq .Decision "approved"}}{{.By}} approved your request: you have access to {{.Tenant}}{{if .Ends}} until {{.Ends}}{{end}}.{{else}}{{.By}} denied your request for access to {{.Tenant}}.{{end}}
+{{if .Note}}
+Their note: {{.Note}}
+{{end}}
+Your requests:
+
+{{.Link}}
+`,
+			HTML: linkHTML(`{{if eq .Decision "approved"}}<strong>{{.By}}</strong> approved your request: you have access to <strong>{{.Tenant}}</strong>{{if .Ends}} until {{.Ends}}{{end}}.{{else}}<strong>{{.By}}</strong> denied your request for access to <strong>{{.Tenant}}</strong>.{{end}}{{if .Note}}</p>
+<p style="margin:0 0 24px;line-height:1.5">Their note: {{.Note}}{{end}}`,
+				"Your requests",
+				`You can ask again, or for longer, from the same page.`),
+		},
+		AccessRequestEnded: {
+			Subject: "Your access to {{.Tenant}} in {{.Site}} was ended",
+			Text: `{{.By}} ended your access to {{.Tenant}}, which your request gave. You have been signed out of its applications.
+
+Your requests:
+
+{{.Link}}
+`,
+			HTML: linkHTML(`<strong>{{.By}}</strong> ended your access to <strong>{{.Tenant}}</strong>, which your request gave. You have been signed out of its applications.`,
+				"Your requests",
+				`If you still need it, ask again from the same page.`),
+		},
 		Code: {
 			Subject: "Your {{.Site}} sign-in code", // not the code: subjects show in lock-screen previews and notifications
 			Text: `Your code to finish signing in to {{.Site}}:

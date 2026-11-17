@@ -27,7 +27,7 @@ import (
 // it none, so turning pictures on again starts with none. Nothing serves or sends them meanwhile.
 
 // sweepKinds are the kinds the sweep reads, in turn.
-var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess,
+var sweepKinds = []model.Kind{model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindAccessRequest,
 	model.KindClient, model.KindProvider, model.KindPasskey, model.KindIdentity, model.KindAPIToken, model.KindSignIn,
 	model.KindOrgLogo, model.KindEmailTemplates, model.KindSession, model.KindGrant, model.KindConsent, model.KindLock, model.KindSSHKey, model.KindSSHCert,
 	model.KindUserPicture}
@@ -85,6 +85,8 @@ func owners(e model.Entity) []ownerRef {
 			subject = model.KindGroup
 		}
 		return []ownerRef{{kind: model.KindTenant, id: v.TenantID}, {kind: subject, id: v.SubjectID}}
+	case *model.AccessRequest: // the person asking and the tenant asked for
+		return []ownerRef{{kind: model.KindUser, id: v.UserID}, {kind: model.KindTenant, id: v.TenantID}}
 	case *model.Passkey:
 		return []ownerRef{{kind: model.KindUser, id: v.UserID}}
 	case *model.Identity:

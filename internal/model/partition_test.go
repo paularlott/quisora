@@ -17,6 +17,7 @@ func TestPartitionKeyOfEveryKind(t *testing.T) {
 		KindMember:         &Member{Meta: meta, OrgID: org, GroupID: "g", UserID: "u"},
 		KindTenant:         &Tenant{Meta: meta, OrgID: org, Name: "t"},
 		KindAccess:         &TenantAccess{Meta: meta, OrgID: org},
+		KindAccessRequest:  &AccessRequest{Meta: meta, OrgID: org, State: RequestPending},
 		KindClient:         &Client{Meta: meta, OrgID: org},
 		KindProvider:       &Provider{Meta: meta, OrgID: org, Name: "p"},
 		KindPasskey:        &Passkey{Meta: meta, OrgID: org, UserID: "u", CredentialID: []byte{1, 2, 3}},

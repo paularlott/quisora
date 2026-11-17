@@ -528,6 +528,8 @@ type Group struct {
 	// the entries it has applied with another compare-and-swap. It is normally empty, or one entry for the
 	// milliseconds a change takes to materialize; only a writer that died leaves one behind.
 	Pending []GroupChange `msgpack:"pc,omitempty" json:"-"`
+	// Requests are the group's access request settings: nil when its members may not ask for access.
+	Requests *GroupRequests `msgpack:"rq,omitempty" json:"access_requests"`
 }
 
 // GroupChange is one committed change of a group's members (Group.Pending).
@@ -539,6 +541,14 @@ type GroupChange struct {
 }
 
 func (g *Group) Kind() Kind { return KindGroup }
+
+// ApproverGroup is the id of the group that approves this group's members' access requests; "" when they may not ask.
+func (g *Group) ApproverGroup() string {
+	if g.Requests == nil {
+		return ""
+	}
+	return g.Requests.Approvers
+}
 func (g *Group) Index() Index {
 	uq := []string{GroupNameKey(g.OrgID, g.DisplayName)}
 	if g.ExternalID != "" {
@@ -549,7 +559,8 @@ func (g *Group) Index() Index {
 		Partition: g.OrgID,
 		Unique:    uq,
 		Fields: map[string]any{"display_name": g.DisplayName, "created": g.Created,
-			"tags": strings.Join(g.Tags, " "), "pending": len(g.Pending) > 0},
+			"tags": strings.Join(g.Tags, " "), "pending": len(g.Pending) > 0,
+			"requests": g.Requests != nil, "approvers": g.ApproverGroup()},
 	}
 }
 
@@ -670,6 +681,9 @@ type Tenant struct {
 	// provider's sign-in client and no other, so its access list decides who of this organization signs in to that
 	// one, and until when. Made and removed with the provider (service.issueSourceTenant); "" for every other tenant.
 	ProviderID string `msgpack:"pv,omitempty" json:"provider_id,omitempty"`
+	// AccessDefaults are the roles, tags and authorization details copied into each new access entry that does not
+	// give its own; nil for none.
+	AccessDefaults *AccessDefaults `msgpack:"adf,omitempty" json:"access_defaults,omitempty"`
 }
 
 func (t *Tenant) Kind() Kind { return KindTenant }

@@ -104,6 +104,12 @@ const AnyScope = "*"
 // account's access token with the route's scope (AnyScope: any service account; "": none may call it). It also
 // negotiates the API version. Handlers must use Actor(r) — User(r) is nil for bearer requests.
 func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Handler {
+	return s.RequireManagementFor(scope, "", next)
+}
+
+// RequireManagementFor is RequireManagement for a route a personal API token may also call with tokenScope instead of
+// admin (a person's own access requests: access_requests).
+func (s *Server) RequireManagementFor(scope, tokenScope string, next http.HandlerFunc) http.Handler {
 	return s.WithSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v := r.Header.Get(APIVersionHeader)
 		if v == "" {
@@ -167,6 +173,8 @@ func (s *Server) RequireManagement(scope string, next http.HandlerFunc) http.Han
 				need = scope
 			case r.URL.Path == "/api/backup":
 				need = service.ScopeBackup
+			case tokenScope != "" && a.HasScope(tokenScope):
+				need = tokenScope // a route for the person themselves (their own access requests): admin not needed
 			}
 			if need == "" && a.Owner != "" {
 				need = AnyScope

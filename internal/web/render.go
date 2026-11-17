@@ -49,6 +49,9 @@ type Page struct {
 	IsSuper bool
 	IsAdmin bool // admin of their own org (or super)
 	IsMgr   bool // manager+ of their own org
+	// CanRequest and CanApprove show the account menu's Request access and Approvals: the user is in a group whose
+	// members may ask for access, or in a group that approves another's requests (never for a guest's session).
+	CanRequest, CanApprove bool
 	// KeyRotation: a master key rotation is in progress on this node (previous master keys are configured); super
 	// admins get the master key rotation page in the menu.
 	KeyRotation bool

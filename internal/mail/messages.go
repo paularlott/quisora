@@ -168,3 +168,67 @@ func humanTTL(d time.Duration) string {
 	}
 	return "1 minute"
 }
+
+// SendAccessRequest emails what an access request notice concerns (service.AccessRequestNotice): a new request to the
+// members of its approver group (not the person who asked), a decision, or access ended by someone else, to the
+// person who asked. Best effort: a person without an address gets none, and a failure is logged by the caller.
+func (m *Mailer) SendAccessRequest(ctx context.Context, n service.AccessRequestNotice) error {
+	r := n.Request
+	org, err := m.Svc.Org(ctx, r.OrgID)
+	if err != nil {
+		return err
+	}
+	requester, err := m.Svc.Users.Get(ctx, r.UserID)
+	if err != nil {
+		return err
+	}
+	d := web.MailBrand(m.Cfg, org)
+	d.Requester, d.Length, d.Reason, d.By, d.Note = requester.FullName(), service.LengthText(r.Length), r.Reason, n.By, r.Note
+	d.Tenant = r.TenantID
+	if t, err := m.Svc.Tenants.Get(ctx, r.TenantID); err == nil {
+		d.Tenant = t.DisplayName
+	}
+	if !r.Ends.IsZero() {
+		d.Ends = r.Ends.UTC().Format("2 Jan 2006 15:04 UTC")
+	}
+	page := "/account/requests"
+	var name string
+	var to []*model.User
+	switch n.Event {
+	case "new":
+		name, page = mailtpl.AccessRequestNew, "/account/approvals"
+		ids, err := m.Svc.GroupMembers(ctx, service.System, r.Approvers)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if u, err := m.Svc.Users.Get(ctx, id); err == nil && u.Active && u.ID != r.UserID {
+				to = append(to, u)
+			}
+		}
+	case "approved", "denied":
+		name, d.Decision, to = mailtpl.AccessRequestDecided, n.Event, []*model.User{requester}
+	case "ended":
+		name, to = mailtpl.AccessRequestEnded, []*model.User{requester}
+	default:
+		return nil
+	}
+	d.Link = m.Cfg.Server.PublicURL + web.OrgPath(r.OrgID, page)
+	var firstErr error
+	for _, u := range to {
+		if u.Email == "" {
+			continue
+		}
+		ud := d
+		ud.Name = u.FullName()
+		msg, err := m.render(ctx, org, name, ud)
+		if err == nil {
+			msg.To, msg.OrgID = u.Email, u.OrgID
+			err = m.Send(ctx, msg)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}

@@ -73,7 +73,7 @@ func (m *Module) Register(s *web.Server) {
 		m.Mailer = noopMailer{}
 	}
 	for _, rt := range m.routes() {
-		s.Mux.Handle(rt.Method+" "+rt.Path, s.RequireManagement(rt.Scope, rt.Handler))
+		s.Mux.Handle(rt.Method+" "+rt.Path, s.RequireManagementFor(rt.Scope, tokenScopes[rt.Method+" "+rt.Path], rt.Handler))
 	}
 	m.registerPages(s)
 }
@@ -85,6 +85,18 @@ type Route struct {
 	Handler http.HandlerFunc
 	// Scope is the scope a service account needs to call it (web.AnyScope: any service account; "": none may).
 	Scope string
+}
+
+// tokenScopes are the routes a personal API token may call with a scope of its own instead of admin: a person's own
+// access requests (access_requests).
+var tokenScopes = map[string]string{}
+
+func init() {
+	for _, p := range []string{"GET /access-requests", "POST /access-requests", "GET /access-requests/options",
+		"POST /access-requests/{id}/cancel", "POST /access-requests/{id}/end"} {
+		method, path, _ := strings.Cut(p, " ")
+		tokenScopes[method+" /api/orgs/{org}"+path] = service.ScopeAccessRequests
+	}
 }
 
 // Routes lists every /api operation this module serves. The OpenAPI document (web/openapi/openapi.yaml, served at
@@ -180,6 +192,17 @@ func (m *Module) routes() []Route {
 		{"GET", o + "/providers", m.listProviders, service.ScopeProviders},
 		{"POST", o + "/providers", m.createProvider, service.ScopeProviders},
 		{"GET", o + "/providers/sources", m.listProviderSources, service.ScopeProviders},
+		// access requests: a person's own (a personal token's access_requests scope), deciding (a service account's
+		// access_requests:approve), and all of them for administrators
+		{"GET", o + "/access-requests", m.listOwnRequests, ""},
+		{"POST", o + "/access-requests", m.createRequest, ""},
+		{"GET", o + "/access-requests/options", m.requestOptions, ""},
+		{"POST", o + "/access-requests/{id}/cancel", m.cancelRequest, ""},
+		{"GET", o + "/access-requests/pending", m.pendingRequests, service.ScopeAccessRequestsApprove},
+		{"POST", o + "/access-requests/{id}/approve", m.decideRequest(true), service.ScopeAccessRequestsApprove},
+		{"POST", o + "/access-requests/{id}/deny", m.decideRequest(false), service.ScopeAccessRequestsApprove},
+		{"POST", o + "/access-requests/{id}/end", m.endRequest, service.ScopeAccessRequestsApprove},
+		{"GET", o + "/access-requests/all", m.listAllRequests, service.ScopeAccess},
 		{"GET", o + "/providers/{id}", m.getProvider, service.ScopeProviders},
 		{"PATCH", o + "/providers/{id}", m.updateProvider, service.ScopeProviders},
 		{"DELETE", o + "/providers/{id}", m.deleteProvider, service.ScopeProviders},

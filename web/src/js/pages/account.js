@@ -27,7 +27,8 @@ export function describeAgent(ua) {
 
 const SCOPE_TEXT = { api: 'Your organization’s applications (they check the token with Quisora)', scim: 'Provisioning (SCIM)', admin: 'Administration API',
   backup: 'Backups of the whole server (expires within 30 days)',
-  import: 'Import users with a password hash from another system (with Administration API)' }
+  import: 'Import users with a password hash from another system (with Administration API)',
+  access_requests: 'Ask for access to tenants, and see or cancel your requests' }
 
 // The name OpenSSH gives a private key of a type; its certificate is <that>-cert.pub, beside it.
 const SSH_KEY_FILES = { 'ssh-ed25519': 'id_ed25519', 'ssh-rsa': 'id_rsa', 'ecdsa-sha2-nistp256': 'id_ecdsa', 'ecdsa-sha2-nistp384': 'id_ecdsa',

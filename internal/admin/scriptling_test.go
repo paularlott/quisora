@@ -172,3 +172,47 @@ func TestScriptlingSetupOrgGivesTheGuestGroupsAccess(t *testing.T) {
 		t.Fatalf("the guest group's access: %v %+v", err, acc)
 	}
 }
+
+// The Scriptling approval bot: as a service account with access_requests:approve, it approves the waiting requests
+// whose reason starts with a ticket prefix and leaves the others; a group that does not let service accounts approve
+// keeps its requests from it.
+func TestScriptlingApprovalBot(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	user, other := w.users["user"], w.users["manager"]
+	appr, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Approvers")}, []string{w.users["admin"].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Support"),
+		AccessRequests: &service.GroupRequestsInput{Enabled: true, Approvers: appr.ID, ServiceAccounts: true}}, []string{user.ID, other.ID}); err != nil {
+		t.Fatal(err)
+	}
+	tn, err := w.env.Svc.CreateTenant(ctx, service.System, w.acme.ID, service.TenantInput{Name: ptr("ops")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(u *model.User, reason string) {
+		t.Helper()
+		if _, err := w.env.Svc.CreateAccessRequest(ctx, service.ActorForUser(u, ""), service.AccessRequestInput{TenantID: tn.ID, Length: 3600, Reason: reason}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask(user, "SUP-7 their sign-in fails")
+	ask(other, "just looking")
+	bot := w.asServiceAccount(w.acme, service.ScopeAccessRequestsApprove)
+	out, ok := w.scriptling(t, bot.bearer, "examples/approve_requests.py", "acme", "SUP-,INC-")
+	if !ok || !strings.Contains(out, "Approved "+user.FullName()+" for "+tn.DisplayName) || !strings.Contains(out, "Left for a person: "+other.FullName()) {
+		t.Fatalf("bot: %v\n%s", ok, out)
+	}
+	if acc, err := w.env.Svc.Access.Get(ctx, model.AccessID(tn.ID, user.ID)); err != nil || acc.Expires.IsZero() {
+		t.Fatalf("the approved access: %v %+v", err, acc)
+	}
+	if _, err := w.env.Svc.Access.Get(ctx, model.AccessID(tn.ID, other.ID)); err == nil {
+		t.Fatal("the request left for a person was approved")
+	}
+	out, ok = w.scriptling(t, bot.bearer, "examples/approve_requests.py", "acme", "SUP-", "--deny")
+	if !ok || !strings.Contains(out, "Denied "+other.FullName()) {
+		t.Fatalf("bot --deny: %v\n%s", ok, out)
+	}
+}

@@ -129,6 +129,10 @@ func Due(k Kind, f map[string]any) (time.Time, bool) {
 		if t, ok := f["ends"].(time.Time); ok {
 			return t, true
 		}
+	case k == KindAccessRequest: // a pending request when it lapses, a closed one when it is no longer kept
+		if t, ok := f["due"].(time.Time); ok && !t.IsZero() {
+			return t, true
+		}
 	}
 	return time.Time{}, false
 }

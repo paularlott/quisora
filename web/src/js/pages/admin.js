@@ -1519,7 +1519,16 @@ export default function (Alpine) {
   }))
 
   // ---- Groups ---------------------------------------------------------------------------------------------------
-  Alpine.data('adminGroups', () => mix(tableMixin(), formMixin(), dialogMixin(), tagsMixin(), pickerMixin({
+  // the group dialog's approver group: the organization's other groups, looked up as the administrator types
+  const approverSource = {
+    async search(q) {
+      const r = await get(`${this.apiBase}/groups${qs({ q, limit: 8 })}`)
+      return r.items.filter((g) => !this.editing || g.id !== this.editing.id).map((g) => ({ value: g.id, label: g.display_name }))
+    },
+  }
+  const RQ_LENGTHS = [[3600, '1 hour'], [14400, '4 hours'], [28800, '8 hours'], [86400, '1 day'], [259200, '3 days'], [604800, '1 week'],
+    [1209600, '2 weeks'], [2592000, '1 month']].map(([v, label]) => ({ value: String(v), label }))
+  Alpine.data('adminGroups', () => mix(tableMixin(), formMixin(), dialogMixin(), tagsMixin(), comboMixin({ rq_approvers: approverSource }), pickerMixin({
     // active users of the organization who are not members yet; choosing one adds them at once
     async search(q) {
       // a manager adds plain users only
@@ -1550,24 +1559,45 @@ export default function (Alpine) {
       }, 300)
     },
     transform(g) {
-      return { ...g, createdText: fmtDate(g.created), externalText: g.external_id || '—', membersText: String(g.members || 0), editLabel: 'Edit ' + g.display_name,
+      return { ...g, asks: !!g.access_requests, createdText: fmtDate(g.created), externalText: g.external_id || '—', membersText: String(g.members || 0), editLabel: 'Edit ' + g.display_name,
         deleteLabel: 'Delete ' + g.display_name, membersLabel: 'Members of ' + g.display_name, ...tagView(g.tags, 'groups') }
     },
     get isEdit() { return this.editing !== null },
     get dialogTitle() { return this.editing ? 'Edit group' : 'New group' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create group' },
-    openCreate(ev) { this.editing = null; this.resetForm({ display_name: '', external_id: '', tags: [] }); this.resetChipText(); this.openDlg('group-dialog', ev.currentTarget) },
+    lengthChoices: RQ_LENGTHS,
+    errorKey(f) { return f === 'access_requests' ? 'rq_approvers' : f },
+    openCreate(ev) {
+      this.editing = null
+      this.resetForm({ display_name: '', external_id: '', tags: [], rq_enabled: false, rq_approvers: '', rq_lengths: [], rq_sa: false })
+      this.comboSet('rq_approvers', '', '')
+      this.resetChipText()
+      this.openDlg('group-dialog', ev.currentTarget)
+    },
     edit(ev) {
       const g = this.rowFromEvent(ev)
       this.editing = g
-      this.resetForm({ display_name: g.display_name, external_id: g.external_id || '', tags: [...(g.tags || [])] })
+      const rq = g.access_requests
+      this.resetForm({ display_name: g.display_name, external_id: g.external_id || '', tags: [...(g.tags || [])],
+        rq_enabled: !!rq, rq_approvers: rq ? rq.approvers : '', rq_lengths: rq && rq.lengths.length < RQ_LENGTHS.length ? rq.lengths.map(String) : [],
+        rq_sa: !!(rq && rq.service_accounts) })
+      this.comboSet('rq_approvers', rq ? rq.approvers : '', rq ? '…' : '')
+      if (rq) getOrNull(`${this.apiBase}/groups/${enc(rq.approvers)}`).then((a) => { if (this.editing === g) this.comboSet('rq_approvers', rq.approvers, a ? a.display_name : 'Deleted group') })
       this.resetChipText()
       this.openDlg('group-dialog', ev.currentTarget)
       this.watchEdit({ kinds: ['group'], record: g, fetchOne: () => getOrNull(`${this.apiBase}/groups/${enc(g.id)}`) })
     },
     async submit() {
       if (!this.tagsReady()) { this.focusTagInput(); return }
-      const body = { display_name: this.form.display_name, external_id: this.form.external_id, tags: this.form.tags }
+      const f = this.form
+      const body = { display_name: f.display_name, external_id: f.external_id, tags: f.tags }
+      if (this.admin) {
+        if (f.rq_enabled && (this.comboPending('rq_approvers') || !f.rq_approvers)) {
+          this.setErrors(new ApiError(422, { error: 'Choose the group whose members approve the requests.', field: 'rq_approvers' }))
+          return
+        }
+        body.access_requests = { enabled: !!f.rq_enabled, approvers: f.rq_approvers, lengths: f.rq_lengths.map(Number), service_accounts: !!f.rq_sa }
+      }
       const res = await this.run(() => this.editing ? patch(`${this.apiBase}/groups/${enc(this.editing.id)}`, body) : post(`${this.apiBase}/groups`, body))
       if (!res) return
       this.closeDlg('group-dialog')
@@ -1998,6 +2028,7 @@ export default function (Alpine) {
     { value: 'tenants', help: 'Tenants.' },
     { value: 'clients', help: 'Applications.' },
     { value: 'access', help: 'Tenant access lists.' },
+    { value: 'access_requests:approve', help: 'Approve or deny access requests, where the requesting group allows service accounts to.' },
     { value: 'ssh', help: 'Tenants’ SSH certificate authorities: settings, keys and certificates.' },
     { value: 'ssh:host', help: 'Sign SSH host certificates.' },
     { value: 'import', help: 'Password hashes, authenticator secrets and provider links when creating users.', superOnly: true },
@@ -2008,6 +2039,23 @@ export default function (Alpine) {
     { value: 'orgs:manage', help: 'Act as a super admin in the organizations it created, and only in them.', superOnly: true, primaryOnly: true },
   ]
   const SERVICE_METHODS = { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT' }
+  // ---- Access requests (every request of the organization, for its administrators) ----------------------------
+  const RQ_STATE = { pending: ['Waiting', 'badge-warning'], approved: ['Approved', 'badge-success'], denied: ['Denied', 'badge-danger'],
+    cancelled: ['Cancelled', 'badge-plain'], lapsed: ['Lapsed', 'badge-plain'], ended: ['Ended early', 'badge-plain'] }
+  Alpine.data('adminAccessRequests', () => mix(tableMixin(), {
+    init() { this.initTable() },
+    stateChanged(ev) { this.extra = ev.target.value ? { state: ev.target.value } : {}; this.offset = 0; this.load() },
+    transform(r) {
+      const [stateText, badge] = RQ_STATE[r.state] || [r.state, 'badge-plain']
+      let detail = ''
+      if (r.state === 'pending') detail = `Waiting for ${r.approvers_name}`
+      else if (r.state === 'approved') detail = `By ${r.decided_by_name}${r.ends && !r.ends.startsWith('0001-') ? ', until ' + fmtDateTime(r.ends) : ''}`
+      else if (r.state === 'denied') detail = `By ${r.decided_by_name}${r.note ? `: “${r.note}”` : ''}`
+      else if (r.state === 'ended') detail = `By ${r.ended_by_name}, ${fmtDateTime(r.ended_at)}`
+      return { ...r, stateText, stateClass: 'badge ' + badge, detail, askedText: fmtDateTime(r.created) }
+    },
+  }))
+
   Alpine.data('adminServiceAccounts', () => mix(tableMixin(), formMixin(), dialogMixin(), {
     editing: null, scopeChoices: [], clientId: '', tokenEndpoint: '', secret: '', secretAccount: '', secretTitle: '',
     init() {
@@ -2103,14 +2151,16 @@ export default function (Alpine) {
   const AUDIT_GROUPS = [
     { value: 'login.', label: 'Sign-in' }, { value: 'password.', label: 'Password resets' }, { value: 'invite.', label: 'Invitations' },
     { value: 'account.', label: 'Own account changes' }, { value: 'user.', label: 'Users' }, { value: 'group.', label: 'Groups' },
-    { value: 'org.', label: 'Organizations' }, { value: 'tenant.', label: 'Tenants and access' }, { value: 'client.', label: 'Applications' },
+    { value: 'org.', label: 'Organizations' }, { value: 'tenant.', label: 'Tenants and access' }, { value: 'access_request.', label: 'Access requests' },
+    { value: 'client.', label: 'Applications' },
     { value: 'service_account.', label: 'Service accounts' }, { value: 'ssh.', label: 'SSH certificates' },
     { value: 'oauth.', label: 'Application sign-ins and tokens' }, { value: 'provider.', label: 'Sign-in providers' }, { value: 'identity.', label: 'Linked sign-ins' },
     { value: 'passkey.', label: 'Passkeys' }, { value: 'apitoken.', label: 'API tokens' }, { value: 'keys.', label: 'Signing keys' },
     { value: 'signout.', label: 'Sign-out sweeps' }, { value: 'backup.', label: 'Backups' }, { value: 'cluster.', label: 'Cluster' },
     { value: 'unique.', label: 'Duplicate values' }, { value: 'server.', label: 'Whole server' },
   ]
-  const AUDIT_ACTIONS = ['account.app.revoke', 'account.email.verify', 'account.passkey.add', 'account.passkey.delete',
+  const AUDIT_ACTIONS = ['access_request.approve', 'access_request.cancel', 'access_request.create', 'access_request.deny',
+    'access_request.end', 'access_request.lapse', 'account.app.revoke', 'account.email.verify', 'account.passkey.add', 'account.passkey.delete',
     'account.provider.connect', 'account.provider.connect_refused', 'account.provider.disconnect',
     'account.recovery_codes.create', 'account.session.revoke', 'account.session.revoke_others', 'account.totp.disable',
     'account.totp.enable', 'account.totp.replace', 'apitoken.create', 'apitoken.delete', 'apitoken.regenerate',

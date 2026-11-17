@@ -1,0 +1,68 @@
+{{template "base" .}}
+{{define "content"}}
+<div class="stack-lg" x-data="accessApprovals">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
+      <h1 class="page-title">Approvals</h1>
+      <p class="page-sub">Requests for access that your groups approve. Approving gives the person access to the tenant until the end of the time they asked for. You confirm it is you before deciding.</p>
+    </div>
+  </div>
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+
+  <section class="glass-card" aria-labelledby="waiting-h">
+    <h2 class="section-title mb-4" id="waiting-h">Waiting for a decision <span class="badge badge-plain ml-1" x-text="pendingCount"></span></h2>
+    <p class="muted" x-show="noPending" x-cloak>Nothing is waiting for you.</p>
+    <div class="table-wrap" role="region" aria-label="Requests waiting for a decision" tabindex="0" x-show="hasPending" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Requests waiting for a decision</caption>
+        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">How long</th><th scope="col">Why</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in pending" :key="row.id"><tr>
+            <th scope="row" class="cell-title"><span x-text="row.user_name"></span><span class="cell-sub" x-text="row.askedText"></span></th>
+            <td x-text="row.tenant_display_name"></td>
+            <td x-text="row.length_text"></td>
+            <td x-text="row.reason"></td>
+            <td class="actions">
+              <button type="button" class="btn btn-primary btn-sm" :data-id="row.id" :aria-label="row.approveLabel" @click="openApprove">Approve</button>
+              <button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" :aria-label="row.denyLabel" @click="openDeny">Deny</button>
+            </td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="active-h">
+    <h2 class="section-title mb-4" id="active-h">Access your groups approved</h2>
+    <p class="muted mb-4">Access that has not ended yet. End it early when it is no longer needed: the person is signed out of the tenant's applications at once.</p>
+    <p class="muted" x-show="noActive" x-cloak>None at the moment.</p>
+    <div class="table-wrap" role="region" aria-label="Access your groups approved" tabindex="0" x-show="hasActive" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Access your groups approved</caption>
+        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">Until</th><th scope="col">Approved by</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          <template x-for="row in active" :key="row.id"><tr>
+            <th scope="row" class="cell-title" x-text="row.user_name"></th>
+            <td x-text="row.tenant_display_name"></td>
+            <td x-text="row.untilText"></td>
+            <td x-text="row.decided_by_name"></td>
+            <td class="actions"><button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {{template "dialog-start" (dict "id" "decide-dialog" "title" "Approve the request" "titleBind" "decideTitle" "size" "sm")}}
+  <form @submit.prevent="submitDecision" novalidate>
+    <div class="dialog-body">
+      <p x-text="decideSummary"></p>
+      <p class="muted" x-text="decideReason"></p>
+      {{template "textarea-field" (dict "name" "note" "label" "Note for them" "rows" "2" "help" "Optional. Shown to the person who asked. At most 500 characters.")}}
+    </div>
+    {{template "form-foot" (dict "label" "decideLabel" "default" "Approve")}}
+  </form>
+  {{template "dialog-end"}}
+</div>
+{{end}}

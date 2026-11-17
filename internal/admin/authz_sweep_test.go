@@ -81,6 +81,9 @@ func TestManagersAndUsersAreRefusedAdminOnlyRoutes(t *testing.T) {
 			if res == "users" || res == "audit" || res == "groups" {
 				continue // those are readable by managers, or tested with their own rules
 			}
+			if res == "access-requests" && !strings.HasSuffix(rt.Path, "/all") {
+				continue // each person's own requests and decisions: tested with their own rules (access_requests_test.go)
+			}
 			p := concretePath(rt.Path, "acme", "nope")
 			var body any
 			if rt.Method != "GET" && rt.Method != "DELETE" {

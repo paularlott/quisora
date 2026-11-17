@@ -30,6 +30,7 @@ var tableNames = map[model.Kind]string{
 	model.KindMember:         "group_members",
 	model.KindTenant:         "tenants",
 	model.KindAccess:         "tenant_access",
+	model.KindAccessRequest:  "access_requests",
 	model.KindClient:         "clients",
 	model.KindProvider:       "identity_providers",
 	model.KindPasskey:        "passkeys",

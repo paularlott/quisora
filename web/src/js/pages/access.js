@@ -89,13 +89,51 @@ export default function (Alpine) {
     // The end is typed in the viewer's own time zone, named here.
     get expiresHelp() { return `Optional. Your time (${localZoneText()}). Access stops at this time, and the user or group members it applies to are signed out of the clients (unless other access still lets them in). Leave empty for no end.` },
     errorKey(f) {
+      if (this.editingDefaults) return { roles: 'dft_roles', tags: 'dft_tags', authorization_details: 'dft_details' }[f] || f
       return { subject_id: 'acc_subject', subject_type: 'acc_subject', expires: 'acc_expires', clients: 'acc_clients', all_clients: 'acc_clients' }[f] || f
+    },
+    // The tenant's defaults for new access (access_defaults): copied into each new entry that gives none of its own.
+    get defaults() { const t = Alpine.store('tenantPage').tenant; return (t && t.access_defaults) || {} },
+    get defaultsText() {
+      const d = this.defaults, parts = []
+      if ((d.roles || []).length) parts.push('roles ' + d.roles.join(', '))
+      if ((d.tags || []).length) parts.push('tags ' + d.tags.join(', '))
+      if (d.authorization_details && d.authorization_details.length) parts.push('authorization details')
+      return parts.length ? `Defaults for new access: ${parts.join('; ')}.` : 'No defaults for new access: it gets only what you give it.'
+    },
+    editingDefaults: false,
+    get defaultsLabel() { return this.busy ? 'Saving…' : 'Save defaults' },
+    openDefaults(ev) {
+      const d = this.defaults
+      this.editingDefaults = true
+      this.resetForm({ dft_roles: [...(d.roles || [])], dft_tags: [...(d.tags || [])], dft_details: detailsText(d.authorization_details) })
+      this.resetChipText()
+      this.openDlg('defaults-dialog', ev.currentTarget)
+    },
+    afterClose(id) { if (id === 'defaults-dialog') this.editingDefaults = false },
+    async submitDefaults() {
+      if (!this.tagsReady()) { this.focusTagInput(); return }
+      const f = this.form
+      const details = checkDetails(f.dft_details)
+      if (!details.value) {
+        const first = details.problems.find((p) => p.severity === 'error')
+        this.setErrors(new ApiError(422, { error: describeProblem(first), field: 'dft_details' }))
+        return
+      }
+      const res = await this.run(() => patch(`${this.apiBase}/tenants/${enc(this.tenantId)}`, { access_defaults: { roles: f.dft_roles, tags: f.dft_tags, authorization_details: details.value } }))
+      if (!res) return
+      const store = Alpine.store('tenantPage')
+      if (store.tenant) store.tenant = { ...store.tenant, access_defaults: res.access_defaults }
+      this.closeDlg('defaults-dialog')
+      toast('Defaults for new access saved.')
     },
 
     openAdd(ev) {
       this.editing = null
       this.endWas = endInput('')
-      this.resetForm({ acc_subject: '', roles: [], tags: [], authorization_details: '', acc_all: true, acc_clients: [], acc_expires: '' })
+      const d = this.defaults // filled in from the tenant's defaults: what the new access gets unless changed here
+      this.resetForm({ acc_subject: '', roles: [...(d.roles || [])], tags: [...(d.tags || [])], authorization_details: detailsText(d.authorization_details),
+        acc_all: true, acc_clients: [], acc_expires: '' })
       this.resetChipText()
       this.resetPicker()
       this.openDlg('access-dialog', ev.currentTarget)

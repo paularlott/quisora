@@ -293,6 +293,55 @@ class Client:
         the applications they no longer have."""
         return self.request("DELETE", self._org(org) + "/tenants/" + _seg(tenant_id) + "/access/" + _seg(access_id))
 
+    # --- access requests --------------------------------------------------
+    # A person asks for access to a members-only tenant for a while; a member of the approver group (or a service
+    # account with access_requests:approve, where the group allows it) decides. Asking, listing and cancelling one's
+    # own need a personal token with the access_requests scope (or admin); deciding needs a service account.
+
+    def access_request_options(self, org, q=None):
+        """Who may approve your requests ({"id", "name", "lengths"}), and the
+        tenants whose name starts with q you may ask for."""
+        return self.request("GET", self._org(org) + "/access-requests/options", params={"q": q})
+
+    def request_access(self, org, tenant, reason, hours=None, length=None, approvers=None):
+        """Ask for access to tenant (name or id) for hours (or length, in
+        seconds): one of 1, 4, 8, 24, 72, 168, 336 or 720 hours that your
+        groups offer. approvers: the approver group's id, when you may ask more
+        than one."""
+        if length is None:
+            length = int(float(hours) * 3600) if hours is not None else 3600
+        return self.request("POST", self._org(org) + "/access-requests",
+                            body=_drop_none({"tenant_id": tenant, "reason": reason, "length": length, "approvers": approvers}))
+
+    def iter_access_requests(self, org):
+        """Your own requests, newest first."""
+        return iter(self.request("GET", self._org(org) + "/access-requests").get("items") or [])
+
+    def cancel_access_request(self, org, request_id):
+        return self.request("POST", self._org(org) + "/access-requests/" + _seg(request_id) + "/cancel")
+
+    def pending_access_requests(self, org):
+        """The requests waiting for this service account's decision, oldest first."""
+        return self.request("GET", self._org(org) + "/access-requests/pending").get("items") or []
+
+    def approve_access_request(self, org, request_id, note=None):
+        """Approve: the requester gets access until now plus the length asked for."""
+        return self.request("POST", self._org(org) + "/access-requests/" + _seg(request_id) + "/approve",
+                            body=_drop_none({"note": note}))
+
+    def deny_access_request(self, org, request_id, note=None):
+        return self.request("POST", self._org(org) + "/access-requests/" + _seg(request_id) + "/deny",
+                            body=_drop_none({"note": note}))
+
+    def end_access_request(self, org, request_id):
+        """End the access an approved request gave, now."""
+        return self.request("POST", self._org(org) + "/access-requests/" + _seg(request_id) + "/end")
+
+    def iter_all_access_requests(self, org, state=None):
+        """Every request of the organization, newest first (administrators;
+        a service account needs the access scope)."""
+        return self.paginate(self._org(org) + "/access-requests/all", params={"state": state})
+
     # --- users ----------------------------------------------------------
 
     def _user_filters(self, q, role, active, tag, sort, desc):

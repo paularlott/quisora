@@ -20,8 +20,9 @@ is made, so if you are demoted or your account is disabled, the token loses that
 | `backup` | super admins | `GET /api/backup` only; such a token expires within 30 days |
 | `import` | super admins | With `admin`: creating users with the password hash, authenticator secret and provider links they had in another system (`password_hash`, `totp_secret`, `identities`) |
 | `api` | whoever the organization allows ([below](#who-may-make-api-tokens)) | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
+| `access_requests` | everyone | The owner's own [access requests](ACCESS-REQUESTS.md#through-the-api): asking, listing, cancelling, ending their own access (never approving) |
 
-A token with the `api` scope cannot also have `admin`, `scim`, `backup` or `import`: applications that see an `api` token
+A token with the `api` scope cannot also have another scope: applications that see an `api` token
 must never be able to administer Quisora with it. Make a separate token for each purpose.
 
 Send the token as a bearer token on every request:

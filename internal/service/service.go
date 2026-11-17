@@ -198,6 +198,7 @@ type Service struct {
 	Members    *store.Table[model.Member, *model.Member]
 	Tenants    *store.Table[model.Tenant, *model.Tenant]
 	Access     *store.Table[model.TenantAccess, *model.TenantAccess]
+	Requests   *store.Table[model.AccessRequest, *model.AccessRequest]
 	Clients    *store.Table[model.Client, *model.Client]
 	Providers  *store.Table[model.Provider, *model.Provider]
 	Passkeys   *store.Table[model.Passkey, *model.Passkey]
@@ -237,6 +238,7 @@ type Service struct {
 
 	orgCache      *ttlcache.Cache[*model.Org]  // organizations by id and by name (Org, OrgByRef)
 	orgMiss       *ttlcache.Cache[struct{}]    // references that named no organization (cachedOrg)
+	requestRoles  *ttlcache.Cache[[2]bool]     // whether each user asks for and approves access (AccessRequestRoles)
 	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)
 	primaryID     atomic.Pointer[string]       // the primary organization's id, once read (PrimaryOrgID)
 	bg            background                   // Background work
@@ -253,6 +255,8 @@ type Service struct {
 	// OnAppAccessEnding is called just before a user's grants to one client are removed (RevokeAppAccess), so that
 	// client can be sent back-channel logout tokens and the grants stop working at once. Set by the app.
 	OnAppAccessEnding func(ctx context.Context, userID, clientID string)
+	// OnAccessRequest hears of access requests made, decided and ended early (the emails); nil: nobody.
+	OnAccessRequest func(ctx context.Context, n AccessRequestNotice)
 }
 
 // Counters are windowed counters (ephemeral.Store's Incr): Incr adds delta to the count of key in namespace ns, which
@@ -283,6 +287,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		Members:    store.NewTable[model.Member](s),
 		Tenants:    store.NewTable[model.Tenant](s),
 		Access:     store.NewTable[model.TenantAccess](s),
+		Requests:   store.NewTable[model.AccessRequest](s),
 		Clients:    store.NewTable[model.Client](s),
 		Providers:  store.NewTable[model.Provider](s),
 		Passkeys:   store.NewTable[model.Passkey](s),
@@ -309,6 +314,8 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		orgCache:  ttlcache.New[*model.Org](orgTTL, 20_000),
 		orgMiss:   ttlcache.New[struct{}](orgTTL, 1_000),
 		skinCache: ttlcache.New[*model.Skin](orgTTL, 1_000),
+
+		requestRoles: ttlcache.New[[2]bool](orgTTL, 20_000),
 	}
 }
 

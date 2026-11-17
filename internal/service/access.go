@@ -47,6 +47,15 @@ type AccessEntry struct {
 	Expired bool   `json:"expired"`
 }
 
+// withDefaults copies t's access defaults into acc, a new entry: a snapshot, so a later change of the defaults
+// changes no entry.
+func withDefaults(acc *model.TenantAccess, t *model.Tenant) {
+	if d := t.AccessDefaults; d != nil {
+		acc.Roles, acc.Tags = slices.Clone(d.Roles), slices.Clone(d.Tags)
+		acc.AuthorizationDetails = slices.Clone(d.AuthorizationDetails)
+	}
+}
+
 // MaxRoles is the most application roles one access may carry.
 const MaxRoles = 50
 
@@ -293,6 +302,7 @@ func (s *Service) AddAccess(ctx context.Context, a *Actor, tenantID string, in A
 	}
 	acc := &model.TenantAccess{OrgID: t.OrgID, TenantID: t.ID, SubjectType: in.SubjectType, SubjectID: in.SubjectID,
 		AllClients: true}
+	withDefaults(acc, t) // a field given below replaces its default
 	acc.ID = model.AccessID(t.ID, in.SubjectID)
 	if err := s.applyAccess(ctx, t, acc, in); err != nil {
 		return nil, err

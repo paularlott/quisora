@@ -49,6 +49,8 @@
           <div class="mt-2"><span class="badge badge-accent">{{if eq .User.Role "super_admin"}}Super administrator{{else if eq .User.Role "admin"}}Administrator{{else if eq .User.Role "manager"}}Manager{{else}}User{{end}}</span></div>
         </div>
         <a class="menu-item" href="/o/{{.User.OrgID}}/account">{{template "icon" "user"}} Your account</a>
+        {{if .CanRequest}}<a class="menu-item" href="/o/{{.User.OrgID}}/account/requests">{{template "icon" "key"}} Request access</a>{{end}}
+        {{if .CanApprove}}<a class="menu-item" href="/o/{{.User.OrgID}}/account/approvals">{{template "icon" "check-circle"}} Approvals</a>{{end}}
         <div x-data="systemTheme"><button type="button" class="menu-item" @click="use">{{template "icon" "sliders"}} Match system theme</button></div>
         <a class="menu-item" href="/o/{{.User.OrgID}}/logout">{{template "icon" "logout"}} Sign out</a>
       </div>
@@ -71,6 +73,8 @@
     <div class="nav-group">
       <span class="eyebrow nav-heading">Account</span>
       <a class="nav-link" href="/o/{{.User.OrgID}}/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{template "icon" "user"}} Your account</a>
+      {{if .CanRequest}}<a class="nav-link" href="/o/{{.User.OrgID}}/account/requests"{{if eq .Nav "requests"}} aria-current="page"{{end}}>{{template "icon" "key"}} Request access</a>{{end}}
+      {{if .CanApprove}}<a class="nav-link" href="/o/{{.User.OrgID}}/account/approvals"{{if eq .Nav "approvals"}} aria-current="page"{{end}}>{{template "icon" "check-circle"}} Approvals</a>{{end}}
     </div>
     {{if .IsMgr}}
     <div class="nav-group">
@@ -91,6 +95,7 @@
       <a class="nav-link" href="/admin/orgs/{{.Name}}/tenants"{{if eq $.Nav "tenants"}} aria-current="page"{{end}}>{{template "icon" "layers"}} Tenants</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/providers"{{if eq $.Nav "providers"}} aria-current="page"{{end}}>{{template "icon" "link"}} Providers</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/service-accounts"{{if eq $.Nav "service-accounts"}} aria-current="page"{{end}}>{{template "icon" "key"}} Service accounts</a>
+      <a class="nav-link" href="/admin/orgs/{{.Name}}/access-requests"{{if eq $.Nav "access-requests"}} aria-current="page"{{end}}>{{template "icon" "clock"}} Access requests</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/audit"{{if eq $.Nav "audit"}} aria-current="page"{{end}}>{{template "icon" "list"}} Audit log</a>
       <a class="nav-link" href="/admin/orgs/{{.Name}}/emails"{{if eq $.Nav "emails"}} aria-current="page"{{end}}>{{template "icon" "mail"}} Emails</a>
       {{end}}

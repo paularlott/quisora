@@ -44,7 +44,7 @@ const (
 // ScopeSCIM); PrimaryServiceAccountScopes only one of the primary organization.
 var (
 	ServiceAccountScopes = []string{ScopeUsers, ScopeManageAdmins, ScopeGroups, ScopeProviders, ScopeTenants, ScopeClients,
-		ScopeAccess, ScopeImport, ScopeSCIM, ScopeServiceAccounts, ScopeSSH, ScopeSSHHost}
+		ScopeAccess, ScopeAccessRequestsApprove, ScopeImport, ScopeSCIM, ScopeServiceAccounts, ScopeSSH, ScopeSSHHost}
 	PrimaryServiceAccountScopes = []string{ScopeOrgsCreate, ScopeOrgsDelete, ScopeOrgsManage}
 )
 

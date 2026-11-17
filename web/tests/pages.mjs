@@ -287,6 +287,12 @@ export const PAGES = [
   { name: 'service-accounts', path: `${A}/service-accounts`, as: 'admin', steps: [async (p) => { await p.locator('tbody tr, .empty-state:visible').first().waitFor() }] },
   { name: 'service-accounts-new', path: `${A}/service-accounts`, as: 'admin', dialog: true, steps: [open('New service account')] },
   { name: 'audit', path: `${A}/audit`, as: 'admin', steps: [waitRows] },
+  // access requests: the console's list, a requester group's settings, a tenant's defaults for new access
+  { name: 'access-requests', path: `${A}/access-requests`, as: 'admin', steps: [waitRows] },
+  { name: 'groups-edit-requests', path: `${A}/groups`, as: 'admin', dialog: true, steps: [waitRows, async (p) => {
+    await p.getByRole('searchbox').first().fill('On-call'); await p.waitForTimeout(500) }, open('Edit On-call'), async (p) => { await p.waitForTimeout(500) }] },
+  { name: 'tenant-access-defaults', path: `${A}/tenants/ops-tools`, as: 'admin', dialog: true, steps: [async (p) => {
+    await p.getByRole('button', { name: 'Edit defaults' }).waitFor(); await p.waitForTimeout(400) }, open('Edit defaults')] },
   { name: 'audit-org-super', path: `${A}/audit`, as: 'super', steps: [waitRows] },
   { name: 'audit-all', path: '/admin/audit', as: 'super', steps: [waitRows] },
   { name: 'system', path: '/admin/system', as: 'super', steps: [waitRows] },
@@ -331,6 +337,10 @@ PAGES.push(
     await p.getByRole('button', { name: 'Email a code to a•••@acme.example' }).click()
     await p.locator('#f-mcode').waitFor()
   }] },
+  { name: 'account-requests', path: '/o/acme/account/requests', as: 'user', steps: [async (p) => { await p.locator('tbody tr').first().waitFor() }] },
+  { name: 'account-approvals', path: '/o/acme/account/approvals', as: 'manager', steps: [async (p) => { await p.locator('tbody tr').first().waitFor() }] },
+  { name: 'account-approvals-decide', path: '/o/acme/account/approvals', as: 'manager', dialog: true, steps: [async (p) => {
+    await p.locator('tbody tr').first().waitFor() }, async (p) => { await p.getByRole('button', { name: /^Deny/ }).first().click(); await p.waitForTimeout(450) }] },
   { name: 'account', path: '/o/acme/account', as: 'user', steps: [async (p) => { await p.waitForTimeout(800); await p.locator('#security').scrollIntoViewIfNeeded(); await p.evaluate(() => window.scrollBy(0, -80)) }] },
   // The user menu: a floating glass panel over the page, open for the audit (contrast budget of --glass-bg-panel).
   { name: 'account-usermenu', path: '/o/acme/account', as: 'user', steps: [async (p) => {

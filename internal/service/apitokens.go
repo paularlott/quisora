@@ -31,7 +31,7 @@ const (
 )
 
 // APITokenScopes are the scopes a user may choose from.
-var APITokenScopes = []string{ScopeAPI, ScopeSCIM, ScopeAdmin, ScopeBackup, ScopeImport}
+var APITokenScopes = []string{ScopeAPI, ScopeSCIM, ScopeAdmin, ScopeBackup, ScopeImport, ScopeAccessRequests}
 
 // SuperOnlyScope reports whether only super admins may hold a token with scope sc.
 func SuperOnlyScope(sc string) bool { return sc == ScopeBackup || sc == ScopeImport }
@@ -136,7 +136,7 @@ func (s *Service) CreateAPIToken(ctx context.Context, a *Actor, in APITokenInput
 	// An api token is shown to the user's own applications (introspection): it must never also carry a scope of
 	// Quisora's own APIs, or every application that sees it could administer Quisora with it.
 	if slices.Contains(in.Scopes, ScopeAPI) && len(slices.DeleteFunc(slices.Clone(in.Scopes), func(s string) bool { return s == ScopeAPI })) > 0 {
-		return nil, "", Invalid("scopes", "the api scope cannot be combined with scim, admin or backup: make a separate token")
+		return nil, "", Invalid("scopes", "the api scope cannot be combined with another scope: make a separate token")
 	}
 	for _, sc := range in.Scopes {
 		if !slices.Contains(APITokenScopes, sc) {
