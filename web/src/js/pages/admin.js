@@ -610,6 +610,9 @@ function tenantPageMixin() {
     get tenantDescription() { return this.tenant && this.tenant.description ? this.tenant.description : '' },
     get hasTenantDescription() { return this.tenantDescription !== '' },
     get isDefaultTenant() { return !!this.tenant && this.tenant.name === 'default' },
+    // made for an organization provider of another organization: it holds that provider's sign-in client only
+    get isProviderTenant() { return !!this.tenant && !!this.tenant.provider_id },
+    get canAddClient() { return !this.isProviderTenant },
     get tenantSlug() { return this.tenant ? this.tenant.name : '' },
     // the tenant's pages (the address name is what they are under)
     get tenantHref() { return `${this.pageBase}/${enc(this.tenant ? this.tenant.name : this.slug)}` },
@@ -1792,12 +1795,20 @@ export default function (Alpine) {
   // ---- Providers --------------------------------------------------------------------------------------------------
   // The organization provider's source: an organization and one of its tenants, looked up as the super admin types
   // (one request per search, a few organizations each with their tenants: never every organization of the server).
+  // Each organization found comes first with "its own tenant" (own_tenant): a new members-only tenant made for this
+  // provider there, whose access list (empty to begin with) decides who signs in (the tenant field sent empty).
   const sourceSource = {
     async search(q) {
       const r = await get(`${this.apiBase}/providers/sources${qs({ q, limit: 8 })}`)
-      return r.items.map((x) => ({ value: `${x.org_id}/${x.tenant_id}`, org: x.org_display_name || x.org_name,
-        label: `${x.org_display_name || x.org_name} (${x.tenant_display_name || x.tenant_name})`,
-        detail: x.members_only ? 'Members only: its access list decides who signs in' : 'Everyone in the organization' }))
+      return r.items.map((x) => {
+        const org = x.org_display_name || x.org_name
+        if (x.own_tenant) {
+          return { value: `${x.org_id}/`, org, label: `${org} (its own tenant)`,
+            detail: 'A new members-only tenant for this provider: nobody signs in until given access there' }
+        }
+        return { value: `${x.org_id}/${x.tenant_id}`, org, label: `${org} (${x.tenant_display_name || x.tenant_name})`,
+          detail: x.members_only ? 'Members only: its access list decides who signs in' : 'Everyone in the organization' }
+      })
     },
   }
   Alpine.data('adminProviders', () => mix(tableMixin(), formMixin(), dialogMixin(), listFieldMixin(), tagsMixin(), comboMixin({ source: sourceSource }), pickerMixin({

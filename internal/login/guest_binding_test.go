@@ -244,7 +244,7 @@ func TestGuestOfAGuestStandsOnTheChain(t *testing.T) {
 	}
 	beta := g.org(t, "beta", nil)
 	pb, err := g.Svc.CreateProvider(ctx, service.System, beta.ID, service.ProviderInput{Type: ptr(model.ProviderOrganization),
-		SourceOrg: &g.acme.ID, LinkByEmail: ptr(true)})
+		SourceOrg: &g.acme.ID, SourceTenant: ptr(model.DefaultTenantName), LinkByEmail: ptr(true)})
 	if err != nil {
 		t.Fatal(err)
 	}

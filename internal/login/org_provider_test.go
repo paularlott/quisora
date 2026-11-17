@@ -29,7 +29,9 @@ func newGuestEnv(t *testing.T, mut func(*service.ProviderInput), cfg ...func(*co
 	var op *oidc.Provider
 	e := newEnvModules(t, false, func(s *web.Server) []web.Module { op = oidc.New(s); return []web.Module{op} }, append(cfg, noIPLimit)...)
 	g := &guestEnv{env: e, acme: e.org(t, "acme", nil), op: op}
-	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &e.Primary.ID}
+	// the source's default tenant, open to everyone of it: what these tests are about is not who of the source may
+	// use the provider (a new provider's own tenant lets nobody in until given access: guest_access_test.go)
+	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &e.Primary.ID, SourceTenant: ptr(model.DefaultTenantName)}
 	if mut != nil {
 		mut(&in)
 	}
@@ -249,7 +251,8 @@ func trustLoopbackProxy(c *config.Config) { c.Server.TrustProxy = []string{"127.
 func TestOrganizationProviderFailuresAreCountedPerClientAddress(t *testing.T) {
 	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) }, trustLoopbackProxy)
 	beta := g.org(t, "beta", nil)
-	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &g.Primary.ID, LinkByEmail: ptr(true)}
+	in := service.ProviderInput{Type: ptr(model.ProviderOrganization), SourceOrg: &g.Primary.ID, SourceTenant: ptr(model.DefaultTenantName),
+		LinkByEmail: ptr(true)}
 	pb, err := g.Svc.CreateProvider(context.Background(), service.System, beta.ID, in)
 	if err != nil {
 		t.Fatal(err)

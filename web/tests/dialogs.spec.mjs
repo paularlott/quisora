@@ -448,7 +448,9 @@ test('providers: another organization’s provider takes only members of chosen 
   await expect(dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Partners\\)`) })).toBeVisible()
   await source.fill(`${acme.display_name} (Cust`)
   await expect(dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Customer apps\\)`) })).toBeVisible()
-  await expect(dlg.locator('#l-source [role=option]')).toHaveCount(1)
+  // the organization first with a tenant of the provider's own, then its tenants that match
+  await expect(dlg.locator('#l-source [role=option]')).toHaveCount(2)
+  await expect(dlg.locator('#l-source [role=option]').first()).toContainText(`${acme.display_name} (its own tenant)`)
   await source.fill(acme.display_name)
   await dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(Default\\)`) }).click()
   await expect(source).toHaveValue(`${acme.display_name} (Default)`)
@@ -486,6 +488,46 @@ test('providers: another organization’s provider takes only members of chosen 
     await edit.getByRole('button', { name: 'Cancel' }).click()
   } finally {
     await apiCall(page, 'DELETE', `/api/orgs/northwind/providers/${made.id}`)
+  }
+})
+
+test('providers: another organization’s provider with its own tenant: members only, nobody on it, holds only its sign-in client, and goes with the provider', async ({ page }) => {
+  await signIn(page, 'super')
+  await page.goto('/admin/orgs/northwind/providers', { waitUntil: 'load' })
+  const acme = await apiCall(page, 'GET', '/api/orgs/acme')
+  const northwind = await apiCall(page, 'GET', '/api/orgs/northwind')
+  await page.getByRole('button', { name: 'New provider' }).click()
+  const dlg = page.getByRole('dialog', { name: 'New sign-in provider' })
+  await dlg.locator('#f-type').selectOption('organization')
+  const source = dlg.getByRole('combobox', { name: 'Organization (tenant)' })
+  await source.fill(acme.display_name)
+  await dlg.getByRole('option', { name: new RegExp(`^${acme.display_name} \\(its own tenant\\)`) }).click()
+  await expect(source).toHaveValue(`${acme.display_name} (its own tenant)`)
+  const name = uniq('Own')
+  await dlg.locator('#f-name').fill(name)
+  await dlg.getByRole('button', { name: 'Create provider' }).click()
+  await expect(dlg).toBeHidden()
+  const made = (await apiCall(page, 'GET', `/api/orgs/northwind/providers?q=${encodeURIComponent(name)}`)).items[0]
+  let gone = false
+  try {
+    expect(made.source_org).toBe(acme.id)
+    expect(made.source_members_only).toBe(true)
+    const tenant = await apiCall(page, 'GET', `/api/orgs/acme/tenants/${made.source_tenant}`)
+    expect(tenant.provider_id).toBe(made.id)
+    expect(tenant.display_name).toBe(northwind.display_name)
+    expect((await apiCall(page, 'GET', `/api/orgs/acme/tenants/${made.source_tenant}/access`)).total).toBe(0)
+    await expect(page.getByRole('row', { name: new RegExp(name) })).toContainText(`Users of ${acme.display_name} (${northwind.display_name}, members only)`)
+    // in the source organization: marked, and no other client can be added to it
+    await page.goto(`/admin/orgs/acme/tenants/${tenant.name}`, { waitUntil: 'load' })
+    await expect(page.getByText('Provider sign-ins', { exact: true })).toBeVisible()
+    await page.goto(`/admin/orgs/acme/tenants/${tenant.name}/clients`, { waitUntil: 'load' })
+    await expect(page.getByRole('row', { name: new RegExp(`Sign-in to ${northwind.display_name}`) })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'New client' })).toBeHidden()
+    await apiCall(page, 'DELETE', `/api/orgs/northwind/providers/${made.id}`)
+    gone = true
+    await expect(apiCall(page, 'GET', `/api/orgs/acme/tenants/${made.source_tenant}`)).rejects.toThrow(/404/)
+  } finally {
+    if (!gone) await apiCall(page, 'DELETE', `/api/orgs/northwind/providers/${made.id}`)
   }
 })
 

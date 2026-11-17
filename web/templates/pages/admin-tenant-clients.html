@@ -32,7 +32,7 @@
           <h2 class="section-title" id="clients-h">Clients <span class="badge badge-plain ml-1" x-text="clientCountText"></span></h2>
           <p class="muted mt-1 max-w-prose">Clients are the applications that sign users in through this tenant.</p>
         </div>
-        <button type="button" class="btn btn-primary" @click="openCreate">{{template "icon" "plus"}} New client</button>
+        <button type="button" class="btn btn-primary" @click="openCreate" x-show="canAddClient">{{template "icon" "plus"}} New client</button>
       </div>
       <div class="toolbar mb-4">{{template "search" (dict "region" "Clients" "label" "Search clients" "placeholder" "Search clients")}}</div>
       <div class="table-wrap" role="region" aria-label="Clients table" tabindex="0" x-show="showTable" x-cloak :aria-busy="busyAttr">

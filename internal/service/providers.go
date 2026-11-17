@@ -329,9 +329,10 @@ func (s *Service) applySourceOrg(ctx context.Context, p *model.Provider, ref *st
 	return nil
 }
 
-// applySourceTenant settles an organization provider's source tenant (Provider.SourceTenant): a tenant of src, by id or
-// name, or src's default tenant when none is given or the organization changed without one (another's tenant never
-// carries over).
+// applySourceTenant settles an organization provider's source tenant (Provider.SourceTenant): a tenant of src named by
+// id or name; or, when none is named (a new provider, one whose organization changed, or "" asked for), a tenant of its
+// own (Tenant.ProviderID): the one it has in src already, or "" for one to be made before the provider is written
+// (issueSourceTenant). Another organization's tenant never carries over, and another provider's own is not taken.
 func (s *Service) applySourceTenant(ctx context.Context, p *model.Provider, src *model.Org, orgChanged bool, ref *string) error {
 	v := ""
 	switch {
@@ -341,11 +342,12 @@ func (s *Service) applySourceTenant(ctx context.Context, p *model.Provider, src 
 		v = p.SourceTenant
 	}
 	if v == "" {
-		t, err := s.DefaultTenant(ctx, src.ID)
-		if err != nil {
-			return err
+		if !orgChanged && p.SourceTenant != "" {
+			if t, err := s.Tenants.Get(ctx, p.SourceTenant); err == nil && t.OrgID == src.ID && t.ProviderID == p.ID {
+				return nil // its own already
+			}
 		}
-		p.SourceTenant = t.ID
+		p.SourceTenant = ""
 		return nil
 	}
 	var t *model.Tenant
@@ -361,8 +363,70 @@ func (s *Service) applySourceTenant(ctx context.Context, p *model.Provider, src 
 	if err != nil {
 		return mapStore(err)
 	}
+	if t.ProviderID != "" && t.ProviderID != p.ID {
+		return Invalid("source_tenant", "choose another tenant: "+t.DisplayName+" was made for another provider's sign-ins")
+	}
 	p.SourceTenant = t.ID
 	return nil
+}
+
+// issueSourceTenant makes the tenant of its own an organization provider signs in through, when it is to have one
+// (applySourceTenant left Provider.SourceTenant empty): a members-only tenant of the source organization named after
+// the organization the provider is in, with nobody on its access list, so nobody of the source organization signs in
+// to that one until an administrator (or the API) gives them access there, for good or until a time. It reports whether
+// it made one. Like the sign-in client it is a write in another organization, made before the provider is written:
+// callers remove it (removeSourceTenant) when they know the provider was not written, and the orphan sweep when they
+// cannot tell.
+func (s *Service) issueSourceTenant(ctx context.Context, a *Actor, p *model.Provider) (bool, error) {
+	if p.SourceTenant != "" {
+		return false, nil
+	}
+	dest, err := s.Orgs.Get(ctx, p.OrgID)
+	if err != nil {
+		return false, mapStore(err)
+	}
+	set := model.DefaultTenantSettings()
+	set.MembersOnly = true
+	base := dest.Name
+	if len(base) > 59 {
+		base = strings.TrimRight(base[:59], "-")
+	}
+	for i := 1; i <= 20; i++ { // the organization's name, or with a number when a tenant of the source has it already
+		name := base
+		if i > 1 {
+			name = base + "-" + itoa(i)
+		}
+		t := &model.Tenant{OrgID: p.SourceOrg, Name: name, DisplayName: dest.DisplayName, ProviderID: p.ID, Settings: set,
+			Description: "Who of this organization signs in to " + dest.DisplayName + " (provider " + p.Name + "), and until when: " +
+				"this tenant's access list. Made and removed with that provider."}
+		err := s.audited(ctx, a, p.SourceOrg, "tenant.create", t.Name, map[string]string{"provider": p.ID, "for_org": dest.ID},
+			func() error { return s.Tenants.Create(ctx, t) })
+		if errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return false, mapStore(err)
+		}
+		p.SourceTenant = t.ID
+		return true, nil
+	}
+	return false, Invalid("source_tenant", "the source organization has tenants named "+base+" to "+base+"-20: choose a tenant")
+}
+
+// removeSourceTenant deletes the tenant tenantID of organization orgID that was made for provider providerID
+// (issueSourceTenant), when it is that tenant: once the provider no longer signs in through it (deleted, or pointed
+// elsewhere) and its sign-in client is gone. Its access entries stand on it and go with the orphan sweep. A failure is
+// only logged: the sweep removes the tenant once its provider no longer uses it.
+func (s *Service) removeSourceTenant(ctx context.Context, a *Actor, orgID, tenantID, providerID string) {
+	t, err := s.Tenants.Get(ctx, tenantID)
+	if err != nil || t.OrgID != orgID || t.ProviderID == "" || t.ProviderID != providerID {
+		return
+	}
+	if err := s.audited(ctx, a, t.OrgID, "tenant.delete", t.Name, map[string]string{"provider": providerID},
+		func() error { return s.Tenants.Delete(ctx, t.ID) }); err != nil {
+		s.Log.Warn("an unused provider tenant could not be removed; the orphan sweep removes it later",
+			"tenant", t.ID, "organization", orgID, "provider", providerID, "error", err)
+	}
 }
 
 // issueSignInClient makes the application of p's source organization that p signs in with: a confidential client of
@@ -464,14 +528,25 @@ func (s *Service) CreateProvider(ctx context.Context, a *Actor, orgID string, in
 	if p.Name == "" {
 		p.Name = providerDefaultName[p.Type]
 	}
+	madeTenant := false
 	if p.Type == model.ProviderOrganization {
+		var err error
+		if madeTenant, err = s.issueSourceTenant(ctx, a, p); err != nil {
+			return nil, err
+		}
 		if err := s.issueSignInClient(ctx, a, p); err != nil {
+			if madeTenant {
+				s.removeSourceTenant(ctx, a, p.SourceOrg, p.SourceTenant, p.ID)
+			}
 			return nil, err
 		}
 	}
 	if err := s.audited(ctx, a, orgID, "provider.create", p.Name, nil, func() error { return s.Providers.Create(ctx, p) }); err != nil {
 		if p.Type == model.ProviderOrganization && !outcomeUnknown(err) {
 			s.removeSignInClient(ctx, a, p.SourceOrg, p.ClientID, p.ID)
+			if madeTenant {
+				s.removeSourceTenant(ctx, a, p.SourceOrg, p.SourceTenant, p.ID)
+			}
 		}
 		return nil, providerConflict(err)
 	}
@@ -508,9 +583,18 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	// client of the new source tenant, made before the provider is written, and the old one is removed after: the
 	// guests signed in through the old one stop counting with it (their sign-ins stand on it: SourcesHold).
 	orgNow := p.Type == model.ProviderOrganization
+	madeTenant := false
+	if orgNow {
+		if madeTenant, err = s.issueSourceTenant(ctx, a, p); err != nil {
+			return nil, err
+		}
+	}
 	newClient := orgNow && (oldClient == "" || p.SourceOrg != oldSource || p.SourceTenant != oldTenant)
 	if newClient {
 		if err := s.issueSignInClient(ctx, a, p); err != nil {
+			if madeTenant {
+				s.removeSourceTenant(ctx, a, p.SourceOrg, p.SourceTenant, p.ID)
+			}
 			return nil, err
 		}
 	}
@@ -535,11 +619,17 @@ func (s *Service) UpdateProvider(ctx context.Context, a *Actor, id string, in Pr
 	}); err != nil {
 		if newClient && !outcomeUnknown(err) {
 			s.removeSignInClient(ctx, a, p.SourceOrg, p.ClientID, p.ID)
+			if madeTenant {
+				s.removeSourceTenant(ctx, a, p.SourceOrg, p.SourceTenant, p.ID)
+			}
 		}
 		return nil, providerConflict(err)
 	}
 	if oldClient != "" && (newClient || !orgNow) {
 		s.removeSignInClient(ctx, a, oldSource, oldClient, p.ID)
+	}
+	if oldTenant != "" && (!orgNow || oldSource != p.SourceOrg || oldTenant != p.SourceTenant) {
+		s.removeSourceTenant(ctx, a, oldSource, oldTenant, p.ID) // its own tenant, when it was: no longer signed in through
 	}
 	return p, nil
 }
@@ -565,6 +655,7 @@ func (s *Service) DeleteProvider(ctx context.Context, a *Actor, id string) error
 	}
 	if p.Type == model.ProviderOrganization {
 		s.removeSignInClient(ctx, a, p.SourceOrg, p.ClientID, p.ID)
+		s.removeSourceTenant(ctx, a, p.SourceOrg, p.SourceTenant, p.ID)
 	}
 	return nil
 }
@@ -595,6 +686,9 @@ type ProviderSource struct {
 	TenantName        string `json:"tenant_name"`
 	TenantDisplayName string `json:"tenant_display_name"`
 	MembersOnly       bool   `json:"members_only"`
+	// OwnTenant is the choice of a tenant of the provider's own in this organization (no TenantID: made with the
+	// provider, members only, nobody on it), offered first for each organization.
+	OwnTenant bool `json:"own_tenant,omitempty"`
 }
 
 // maxSourceOrgs and maxSourceTenants bound one answer of ProviderSources: a few organizations matching what was typed,
@@ -636,10 +730,19 @@ func (s *Service) ProviderSources(ctx context.Context, a *Actor, orgID, q string
 	}
 	out := []ProviderSource{}
 	seen := map[string]bool{}
-	add := func(o *model.Org, t *model.Tenant) {
-		if seen[t.ID] {
+	// own offers a tenant of the provider's own in o, once, before o's tenants
+	own := func(o *model.Org) {
+		if seen["own:"+o.ID] {
 			return
 		}
+		seen["own:"+o.ID] = true
+		out = append(out, ProviderSource{OrgID: o.ID, OrgName: o.Name, OrgDisplayName: o.DisplayName, MembersOnly: true, OwnTenant: true})
+	}
+	add := func(o *model.Org, t *model.Tenant) {
+		if seen[t.ID] || t.ProviderID != "" { // a tenant made for a provider is that provider's alone
+			return
+		}
+		own(o)
 		seen[t.ID] = true
 		out = append(out, ProviderSource{OrgID: o.ID, OrgName: o.Name, OrgDisplayName: o.DisplayName, TenantID: t.ID,
 			TenantName: t.Name, TenantDisplayName: t.DisplayName, MembersOnly: t.Settings.MembersOnly})
@@ -665,6 +768,9 @@ func (s *Service) ProviderSources(ctx context.Context, a *Actor, orgID, q string
 			break
 		}
 		n++
+		if tenantQ == "" {
+			own(o) // even when every tenant it has is a provider's
+		}
 		ts, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: o.ID, Sort: "name", Limit: maxSourceTenants})
 		if err != nil {
 			return nil, 0, mapStore(err)

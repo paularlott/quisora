@@ -134,3 +134,41 @@ print("entries", len(list(qs.iter_access("acme", t["id"]))))
 		t.Fatalf("the group's entry: %v %+v", err, acc)
 	}
 }
+
+// The Scriptling example that sets up a customer organization, as the primary organization's account that owns what it
+// creates: --guests makes the organization provider, whose own members-only tenant in the primary organization lets
+// nobody in, and gives the guest groups access there (the account's access scope).
+func TestScriptlingSetupOrgGivesTheGuestGroupsAccess(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	primary, err := w.env.Svc.PrimaryOrg(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grp, err := w.env.Svc.CreateGroup(ctx, service.System, primary.ID, service.GroupInput{DisplayName: ptr("Support")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := w.asServiceAccount(primary, service.ScopeOrgsCreate, service.ScopeOrgsManage, service.ScopeAccess)
+	out, ok := w.scriptling(t, sa.bearer, "examples/setup_org.py", "cust2", "Customer Two", "--admin", "boss@cust2.example", "Bo",
+		"--guests", primary.Name, grp.ID)
+	if !ok || !strings.Contains(out, "1 group(s) of "+primary.Name+" given access") {
+		t.Fatalf("setup_org: %v\n%s", ok, out)
+	}
+	org, err := w.env.Svc.OrgByRef(ctx, "cust2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, _, err := w.env.Svc.ListProviders(ctx, nil, org.ID, store.ListQuery{})
+	if err != nil || len(ps) != 1 {
+		t.Fatalf("providers: %v %d", err, len(ps))
+	}
+	own, err := w.env.Svc.Tenants.Get(ctx, ps[0].SourceTenant)
+	if err != nil || own.OrgID != primary.ID || own.ProviderID != ps[0].ID || !own.Settings.MembersOnly {
+		t.Fatalf("the provider's tenant: %v %+v", err, own)
+	}
+	acc, err := w.env.Svc.Access.Get(ctx, model.AccessID(own.ID, grp.ID))
+	if err != nil || acc.SubjectType != model.SubjectGroup || !acc.Expires.IsZero() {
+		t.Fatalf("the guest group's access: %v %+v", err, acc)
+	}
+}

@@ -11,7 +11,7 @@
     <div>
       <p class="eyebrow">{{.Org.DisplayName}} · Tenant</p>
       <h1 class="page-title">Tenant: <span x-text="tenantTitle">{{.Data.TenantDisplay}}</span></h1>
-      <p class="page-sub page-sub-wide"><span x-show="hasTenantDescription" x-cloak><span x-text="tenantDescription"></span> · </span>Address name <code class="mono" x-text="tenantSlug">{{.Data.TenantName}}</code> <span class="badge badge-info ml-1" x-show="isDefaultTenant" x-cloak>Default</span>
+      <p class="page-sub page-sub-wide"><span x-show="hasTenantDescription" x-cloak><span x-text="tenantDescription"></span> · </span>Address name <code class="mono" x-text="tenantSlug">{{.Data.TenantName}}</code> <span class="badge badge-info ml-1" x-show="isDefaultTenant" x-cloak>Default</span> <span class="badge badge-info ml-1" x-show="isProviderTenant" x-cloak>Provider sign-ins</span>
         <span class="copy-id">· ID <code class="mono" id="tenant-id">{{.Data.TenantID}}</code>{{template "copy-icon" (dict "source" "tenant-id" "what" "tenant ID")}}</span>
         {{- /* The organization's addresses applications are configured with (the same for every tenant; also in a new
                client's dialog and on the organization page): named, not shown, to keep the line short. */}}

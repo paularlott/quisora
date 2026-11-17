@@ -666,6 +666,10 @@ type Tenant struct {
 	Resources []string `msgpack:"res,omitempty" json:"resources"`
 	// SSH is the tenant's SSH certificate authority settings (docs/design/ssh-ca.md); nil: never enabled.
 	SSH *TenantSSH `msgpack:"ssh,omitempty" json:"ssh,omitempty"`
+	// ProviderID is the organization provider (of another organization) this tenant was made for: it holds that
+	// provider's sign-in client and no other, so its access list decides who of this organization signs in to that
+	// one, and until when. Made and removed with the provider (service.issueSourceTenant); "" for every other tenant.
+	ProviderID string `msgpack:"pv,omitempty" json:"provider_id,omitempty"`
 }
 
 func (t *Tenant) Kind() Kind { return KindTenant }

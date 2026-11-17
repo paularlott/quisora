@@ -178,6 +178,9 @@ func (s *Service) applyClient(ctx context.Context, a *Actor, c *model.Client, in
 		if err != nil || t.OrgID != c.OrgID {
 			return Invalid("tenant_id", "choose a tenant of this organization")
 		}
+		if t.ProviderID != "" && t.ProviderID != c.ProviderID {
+			return Invalid("tenant_id", t.DisplayName+" holds only the sign-in client of the provider it was made for: choose another tenant")
+		}
 		c.TenantID = t.ID
 	}
 	if in.Name != nil {

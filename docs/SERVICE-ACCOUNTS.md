@@ -169,7 +169,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   "$QUISORA/api/orgs/customer-42/providers" -d '{"type": "organization", "source_org": "primary", "auto_provision": true}'
 ```
 
-The [Scriptling](../scriptling/README.md) example `setup_org.py` does this.
+The provider gets a members-only tenant of its own in the primary organization (its `source_tenant` in the answer), with
+nobody on its access list: give the people or groups who may sign in to the customer access there
+(`POST /api/orgs/primary/tenants/{source_tenant}/access`, with the `access` scope; with an `expires` for access until a
+time). The [Scriptling](../scriptling/README.md) example `setup_org.py` does all of this.
 
 ## Rotating credentials
 

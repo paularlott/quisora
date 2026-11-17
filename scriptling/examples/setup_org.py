@@ -6,7 +6,9 @@
 # Needs a service account of the primary organization with orgs:create and orgs:manage (QUISORA_CLIENT_ID,
 # QUISORA_CLIENT_SECRET, QUISORA_ORG set to the primary organization). The account owns what it creates: it acts as
 # a super admin of that organization, and of no other. --guests lets the members of those groups of the primary
-# organization sign in to the new one as guests (an organization provider).
+# organization sign in to the new one as guests: an organization provider, whose own members-only tenant in the
+# primary organization is made with it, and those groups given access there (for good: remove an entry, or give people
+# access until a time instead, to narrow it). That needs the account's access scope too.
 
 import sys
 import quisora
@@ -57,7 +59,10 @@ try:
     if guests:
         p = qs.create_provider(name, "organization", source_org=guests[0], source_groups=guests[1],
                                auto_provision=True)
-        print(f"  guests from {guests[0]} through provider {p['name']} ({p['id']})")
+        print(f"  guests from {guests[0]} through provider {p['name']} ({p['id']}), tenant {p['source_tenant_name']}")
+        for g in guests[1]:  # its tenant lets nobody in until given access
+            qs.give_access(guests[0], p["source_tenant"], g, subject_type="group", reason="setup_org " + name)
+        print(f"  {len(guests[1])} group(s) of {guests[0]} given access to it")
 except quisora.QuisoraError as e:
     print(f"Could not set up {name}: {e}")
     sys.exit(1)

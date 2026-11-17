@@ -244,9 +244,21 @@ In the organization that receives the guests (organization B): **Providers** →
 organization**, and choose the organization whose users sign in (S) and one of its tenants: type the start of S's name,
 or of the tenant's, and pick **S (tenant)** from the list (it searches as you type, so a server with thousands of
 organizations is no harder; `S (sup` narrows to S's tenants starting "sup"). The
-tenant holds the sign-in application: S's default tenant suits "everyone in S"; a members-only tenant limits it to the
-people on that tenant's access list, for as long as their access lasts ([below](#only-some-of-ss-users-for-a-time-a-members-only-tenant)).
-Nothing else is needed:
+tenant holds the sign-in application, and its rules decide who of S signs in to B:
+
+- **S (its own tenant)**, listed first for each organization (and what the management API does when `source_tenant` is
+  left out or `""`): a new **members-only** tenant of S made for this provider, named after B (`contoso`, or `contoso-2`
+  when S has a tenant of that name), with **nobody** on its access list. Nobody of S signs in to B until an
+  administrator of S gives them access there: a user or a group, for good or until a time
+  ([below](#only-some-of-ss-users-for-a-time-a-members-only-tenant)). Turn **Members only** off on it to let everyone
+  of S in. It holds the provider's sign-in application and nothing else (no other application, no resources, no SSH:
+  marked **Provider sign-ins**), is made and removed with the provider, and is removed when the provider is pointed at
+  another tenant; its access entries go with it. One tenant per customer keeps each customer's access list, and each
+  person's end there, apart.
+- An existing tenant: S's default tenant suits "everyone in S"; a members-only one limits it to the people on its access
+  list, shared by every provider using it. Another provider's own tenant cannot be chosen.
+
+Providers made before this default existed keep the tenant they have. Nothing else is needed:
 
 - The provider's issuer is S's own (`https://id.example.com/o/<S id>`). Its requests to S (discovery, token, keys) are
   answered by the server itself, in memory: they work whatever the server can reach on its own public address, and never
@@ -264,14 +276,15 @@ Nothing else is needed:
   any of them could create a user in S with the address of one of B's users and sign in to B as them. Turning it on is a
   super admin's decision to trust S's staff with the addresses they assert (see below).
 
-Changing the organization moves the client (a new one in the new organization, the old one removed) and unlinks everyone
-who had signed in through the provider. Changing the tenant makes a new client in it and removes the old one: the guests
+Changing the organization moves the client (a new one in the new organization, in a tenant of its own there unless one
+is chosen, the old one removed) and unlinks everyone who had signed in through the provider. Changing the tenant makes a new client in it and removes the old one: the guests
 signed in through the old one are signed out (their sign-ins stood on it) and sign in again through the new one, under
 its tenant's access list. Deleting the provider deletes its client. These are two writes in two
 organizations, never one transaction, so they are ordered to leave at most an unused client: the client is made before
-the provider is written, and removed after the provider is deleted or no longer uses it. When a removal fails (the
-store was unavailable), Quisora logs a warning and the housekeeping orphan sweep removes the client within the day; a
-client made for a provider whose creation then failed, or never completed, is removed the same way.
+the provider is written, and removed after the provider is deleted or no longer uses it, and so is a tenant of its own.
+When a removal fails (the store was unavailable), Quisora logs a warning and the housekeeping orphan sweep removes the
+client or tenant within the day; one made for a provider whose creation then failed, or never completed, is removed
+the same way.
 
 ### Adding a guest
 
@@ -313,9 +326,9 @@ With the management API, `source_groups` is the list of S's group ids (`[]` for 
 
 ### Only some of S's users, for a time: a members-only tenant
 
-For a vendor's support staff reaching into a customer's organization (S the vendor, B the customer), choose a
-**members-only** tenant of S as the provider's tenant, say `customer-access`: only the people on that tenant's access
-list can sign in to B through the provider. Give each of them an access entry with an end (**Access ends**, or the
+For a vendor's support staff reaching into a customer's organization (S the vendor, B the customer), give the provider
+**its own tenant** (the default) or another **members-only** tenant of S: only the people on that tenant's access list
+can sign in to B through the provider. Give each of them an access entry with an end (**Access ends**, or the
 management API's `expires`, by hand or from an external tool that approves requests: see
 [time-limited access](../TIMED-ACCESS.md)):
 

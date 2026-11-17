@@ -225,8 +225,10 @@ class Client:
         organization sign in as guests): source_org, the organization they come
         from, and optionally source_groups (ids of its groups), auto_provision,
         trust_mfa, name, and source_tenant: the tenant of that organization (id or
-        name) holding the sign-in application (default: its default tenant; a
-        members-only one limits guests to its access list, until each one's end).
+        name) holding the sign-in application. Default: a members-only tenant
+        of its own made for the provider (its id is the answer's source_tenant),
+        with nobody on its access list: give people access there (give_access),
+        for good or until a time. "default" for everyone of that organization.
         Other types: issuer, client_id, client_secret, ..."""
         body = dict(fields)
         body["type"] = type

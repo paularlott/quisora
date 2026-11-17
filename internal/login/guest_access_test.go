@@ -230,3 +230,31 @@ func TestGuestTokensEndWithTheSourceAccount(t *testing.T) {
 		t.Fatalf("the guest's access token expires at %d, after the source account ends at %d", exp, endAt.Unix())
 	}
 }
+
+// A new organization provider signs in through a members-only tenant of its own in the source organization, with
+// nobody on its access list: a person of the source is refused there until given access, then signs in as a guest.
+func TestGuestSignInThroughTheProvidersOwnTenant(t *testing.T) {
+	g := newGuestEnv(t, func(in *service.ProviderInput) { in.SourceTenant, in.LinkByEmail = nil, ptr(true) })
+	ctx := context.Background()
+	own, err := g.Svc.Tenants.Get(ctx, g.p.SourceTenant)
+	if err != nil || own.ProviderID != g.p.ID || !own.Settings.MembersOnly || own.OrgID != g.Primary.ID {
+		t.Fatalf("the provider's own tenant: %v %+v", err, own)
+	}
+	set := own.Settings
+	set.RequireMFA = false // the test's people have no second factor
+	if _, err := g.Svc.UpdateTenant(ctx, service.System, own.ID, service.TenantInput{Settings: &set}); err != nil {
+		t.Fatal(err)
+	}
+	pat := g.person(t, g.Primary, "pat", "pat@example.com")
+	g.person(t, g.acme, "pat-guest", "pat@example.com")
+	if !g.refusedAtSource(t, pat) {
+		t.Fatal("signed in through a new provider's own tenant without access")
+	}
+	if _, err := g.Svc.AddAccess(ctx, service.System, own.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: pat.ID}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := g.continueAs(t, pat)
+	if !signedInToAcme(b) {
+		t.Fatal("not signed in as a guest once given access")
+	}
+}

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -54,8 +55,11 @@ func TestOrganizationProviderMakesItsClient(t *testing.T) {
 	if err != nil || p.ClientID == "typed" {
 		t.Fatalf("client %q: %v", p.ClientID, err)
 	}
-	def, _ := c.svc.DefaultTenant(c.ctx, c.primary.ID)
-	if cl.OrgID != c.primary.ID || cl.TenantID != def.ID || !cl.FirstParty || cl.Public() || !cl.Enabled || cl.ProviderID != p.ID ||
+	own, err := c.svc.Tenants.Get(c.ctx, p.SourceTenant)
+	if err != nil || own.OrgID != c.primary.ID || own.ProviderID != p.ID || !own.Settings.MembersOnly {
+		t.Fatalf("the provider's own tenant: %v %+v", err, own)
+	}
+	if cl.OrgID != c.primary.ID || cl.TenantID != own.ID || !cl.FirstParty || cl.Public() || !cl.Enabled || cl.ProviderID != p.ID ||
 		cl.Name != "Sign-in to "+c.a.DisplayName ||
 		!slices.Equal(cl.RedirectURIs, []string{"https://idp.example.com" + model.ProviderCallbackPath(c.a.ID, p.ID)}) ||
 		!slices.Equal(cl.GrantTypes, []string{"authorization_code"}) || !slices.Equal(cl.Scopes, []string{"openid", "profile", "email"}) {
@@ -371,13 +375,13 @@ func TestOrganizationProviderGroups(t *testing.T) {
 	}
 }
 
-// An organization provider's sign-in application is in its source tenant: the source organization's default tenant
-// unless one is chosen (by id or name), never a tenant of another organization. Choosing another tenant makes a new
-// application there and removes the old one; choosing another organization starts again from its default tenant.
+// An organization provider's sign-in application is in its source tenant: a members-only tenant of its own unless one
+// is chosen (by id or name), never a tenant of another organization. Choosing another tenant makes a new application
+// there and removes the old one (and its own tenant); choosing another organization starts again with a tenant of its
+// own there.
 func TestOrganizationProviderSourceTenant(t *testing.T) {
 	c := orgProviderEnv(t)
 	sup := actor(c.super)
-	def, _ := c.svc.DefaultTenant(c.ctx, c.primary.ID)
 	vendor, err := c.svc.CreateTenant(c.ctx, service.System, c.primary.ID, service.TenantInput{Name: ptr("vendor")})
 	if err != nil {
 		t.Fatal(err)
@@ -386,6 +390,7 @@ func TestOrganizationProviderSourceTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	def, _ := c.svc.DefaultTenant(c.ctx, c.primary.ID)
 	p, err := c.svc.CreateProvider(c.ctx, sup, c.a.ID, orgProvider(c.primary.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -398,8 +403,9 @@ func TestOrganizationProviderSourceTenant(t *testing.T) {
 		}
 		return cl.TenantID
 	}
-	if p.SourceTenant != def.ID || clientTenant(p) != def.ID {
-		t.Fatalf("default: provider %q, client %q, want %q", p.SourceTenant, clientTenant(p), def.ID)
+	own := p.SourceTenant
+	if ot, err := c.svc.Tenants.Get(c.ctx, own); err != nil || ot.ProviderID != p.ID || clientTenant(p) != own {
+		t.Fatalf("its own tenant: %v %+v, client in %q", err, ot, clientTenant(p))
 	}
 	for name, ref := range map[string]string{"another organization's": other.ID, "unknown": "no-such-tenant", "unknown id": model.NewID()} {
 		_, err := c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr(ref)})
@@ -418,6 +424,9 @@ func TestOrganizationProviderSourceTenant(t *testing.T) {
 	if _, err := c.svc.Clients.Get(c.ctx, was); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the old sign-in application is still there: %v", err)
 	}
+	if _, err := c.svc.Tenants.Get(c.ctx, own); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("its own tenant is still there after it moved to another: %v", err)
+	}
 	if n := len(clientsOf(t, c, c.primary.ID)); n != 1 {
 		t.Errorf("%d sign-in applications in the source organization, want 1", n)
 	}
@@ -426,17 +435,156 @@ func TestOrganizationProviderSourceTenant(t *testing.T) {
 	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{Name: ptr("Vendor support")}); err != nil || p.ClientID != same {
 		t.Fatalf("an unrelated edit made a new application: %v %s %s", err, p.ClientID, same)
 	}
-	// another organization: its default tenant
+	// the default tenant, named: everyone of the organization, and an edit of something else keeps it
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr(model.DefaultTenantName)}); err != nil ||
+		p.SourceTenant != def.ID || clientTenant(p) != def.ID {
+		t.Fatalf("the default tenant: %v %q", err, p.SourceTenant)
+	}
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{Name: ptr("Everyone")}); err != nil || p.SourceTenant != def.ID {
+		t.Fatalf("an edit of the name moved it off the default tenant: %v %q", err, p.SourceTenant)
+	}
+	// another organization: a tenant of its own there
 	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceOrg: &c.b.ID}); err != nil {
 		t.Fatal(err)
 	}
-	bdef, _ := c.svc.DefaultTenant(c.ctx, c.b.ID)
-	if p.SourceTenant != bdef.ID || clientTenant(p) != bdef.ID {
-		t.Fatalf("another organization: provider %q, client %q, want %q", p.SourceTenant, clientTenant(p), bdef.ID)
+	if bt, err := c.svc.Tenants.Get(c.ctx, p.SourceTenant); err != nil || bt.OrgID != c.b.ID || bt.ProviderID != p.ID || clientTenant(p) != bt.ID {
+		t.Fatalf("another organization: %v %+v, client in %q", err, bt, clientTenant(p))
+	}
+	if _, err := c.svc.Tenants.Get(c.ctx, def.ID); err != nil {
+		t.Errorf("the default tenant went when the provider left it: %v", err)
 	}
 	// an administrator who is not a super admin changes nothing of it
 	if _, err := c.svc.UpdateProvider(c.ctx, actor(c.aAdmin), p.ID, service.ProviderInput{SourceTenant: ptr("elsewhere")}); !errors.Is(err, service.ErrForbidden) {
 		t.Errorf("an administrator moved it: %v", err)
+	}
+}
+
+// A new organization provider gets a members-only tenant of its own in the source organization, named after the
+// organization it is in, with nobody on its access list: nobody of the source signs in through it until given access
+// there (for good, or until a time), or the tenant is opened to everyone. It holds the provider's sign-in client only
+// (no other client, no resources, no SSH), another provider cannot take it, and it goes with its provider: deleted,
+// or pointed at another tenant ("" asks for its own again).
+func TestOrganizationProviderOwnTenant(t *testing.T) {
+	c := orgProviderEnv(t)
+	sup := actor(c.super)
+	// a tenant of the source with org-b's name already: the second provider's own tenant takes the next name
+	if _, err := c.svc.CreateTenant(c.ctx, service.System, c.primary.ID, service.TenantInput{Name: ptr(c.b.Name)}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := c.svc.CreateProvider(c.ctx, sup, c.a.ID, orgProvider(c.primary.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, err := c.svc.CreateProvider(c.ctx, sup, c.b.ID, orgProvider(c.primary.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := c.svc.Tenants.Get(c.ctx, p.SourceTenant)
+	if err != nil || own.Name != c.a.Name || own.DisplayName != c.a.DisplayName || !own.Settings.MembersOnly || own.ProviderID != p.ID {
+		t.Fatalf("org-a's tenant: %v %+v", err, own)
+	}
+	if ob, err := c.svc.Tenants.Get(c.ctx, pb.SourceTenant); err != nil || ob.Name != c.b.Name+"-2" || ob.ProviderID != pb.ID {
+		t.Fatalf("org-b's tenant: %v %+v", err, ob)
+	}
+	if n, _, err := c.svc.ListAccess(c.ctx, sup, own.ID, store.ListQuery{}); err != nil || len(n) != 0 {
+		t.Fatalf("its access list starts with %d entries (%v)", len(n), err)
+	}
+
+	// who of the source may use the sign-in client: nobody, then one person given access, then everyone
+	pat := c.user(c.primary.ID, "pat", model.RoleUser)
+	cl, err := c.svc.Clients.Get(c.ctx, p.ClientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	may := func() bool {
+		t.Helper()
+		tn, err := c.svc.Tenants.Get(c.ctx, own.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		app, err := c.svc.ClientAccess(c.ctx, tn, cl, c.fresh(pat), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return app.Allowed
+	}
+	if may() {
+		t.Fatal("someone of the source may sign in through a new provider before being given access")
+	}
+	e, err := c.svc.AddAccess(c.ctx, sup, own.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: pat.ID})
+	if err != nil || !may() {
+		t.Fatalf("given access: %v %v", err, may())
+	}
+	if err := c.svc.RemoveAccess(c.ctx, sup, own.ID, e.ID); err != nil || may() {
+		t.Fatalf("access removed: %v %v", err, may())
+	}
+	open := own.Settings
+	open.MembersOnly = false
+	if _, err := c.svc.UpdateTenant(c.ctx, sup, own.ID, service.TenantInput{Settings: &open}); err != nil || !may() {
+		t.Fatalf("opened to everyone: %v %v", err, may())
+	}
+
+	// it holds the sign-in client only
+	field := func(err error) string {
+		var fe *service.FieldError
+		if errors.As(err, &fe) {
+			return fe.Field
+		}
+		return fmt.Sprint(err)
+	}
+	if _, _, err := c.svc.CreateClient(c.ctx, sup, c.primary.ID, service.ClientInput{Name: ptr("Other"), TenantID: &own.ID,
+		RedirectURIs: &[]string{"https://other.example/cb"}}); field(err) != "tenant_id" {
+		t.Errorf("another client made in it: %v", err)
+	}
+	if _, err := c.svc.UpdateTenant(c.ctx, sup, own.ID, service.TenantInput{Resources: &[]string{"https://mcp.example/mcp"}}); field(err) != "resources" {
+		t.Errorf("a resource given to it: %v", err)
+	}
+	if _, err := c.svc.UpdateTenantSSH(c.ctx, sup, own.ID, service.SSHSettingsInput{Enabled: ptr(true)}); field(err) != "enabled" {
+		t.Errorf("SSH turned on in it: %v", err)
+	}
+	if _, err := c.svc.UpdateProvider(c.ctx, sup, pb.ID, service.ProviderInput{SourceTenant: &own.ID}); field(err) != "source_tenant" {
+		t.Errorf("another provider took it: %v", err)
+	}
+
+	// pointed at the default tenant and back: "" makes a new tenant of its own, and the old one went with the move
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr(model.DefaultTenantName)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.Tenants.Get(c.ctx, own.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("its own tenant after moving to the default one: %v", err)
+	}
+	if p, err = c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr("")}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := c.svc.Tenants.Get(c.ctx, p.SourceTenant)
+	if err != nil || again.ProviderID != p.ID || again.ID == own.ID || !again.Settings.MembersOnly {
+		t.Fatalf("its own tenant again: %v %+v", err, again)
+	}
+	if p2, err := c.svc.UpdateProvider(c.ctx, sup, p.ID, service.ProviderInput{SourceTenant: ptr("")}); err != nil || p2.SourceTenant != again.ID {
+		t.Fatalf("asking for its own tenant when it has one made another: %v %q", err, p2.SourceTenant)
+	}
+
+	// deleted: its client and tenant go; the tenant's access entries go with the orphan sweep
+	if _, err := c.svc.AddAccess(c.ctx, sup, again.ID, service.AccessInput{SubjectType: model.SubjectUser, SubjectID: pat.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.svc.DeleteProvider(c.ctx, sup, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.Tenants.Get(c.ctx, again.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("its tenant after the provider was deleted: %v", err)
+	}
+	if _, err := c.svc.Clients.Get(c.ctx, p.ClientID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("its client after the provider was deleted: %v", err)
+	}
+	if _, err := c.svc.SweepAll(c.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.svc.Access.Get(c.ctx, model.AccessID(again.ID, pat.ID)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("an access entry of its tenant after the sweep: %v", err)
+	}
+	if _, err := c.svc.Tenants.Get(c.ctx, pb.SourceTenant); err != nil {
+		t.Errorf("the other provider's tenant went too: %v", err)
 	}
 }
 
@@ -458,11 +606,14 @@ func TestProviderSources(t *testing.T) {
 			t.Errorf("the provider's own organization is offered: %+v", s)
 		}
 	}
-	if orgs[c.b.ID] != 2 || orgs[c.primary.ID] == 0 || total < len(all) {
+	if orgs[c.b.ID] != 3 || orgs[c.primary.ID] == 0 || total < len(all) { // its own tenant, default and support
 		t.Errorf("sources %v, total %d", orgs, total)
 	}
+	if !all[0].OwnTenant || all[0].TenantID != "" || !all[0].MembersOnly {
+		t.Errorf("an organization's first choice is not a tenant of the provider's own: %+v", all[0])
+	}
 	got, _, err := c.svc.ProviderSources(c.ctx, actor(c.super), c.a.ID, "org-b", 0)
-	if err != nil || len(got) != 2 || got[0].OrgID != c.b.ID {
+	if err != nil || len(got) != 3 || got[0].OrgID != c.b.ID || !got[0].OwnTenant {
 		t.Errorf("search: %v %+v", err, got)
 	}
 	if one, total, err := c.svc.ProviderSources(c.ctx, actor(c.super), c.a.ID, "", 1); err != nil || total < 2 || len(orgs) < 2 ||
@@ -491,15 +642,31 @@ func TestProviderSources(t *testing.T) {
 	if _, err := c.svc.CreateTenant(c.ctx, service.System, c.a.ID, service.TenantInput{Name: ptr("support-own")}); err != nil {
 		t.Fatal(err)
 	}
-	if got := pairs("Supp"); !slices.Equal(got, []string{"org-b/support"}) {
+	if got := pairs("Supp"); !slices.Equal(got, []string{"org-b/", "org-b/support"}) {
 		t.Errorf("by tenant name: %v", got)
 	}
 	// both, as the picker shows a choice: "organization (tenant"
-	if got := pairs("org-b (sup"); !slices.Equal(got, []string{"org-b/support"}) {
+	if got := pairs("org-b (sup"); !slices.Equal(got, []string{"org-b/", "org-b/support"}) {
 		t.Errorf("organization and tenant: %v", got)
 	}
-	if got := pairs("org-b (default)"); !slices.Equal(got, []string{"org-b/default"}) {
+	if got := pairs("org-b (default)"); !slices.Equal(got, []string{"org-b/", "org-b/default"}) {
 		t.Errorf("organization and whole tenant name: %v", got)
+	}
+	// a tenant made for another provider is that provider's alone: not offered
+	pb, err := c.svc.CreateProvider(c.ctx, actor(c.super), c.primary.ID, orgProvider(c.b.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, err := c.svc.Tenants.Get(c.ctx, pb.SourceTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"", "org-b", made.Name} {
+		for _, p := range pairs(q) {
+			if p == "org-b/"+made.Name {
+				t.Errorf("search %q offers another provider's own tenant", q)
+			}
+		}
 	}
 	if got := pairs("org-b (zzz"); len(got) != 0 {
 		t.Errorf("no such tenant: %v", got)

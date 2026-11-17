@@ -39,7 +39,8 @@ QUISORA_APP_CLIENT_ID=… QUISORA_APP_CLIENT_SECRET=… scriptling -L lib exampl
 ```
 
 `create_org.py` needs a super admin's token, or a service account of the primary organization with `orgs:create`.
-`setup_org.py` needs a service account of the primary organization with `orgs:create` and `orgs:manage`, which then
+`setup_org.py` needs a service account of the primary organization with `orgs:create` and `orgs:manage` (and `access`
+for `--guests`, to give the groups access to the provider's own tenant in the primary organization), which then
 owns the organization it creates and configures it as a super admin would ([owning organizations](../docs/SERVICE-ACCOUNTS.md#owning-organizations-orgsmanage)).
 `list_orgs.py` needs a personal token: service accounts cannot list organizations. As a service account,
 `create_user.py` needs the `users` scope (and `manage_admins` for `--role admin`), and `add_to_group.py` needs

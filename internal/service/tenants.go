@@ -89,6 +89,9 @@ func (s *Service) applyTenant(ctx context.Context, t *model.Tenant, in TenantInp
 		if err != nil {
 			return err
 		}
+		if len(res) > 0 && t.ProviderID != "" {
+			return Invalid("resources", "a tenant made for a provider's sign-ins owns no resources")
+		}
 		var seen []string
 		for _, r := range res {
 			u, _ := url.Parse(r)

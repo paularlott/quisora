@@ -189,6 +189,9 @@ func (s *Service) UpdateTenantSSH(ctx context.Context, a *Actor, tenantID string
 	if err != nil {
 		return nil, err
 	}
+	if set.Enabled && t.ProviderID != "" {
+		return nil, Invalid("enabled", "a tenant made for a provider's sign-ins holds no SSH application: use another tenant")
+	}
 	t.SSH = set
 	madeClient := false
 	if set.Enabled {

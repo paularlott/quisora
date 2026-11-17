@@ -5799,9 +5799,11 @@ components:
         source_tenant:
           type: string
           description: "organization: the tenant of that organization (id or name) that holds the provider's sign-in
-            application; empty or absent: its default tenant (and, with a new source_org, that organization's default
-            tenant). Make it a members-only tenant to decide who signs in, and until when, with its access list: an
-            entry with an end ends the guest's sign-ins here too. Changing it makes a new sign-in application, so guests
+            application. Empty, or absent on a new provider or with a new source_org: a members-only tenant of its own
+            made for the provider there (provider_id set on it), with nobody on its access list, so nobody signs in until
+            given access there (an entry with an end ends the guest's sign-ins here too); absent on an edit keeps the
+            current one. Name the source's default tenant (default) for everyone of it. Another provider's own tenant is
+            refused. Changing it makes a new sign-in application (and removes a tenant of its own it leaves), so guests
             signed in through the old one sign in again"
         tenant:
           type: string
@@ -5827,6 +5829,10 @@ components:
               tenant_name: {type: string}
               tenant_display_name: {type: string}
               members_only: {type: boolean}
+              own_tenant:
+                type: boolean
+                description: "a tenant of the provider's own in this organization (no tenant_id: source_tenant sent
+                  empty), offered first for each organization; tenants made for other providers are not offered"
         total:
           type: integer
     ProviderList:
@@ -6467,6 +6473,11 @@ components:
           items:
             type: string
         settings: {$ref: "#/components/schemas/TenantSettings"}
+        provider_id:
+          type: string
+          description: "the organization provider (of another organization) this tenant was made for: it holds that
+            provider's sign-in application only (no other application, resources or SSH), and its access list decides
+            who of this organization signs in to that one; made and removed with the provider"
         ssh:
           description: the tenant's SSH certificate authority settings (see SSH certificates); absent until SSH has been enabled
           allOf:

@@ -49,8 +49,8 @@ type Sweep struct {
 type ownerRef struct {
 	kind model.Kind
 	id   string
-	// uses, for a provider that owns a sign-in client (Client.ProviderID), is that client: the provider must still
-	// use it, or the client is a leftover of a change of the provider's source organization. For a user that owns a
+	// uses, for a provider that owns a sign-in client (Client.ProviderID) or a tenant (Tenant.ProviderID), is that
+	// client or tenant: the provider must still use it, or it is a leftover of a change of the provider's source. For a user that owns a
 	// picture, it is that picture: the user's current one (User.Picture), or a leftover of a change.
 	uses string
 }
@@ -63,6 +63,9 @@ func owners(e model.Entity) []ownerRef {
 	case *model.Group:
 		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Tenant:
+		if v.ProviderID != "" { // made for a provider: an orphan once that provider no longer signs in through it
+			return []ownerRef{{kind: model.KindOrg, id: v.OrgID}, {kind: model.KindProvider, id: v.ProviderID, uses: v.ID}}
+		}
 		return []ownerRef{{kind: model.KindOrg, id: v.OrgID}}
 	case *model.Client:
 		if v.ProviderID != "" {
@@ -323,7 +326,7 @@ func (s *Service) ownerGone(ctx context.Context, o ownerRef) (bool, error) {
 	if err := store.Decode(r, &p); err != nil {
 		return false, err
 	}
-	return p.ClientID != o.uses, nil
+	return p.ClientID != o.uses && p.SourceTenant != o.uses, nil // its sign-in client or its own tenant
 }
 
 // removeOrphan removes e. A membership is marked removed, not tombstoned, with a sequence no writer can pass, so a
