@@ -141,7 +141,8 @@ func TestIdPScopeIsDescribed(t *testing.T) {
 	for _, s := range []struct {
 		list []string
 		v    string
-	}{{d.Scopes, "idp"}, {d.Claims, "idp_sub"}, {d.Claims, "idp_tenant"}, {d.Claims, "idp_login"}} {
+	}{{d.Scopes, "idp"}, {d.Claims, "idp_sub"}, {d.Claims, "idp_org"}, {d.Claims, "idp_org_name"}, {d.Claims, "idp_tenant"},
+		{d.Claims, "idp_tenant_name"}, {d.Claims, "idp_login"}} {
 		found := false
 		for _, x := range s.list {
 			found = found || x == s.v
@@ -182,6 +183,11 @@ func TestDeviceGrantNamesTheUpstreamAccount(t *testing.T) {
 		c := claimsOf(t, tok)
 		if c["idp_sub"] != account.Subject || c["idp_tenant"] != account.Tenant || c["idp_login"] != account.Login {
 			t.Errorf("%s: idp_sub %v idp_tenant %v idp_login %v", name, c["idp_sub"], c["idp_tenant"], c["idp_login"])
+		}
+		for _, k := range []string{"idp_org", "idp_org_name", "idp_tenant_name"} { // another organization's guests only
+			if v, ok := c[k]; ok {
+				t.Errorf("%s: %s %v for a Microsoft sign-in", name, k, v)
+			}
 		}
 	}
 }

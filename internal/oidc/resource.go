@@ -313,7 +313,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		bearerError(w, http.StatusUnauthorized, "invalid_token") // access taken away since the token was issued
 		return
 	}
-	is := &issue{scopes: cl.Scopes(), idp: cl.IdP, upstream: cl.upstream()}
+	is := &issue{scopes: cl.Scopes(), idp: cl.IdP, upstream: p.namedUpstream(r.Context(), cl.IdP, cl.upstream())}
 	o := newObj(384)
 	o.str("sub", u.ID)
 	p.profileClaims(r.Context(), o, is, u, cl.UserinfoClaims)

@@ -151,7 +151,7 @@ text before each screenshot.
   The expiry is now kept to the millisecond and the request_uri refused from it.
 - **The ID token carried `idp` unasked** (a warning in `oidcc-server` and FAPI 2.0's `happy-flow`): the type of
   upstream provider the user signed in through was in every token. It is now a claim of the `idp` scope, with the
-  account there (`idp_sub`, `idp_tenant`, `idp_login`), and can be asked for by name.
+  account there (`idp_sub`, `idp_org`, `idp_org_name`, `idp_tenant`, `idp_tenant_name`, `idp_login`), and can be asked for by name.
 - **The harness followed the per-organization address spaces.** Since each organization moved to `/o/<id>`, the
   sign-in page is `/o/<id>/login?…` and the sign-out form posts to `/o/<id>/oauth/logout/confirm`; the browser steps
   in `conformance/config/` now match both. SCIM stays at the server's root (`/scim/v2/<org>`), so the client

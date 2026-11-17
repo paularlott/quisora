@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -38,8 +39,9 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 		t.Fatalf("acme's session: %+v", sess)
 	}
 	// the account it went through, as the provider names it: the person's ID at the primary organization, that
-	// organization, and the address it verified
-	if a := sess[0].Upstream; a == nil || a.Subject != pat.ID || a.Tenant != g.p.SourceOrg || a.Login != "pat@example.com" {
+	// organization, the tenant there it signed in through, and the address it verified
+	if a := sess[0].Upstream; a == nil || a.Subject != pat.ID || a.Org != g.p.SourceOrg || a.Tenant != g.p.SourceTenant ||
+		a.Tenant == "" || a.Login != "pat@example.com" {
 		t.Fatalf("acme's session's upstream account: %+v", a)
 	}
 
@@ -65,6 +67,10 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	issuer := iu.Path // the server's own address, as the browser reaches it
+	srcTenant, err := g.Svc.Tenants.Get(ctx, g.p.SourceTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
 	authorize := func(app *model.Client) (int, string) {
 		t.Helper()
 		q := url.Values{"response_type": {"code"}, "client_id": {app.ID}, "redirect_uri": {redirect}, "scope": {"openid idp"},
@@ -112,6 +118,45 @@ func TestUpstreamAMRFromProviderToApplication(t *testing.T) {
 		if string(amr) != `["fed"]` || c["acr"] != "urn:quisora:acr:basic" || c["idp"] != model.ProviderOrganization {
 			t.Errorf("%s: amr %s acr %v idp %v", name, amr, c["acr"], c["idp"])
 		}
+		// the organization and tenant the guest came from, by ID and by name (as org, tenant and their names name the
+		// application's own)
+		if c["idp_org"] != g.Primary.ID || c["idp_org_name"] != g.Primary.Name || c["idp_tenant"] != srcTenant.ID ||
+			c["idp_tenant_name"] != srcTenant.Name || c["idp_sub"] != pat.ID || c["idp_login"] != "pat@example.com" {
+			t.Errorf("%s: idp_org %v %v idp_tenant %v %v idp_sub %v idp_login %v", name, c["idp_org"], c["idp_org_name"],
+				c["idp_tenant"], c["idp_tenant_name"], c["idp_sub"], c["idp_login"])
+		}
+	}
+
+	// userinfo names the organization as it is now: renamed, the new name
+	userinfo := func() map[string]any {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, g.URL+issuer+"/oauth/userinfo", nil)
+		req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+		res, err := b.c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var ui map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&ui); err != nil || res.StatusCode != 200 {
+			t.Fatalf("userinfo: %d %v", res.StatusCode, err)
+		}
+		return ui
+	}
+	if ui := userinfo(); ui["idp_org"] != g.Primary.ID || ui["idp_org_name"] != g.Primary.Name || ui["idp_tenant"] != srcTenant.ID ||
+		ui["idp_tenant_name"] != srcTenant.Name {
+		t.Fatalf("userinfo: %v", ui)
+	}
+	if _, err := g.Svc.UpdateOrg(ctx, service.System, g.Primary.ID, service.OrgInput{Name: ptr("fortix")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Svc.UpdateTenant(ctx, service.System, srcTenant.ID, service.TenantInput{Name: ptr("support")}); err != nil {
+		t.Fatal(err)
+	}
+	g.Svc.InvalidateOrgs() // as every node does on hearing of the change
+	g.op.InvalidateTenant(srcTenant.ID)
+	if ui := userinfo(); ui["idp_org"] != g.Primary.ID || ui["idp_org_name"] != "fortix" || ui["idp_tenant_name"] != "support" {
+		t.Fatalf("userinfo after the organization and tenant were renamed: %v", ui)
 	}
 }
 

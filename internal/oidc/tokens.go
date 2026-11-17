@@ -371,13 +371,49 @@ func (c *Claims) upstream() *model.UpstreamAccount {
 	if c.IdPSub == "" {
 		return nil
 	}
-	return &model.UpstreamAccount{Subject: c.IdPSub, Tenant: c.IdPTenant, Login: c.IdPLogin}
+	return &model.UpstreamAccount{Subject: c.IdPSub, Org: c.IdPOrg, OrgName: c.IdPOrgName, Tenant: c.IdPTenant,
+		TenantName: c.IdPTenantName, Login: c.IdPLogin}
+}
+
+// namedUpstream is a with the names of the organization and tenant an organization provider's guest came from
+// (idp_org_name, idp_tenant_name), as they are now, as org_name and tenant_name are. A name is a label only: one that
+// cannot be read is left out rather than refusing the token. Any other provider's account is a as it is.
+func (p *Provider) namedUpstream(ctx context.Context, idp string, a *model.UpstreamAccount) *model.UpstreamAccount {
+	if a == nil || idp != model.ProviderOrganization || a.Org == "" {
+		return a
+	}
+	named := *a
+	named.OrgName, named.TenantName = "", ""
+	if org, err := p.svc.Org(ctx, a.Org); err == nil {
+		named.OrgName = org.Name
+	}
+	if a.Tenant != "" {
+		if t, err := p.tenantByID(ctx, a.Tenant); err == nil && t.OrgID == a.Org {
+			named.TenantName = t.Name
+		}
+	}
+	return &named
+}
+
+// tenantByID is tenant id as read within the tenant cache's lifetime (clientTenant's cache).
+func (p *Provider) tenantByID(ctx context.Context, id string) (*model.Tenant, error) {
+	if t, ok := p.tenants.Get(id); ok {
+		return t, nil
+	}
+	tok := p.tenants.Token(id)
+	t, err := p.svc.Tenants.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	p.tenants.PutIf(id, t, tok)
+	return t, nil
 }
 
 // upstreamClaims adds the idp scope's claims, those want allows (nil: all), after a sign-in through an upstream
 // provider of type idp as account a (model.UpstreamAccount; nil when not known): idp the provider's type, idp_sub its
-// ID of the account, idp_tenant its Microsoft directory (or the organization, for an organization provider),
-// idp_login the name it signs in with. A sign-in of Quisora's own has none of them.
+// ID of the account, idp_tenant its Microsoft directory, idp_login the name it signs in with; for an organization
+// provider, idp_org and idp_tenant the organization and tenant the guest came from, with their names. A sign-in of
+// Quisora's own has none of them.
 func upstreamClaims(o *obj, idp string, a *model.UpstreamAccount, want func(string) bool) {
 	if want == nil || want("idp") {
 		o.strIf("idp", idp)
@@ -388,8 +424,17 @@ func upstreamClaims(o *obj, idp string, a *model.UpstreamAccount, want func(stri
 	if want == nil || want("idp_sub") {
 		o.str("idp_sub", a.Subject)
 	}
+	if want == nil || want("idp_org") {
+		o.strIf("idp_org", a.Org)
+	}
+	if want == nil || want("idp_org_name") {
+		o.strIf("idp_org_name", a.OrgName)
+	}
 	if want == nil || want("idp_tenant") {
 		o.strIf("idp_tenant", a.Tenant)
+	}
+	if want == nil || want("idp_tenant_name") {
+		o.strIf("idp_tenant_name", a.TenantName)
 	}
 	if want == nil || want("idp_login") {
 		o.strIf("idp_login", a.Login)
@@ -512,6 +557,7 @@ func (p *Provider) mint(ctx context.Context, is *issue, withID bool) (*tokenResp
 		}
 		is.sourcesUntil = until
 	}
+	is.upstream = p.namedUpstream(ctx, is.idp, is.upstream)
 	is.details = p.authDetails(is)
 	now := time.Now()
 	at, err := p.accessToken(ctx, key, is, now)

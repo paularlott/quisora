@@ -972,21 +972,31 @@ const (
 )
 
 // UpstreamAccount is the account at an upstream provider that a sign-in went through, as that provider names it: what
-// the idp scope passes on to applications (the idp_sub, idp_tenant and idp_login claims), so one can tell which of the
+// the idp scope passes on to applications (the idp_sub, idp_org, idp_tenant and idp_login claims, and the names of
+// the organization and tenant), so one can tell which of the
 // user's linked accounts was used and match it against the provider's own APIs. Quisora decides nothing on it.
 type UpstreamAccount struct {
 	// Subject is the provider's stable ID of the account: the object ID (oid) for Microsoft, whose sub differs for each
 	// application; the sub for the other OpenID Connect providers (for an organization provider, the user's ID
 	// there); the user ID for GitHub.
 	Subject string `msgpack:"s" json:"s"`
-	// Tenant is the Microsoft directory (tid) the account is in, or for an organization provider the organization
-	// (Provider.SourceOrg); empty for the other providers.
+	// Org is, for an organization provider, the organization the person came from (Provider.SourceOrg); empty for the
+	// other providers.
+	Org string `msgpack:"o,omitempty" json:"o,omitempty"`
+	// Tenant is the Microsoft directory (tid) the account is in, or for an organization provider the tenant of Org the
+	// person signed in through (Provider.SourceTenant, whose access list decides who may); empty for the other
+	// providers.
 	Tenant string `msgpack:"t,omitempty" json:"t,omitempty"`
 	// Login is the name the person signs in to the provider with, a login_hint for it: the user principal name
 	// (preferred_username) for Microsoft, the username for GitHub, the email address for the others - for an
 	// organization provider only one that organization verified, else none. A hint only: it can change, and it is
 	// never the account's identity (Subject is).
 	Login string `msgpack:"l,omitempty" json:"l,omitempty"`
+	// OrgName and TenantName are the names of Org and its Tenant, for an organization provider (the idp_org_name and
+	// idp_tenant_name claims): read as they are now when a token is issued, as org_name and tenant_name are, so never
+	// stored.
+	OrgName    string `msgpack:"-" json:"-"`
+	TenantName string `msgpack:"-" json:"-"`
 }
 
 // GuestSource is an account a guest's sign-in stands on: a guest signs in to one organization through an organization

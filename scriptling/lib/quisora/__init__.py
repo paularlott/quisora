@@ -416,6 +416,47 @@ class Client:
         return self.request("GET", self._org(org) + "/audit", params=params)
 
 
+# --- an application's tokens ----------------------------------------------
+
+
+def introspect(url, org, token, client_id, client_secret, verify=True, timeout=30):
+    """Ask organization org (its name or id) what an access token is, as the
+    application it was issued to: a confidential client of org, by its own
+    client_id and client_secret (not a service account's). The answer is
+    {"active": False} for a token that is no longer usable, else its claims:
+    sub, scope, exp, org, tenant and, with the idp scope, how the person signed
+    in (guest_of reads a guest's). verify=False skips checking the server's
+    TLS certificate (a development server only)."""
+    form = {"token": token, "client_id": client_id, "client_secret": client_secret}
+    resp = _send("POST", url.rstrip("/") + "/o/" + _seg(org) + "/oauth/introspect",
+                 data=urllib.parse.urlencode(form),
+                 headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+                 timeout=timeout, verify=verify)
+    if resp.status_code != 200:
+        raise _error(resp)
+    return resp.json()
+
+
+def guest_of(claims):
+    """Where a guest from another organization came from, read from a token's
+    claims (an introspection answer, userinfo, or a decoded token issued with
+    the idp scope):
+
+        {"org", "org_name", "tenant", "tenant_name", "user", "login"}
+
+    the organization they came from, the tenant there they signed in through
+    (whose access list let them), their user id there and the address that
+    organization verified (None when none). None when the person is not a guest
+    from another organization, or the token was issued without the idp scope.
+    Keep the ids (org, user) in what you store; the names are for showing
+    people, and follow a rename."""
+    if not claims or claims.get("idp") != "organization" or not claims.get("idp_org"):
+        return None
+    return {"org": claims.get("idp_org"), "org_name": claims.get("idp_org_name"),
+            "tenant": claims.get("idp_tenant"), "tenant_name": claims.get("idp_tenant_name"),
+            "user": claims.get("idp_sub"), "login": claims.get("idp_login")}
+
+
 def from_env():
     """A Client configured from the environment:
 

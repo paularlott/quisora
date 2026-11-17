@@ -277,38 +277,41 @@ func (a Audience) Has(aud string) bool {
 // Claims is the union of the claims this provider reads from access tokens, ID tokens, client assertions and
 // logout hints.
 type Claims struct {
-	Iss        string                     `json:"iss"`
-	Sub        string                     `json:"sub"`
-	Aud        Audience                   `json:"aud"`
-	Exp        NumericDate                `json:"exp"`
-	Iat        NumericDate                `json:"iat"`
-	Nbf        NumericDate                `json:"nbf"`
-	Jti        string                     `json:"jti"`
-	ClientID   string                     `json:"client_id"`
-	Scope      string                     `json:"scope"`
-	AuthTime   NumericDate                `json:"auth_time"`
-	ACR        string                     `json:"acr"`
-	AMR        []string                   `json:"amr"`
-	IdP        string                     `json:"idp"`
-	IdPSub     string                     `json:"idp_sub"`    // the idp scope's claims (upstreamClaims)
-	IdPTenant  string                     `json:"idp_tenant"` // ...
-	IdPLogin   string                     `json:"idp_login"`  // ...
-	SID        string                     `json:"sid"`
-	GID        string                     `json:"gid"` // refresh grant the token was issued from (access tokens)
-	Org        string                     `json:"org"`
-	OrgName    string                     `json:"org_name"`
-	Tenant     string                     `json:"tenant"`
-	TenantName string                     `json:"tenant_name"`
-	Role       string                     `json:"org_role"`
-	Groups     []string                   `json:"groups"`
-	Tags       []string                   `json:"tags"`
-	Roles      []string                   `json:"roles"`
-	Nonce      string                     `json:"nonce"`
-	Events     map[string]json.RawMessage `json:"events"`
-	Email      string                     `json:"email"`
-	EmailVerif bool                       `json:"email_verified"`
-	Name       string                     `json:"name"`
-	Username   string                     `json:"preferred_username"`
+	Iss           string                     `json:"iss"`
+	Sub           string                     `json:"sub"`
+	Aud           Audience                   `json:"aud"`
+	Exp           NumericDate                `json:"exp"`
+	Iat           NumericDate                `json:"iat"`
+	Nbf           NumericDate                `json:"nbf"`
+	Jti           string                     `json:"jti"`
+	ClientID      string                     `json:"client_id"`
+	Scope         string                     `json:"scope"`
+	AuthTime      NumericDate                `json:"auth_time"`
+	ACR           string                     `json:"acr"`
+	AMR           []string                   `json:"amr"`
+	IdP           string                     `json:"idp"`
+	IdPSub        string                     `json:"idp_sub"` // the idp scope's claims (upstreamClaims)
+	IdPOrg        string                     `json:"idp_org"`
+	IdPOrgName    string                     `json:"idp_org_name"`
+	IdPTenant     string                     `json:"idp_tenant"`
+	IdPTenantName string                     `json:"idp_tenant_name"`
+	IdPLogin      string                     `json:"idp_login"` // ...
+	SID           string                     `json:"sid"`
+	GID           string                     `json:"gid"` // refresh grant the token was issued from (access tokens)
+	Org           string                     `json:"org"`
+	OrgName       string                     `json:"org_name"`
+	Tenant        string                     `json:"tenant"`
+	TenantName    string                     `json:"tenant_name"`
+	Role          string                     `json:"org_role"`
+	Groups        []string                   `json:"groups"`
+	Tags          []string                   `json:"tags"`
+	Roles         []string                   `json:"roles"`
+	Nonce         string                     `json:"nonce"`
+	Events        map[string]json.RawMessage `json:"events"`
+	Email         string                     `json:"email"`
+	EmailVerif    bool                       `json:"email_verified"`
+	Name          string                     `json:"name"`
+	Username      string                     `json:"preferred_username"`
 	// UserinfoClaims are the claims requested one by one for userinfo (access tokens).
 	UserinfoClaims []string `json:"userinfo_claims"`
 	// Act is the actor of a token from a token exchange (RFC 8693 §4.1): the client acting for the subject, with the

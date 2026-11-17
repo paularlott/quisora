@@ -336,8 +336,10 @@ lists the organizations and tenants matching a name, as the console's picker doe
 
 A guest signs in to B with a first factor only (`amr` `["fed"]`), as with any provider: B's own rules ask for a second
 factor where one is required, and the person gives the second factor they have in B. B's tokens add what S's ID token
-said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code at S), with `idp` `organization` (to applications
-with the `idp` scope) and `acr` from B's own values only. The provider is *not* trusted to
+said (say `["fed","pwd","otp","mfa"]` for a guest who used a password and a code at S), with `idp` `organization` and
+`acr` from B's own values only. Applications with the `idp` scope also get where the guest came from: `idp_org` and
+`idp_org_name` (S), `idp_tenant` and `idp_tenant_name` (the tenant of S they signed in through) and `idp_sub` (their ID
+in S) ([the idp scope](../oauth/sign-in.md#which-upstream-account-the-idp-scope)). The provider is *not* trusted to
 have asked for one by default. A super admin can turn on **counts as a second factor** when S's rules require one of
 everybody who signs in to that application (S's default tenant); then B asks plain users for none after it.
 

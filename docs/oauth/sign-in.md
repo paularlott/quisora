@@ -124,7 +124,7 @@ jwt_claims "$(jq -r .id_token tokens.json)"
 | `org` | `org`, `org_name`, `tenant`, `tenant_name`, `org_role` (the user's Quisora role: `user`, `manager`, `admin`, `super_admin`) |
 | `roles` | `roles`: the application roles the user's access to this application gives them, and `tags` |
 | `enterprise` | `enterprise`: job title, department, manager, employee number and the like |
-| `idp` | `idp`, `idp_sub`, `idp_tenant`, `idp_login`: the upstream provider the user signed in with and the account there ([below](#which-upstream-account-the-idp-scope)) |
+| `idp` | `idp`, `idp_sub`, `idp_org`, `idp_org_name`, `idp_tenant`, `idp_tenant_name`, `idp_login`: the upstream provider the user signed in with and the account there ([below](#which-upstream-account-the-idp-scope)) |
 | `offline_access` | No claims: the refresh tokens outlive the user's browser session ([refreshing](#refreshing)). |
 
 Access tokens carry what APIs authorize on whatever the scopes: `org`, `org_name`, `tenant`, `tenant_name`, `org_role`,
@@ -179,19 +179,26 @@ an application that calls the provider's own APIs (Microsoft Graph, Google's) ca
 | --- | --- | --- | --- | --- |
 | `idp` | `microsoft` | `google`, `gitlab`, `auth0`, `oidc` | `github` | `organization` |
 | `idp_sub` | the object ID (`oid`), as Graph's `/me` `id`; Microsoft's `sub` differs for each application | the provider's `sub` | the user ID | the user's ID there |
-| `idp_tenant` | the directory (`tid`) | absent | absent | that organization's ID |
+| `idp_org` | absent | absent | absent | the ID of the organization the guest came from |
+| `idp_org_name` | absent | absent | absent | that organization's name |
+| `idp_tenant` | the directory (`tid`) | absent | absent | the ID of the tenant of that organization the guest signed in through (the provider's [source tenant](../sign-in/providers.md)) |
+| `idp_tenant_name` | absent | absent | absent | that tenant's name |
 | `idp_login` | the user principal name (`preferred_username`) | the email address | the username | the email address, only when that organization verified it |
 
 Match on `idp_sub` (with `idp_tenant` for Microsoft): it never changes. `idp_login` is for `login_hint`, so the
 provider's own sign-in starts at the right account; it can change, and another account can come to have it, so it is
 never an identity.
 
-For a guest from another organization, `idp_tenant` and `idp_login` together say that organization vouches for the
+For a guest from another organization, `idp_org` and `idp_login` together say that organization vouches for the
 address: someone in this organization cannot set them, as they can the user's own `email`. An application that already
 has accounts for people of that organization can link a guest's first sign-in to the account with that address, when
-it trusts that organization with the address's domain; afterwards it matches on `sub` like any other user. All four are
-absent without the scope and when the user signed in another way (a password, a passkey), and the last three when the
-provider has since been removed; the consent screen names the scope. Refreshed tokens keep the account of the sign-in
+it trusts that organization with the address's domain; afterwards it matches on `sub` like any other user. Keep the IDs
+(`idp_org`, `idp_sub`) in anything stored, an audit log say, and show the names to people ("Pat, a guest from fortix,
+support"): the names are read as they are when the token is issued, as `org_name` and `tenant_name` are, so they follow
+a rename. `idp_tenant` is the tenant whose access list let the guest in, and until when
+([time-limited access](../TIMED-ACCESS.md)); what the guest may do in this organization's applications is still what
+this organization gives their account here. All these claims are absent without the scope and when the user signed in
+another way (a password, a passkey), and all but `idp` when the provider has since been removed; the consent screen names the scope. Refreshed tokens keep the account of the sign-in
 they came from.
 
 ## Userinfo
