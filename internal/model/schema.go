@@ -98,7 +98,8 @@ var Schemas = map[Kind]Schema{
 		{Name: "name", Type: FieldString, Search: true, Sort: true},
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true},
 		{Name: "created", Type: FieldTime, Sort: true},
-		{Name: "ssh_enabled", Type: FieldBool, Index: true}, // the tenants with SSH on (housekeeping: EnsureSSHKeys)
+		{Name: "ssh_enabled", Type: FieldBool, Index: true},       // the tenants with SSH on (housekeeping, the account page)
+		{Name: "self_registration", Type: FieldBool, Index: true}, // tenants taking self-registered applications (registration)
 	}},
 	KindAccess: {KindAccess, []Field{
 		{Name: "tenant_id", Type: FieldString, Index: true}, // a tenant's access entries (ListAccess)
@@ -110,8 +111,9 @@ var Schemas = map[Kind]Schema{
 		{Name: "tenant_id", Type: FieldString, Index: true},                                // a tenant's applications (the tenants page, deleting a tenant)
 		{Name: "auth_method", Type: FieldString, Sort: true, Index: true, SortIndex: true}, // public clients' origins (CORS)
 		{Name: "created", Type: FieldTime, Sort: true},
-		{Name: "self_registered", Type: FieldBool, Index: true}, // self-registered applications (purge)
-		{Name: "service_account", Type: FieldBool, Index: true}, // the organization's service accounts, listed apart
+		{Name: "self_registered", Type: FieldBool, Index: true},    // self-registered applications (purge)
+		{Name: "service_account", Type: FieldBool, Index: true},    // the organization's service accounts, listed apart
+		{Name: "accepts_api_tokens", Type: FieldBool, Index: true}, // applications that take personal API tokens (TokenApps)
 		// those nobody has let sign in yet: what the registration cap counts (service.MaxSelfRegistered), on an
 		// open endpoint, so it reads at most the cap's worth, not every application ever registered
 		{Name: "unused_self_registered", Type: FieldBool, Index: true},
@@ -125,6 +127,7 @@ var Schemas = map[Kind]Schema{
 	KindPasskey: {KindPasskey, nil},
 	KindIdentity: {KindIdentity, []Field{
 		{Name: "provider_id", Type: FieldString, Index: true}, // a provider's links, when it is deleted
+		{Name: "source_user", Type: FieldString, Index: true}, // a person's guest accounts in other organizations (guestsOf)
 	}},
 	KindSession: {KindSession, nil},
 	KindGrant: {KindGrant, []Field{

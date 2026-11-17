@@ -120,7 +120,25 @@ type formatMigration struct {
 }
 
 // formatMigrations[i] brings a store from format formatBase+i to formatBase+i+1.
-var formatMigrations []formatMigration
+var formatMigrations = []formatMigration{
+	// 3 to 4: index fields added to records a store already holds, which an index lookup on them would otherwise miss
+	// until each is written again: an access entry's end (expiring, ends: the sweep), a tenant taking self-registered
+	// applications, a client taking API tokens, the source user of a guest's link.
+	{"index fields: access ends, self-registration, API tokens, guest links", func(ctx context.Context, s *Store) error {
+		return s.reindexKinds(ctx, model.KindAccess, model.KindTenant, model.KindClient, model.KindIdentity)
+	}},
+}
+
+// reindexKinds rebuilds the index fields and entries of every record of the kinds from its data (rewriteRecords),
+// for index fields a build added: idempotent.
+func (s *Store) reindexKinds(ctx context.Context, kinds ...model.Kind) error {
+	for _, k := range kinds {
+		if _, err := s.rewriteRecords(ctx, k, func(*store.Record) (bool, error) { return true, nil }); err != nil {
+			return fmt.Errorf("%s: %w", k, err)
+		}
+	}
+	return nil
+}
 
 func currentFormat() int { return formatBase + len(formatMigrations) }
 

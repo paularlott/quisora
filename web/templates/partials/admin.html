@@ -492,14 +492,7 @@
       {{template "field" (dict "name" "name" "label" "Name" "required" true "autofocus" true "autocomplete" "off")}}
       {{template "field" (dict "name" "description" "label" "Description" "autocomplete" "off")}}
     </div>
-    <div class="field" x-show="canMove" x-cloak>
-      <label class="label" for="f-tenant_id">Tenant</label>
-      <select class="select" id="f-tenant_id" name="tenant_id" x-model="form.tenant_id" aria-describedby="h-tenant_id e-tenant_id" :aria-invalid="invalid.tenant_id">
-        <template x-for="t in tenants" :key="t.id"><option :value="t.id" x-text="t.display_name"></option></template>
-      </select>
-      <p class="help" id="h-tenant_id">Choose another tenant to move this client there: it leaves this list and offers that tenant's sign-in methods.</p>
-      <p class="field-error" id="e-tenant_id" x-text="errors.tenant_id"></p>
-    </div>
+    {{template "combo-field" (dict "name" "tenant_id" "label" "Tenant" "show" "canMove" "placeholder" "Type a tenant’s name" "help" "Choose another tenant to move this client there: it leaves this list and offers that tenant's sign-in methods.")}}
     <div class="field">
       <label class="label" for="f-token_endpoint_auth_method">Authentication</label>
       <select class="select" id="f-token_endpoint_auth_method" name="token_endpoint_auth_method" x-model="form.token_endpoint_auth_method" aria-describedby="h-token_endpoint_auth_method e-token_endpoint_auth_method" :aria-invalid="invalid.token_endpoint_auth_method">

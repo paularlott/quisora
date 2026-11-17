@@ -123,6 +123,72 @@ func TestReconcileOlderSchema(t *testing.T) {
 	})
 }
 
+// A field added to a kind whose table has rows: the column added at open is filled from each record's data, so a
+// filter on it finds the records written before it existed (a client taking API tokens, a guest's link by its source
+// user). A record that cannot be decoded keeps the zero value and does not stop the open.
+func TestReconcileFillsAddedColumns(t *testing.T) {
+	forEachDialect(t, dialects, func(t *testing.T, d testDialect) {
+		ctx := context.Background()
+		cfg := schemaDatabase(t, d)
+		s, err := Open(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		put := func(e model.Entity) {
+			t.Helper()
+			r, err := store.Encode(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		put(&model.Client{Meta: model.Meta{ID: "takes"}, OrgID: "o", Name: "Takes", AcceptsAPITokens: true})
+		put(&model.Client{Meta: model.Meta{ID: "plain"}, OrgID: "o", Name: "Plain"})
+		put(&model.Identity{Meta: model.Meta{ID: "guest"}, UserID: "g1", OrgID: "b", ProviderID: "p1", Subject: "u1",
+			Authority: model.ProviderOrganization + "|https://idp.example/o/a||1"})
+		put(&model.Identity{Meta: model.Meta{ID: "google"}, UserID: "g2", OrgID: "b", ProviderID: "p2", Subject: "u1",
+			Authority: model.ProviderGoogle + "|https://accounts.google.com||1"})
+		if err := s.Put(ctx, &store.Record{Kind: model.KindClient, ID: "corrupt", Version: store.Clock.Now(), Scope: "o",
+			Data: []byte("x"), Fields: map[string]any{"name": "corrupt"}}); err != nil {
+			t.Fatal(err)
+		}
+
+		// an older build: no accepts_api_tokens on clients, no source_user on identities (nor their indexes)
+		drop := func(index, table string) string {
+			if s.d.isMySQL() {
+				return "DROP INDEX " + index + " ON " + table
+			}
+			return "DROP INDEX " + index
+		}
+		for _, q := range []string{drop("ix_clients_f_accepts_api_tokens", "clients"), "ALTER TABLE clients DROP COLUMN accepts_api_tokens",
+			drop("ix_linked_identities_f_source_user", "linked_identities"), "ALTER TABLE linked_identities DROP COLUMN source_user"} {
+			if _, err := s.wdb.Exec(q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		s.Close()
+
+		s, err = Open(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		res, err := s.List(ctx, model.KindClient, store.ListQuery{Scope: "o", Filters: []store.Filter{{Field: "accepts_api_tokens", Value: true}}})
+		if err != nil || len(res.Records) != 1 || res.Records[0].ID != "takes" {
+			t.Fatalf("clients taking API tokens: %v %+v", err, res)
+		}
+		res, err = s.List(ctx, model.KindIdentity, store.ListQuery{Filters: []store.Filter{{Field: "source_user", Value: "u1"}}})
+		if err != nil || len(res.Records) != 1 || res.Records[0].ID != "guest" {
+			t.Fatalf("guest links of u1: %v %+v", err, res)
+		}
+		if got, err := s.Get(ctx, model.KindClient, "corrupt"); err != nil || got.Fields["accepts_api_tokens"] != false {
+			t.Fatalf("the undecodable record: %v %+v", err, got)
+		}
+	})
+}
+
 // A database this build cannot read is refused at open: one whose schema a newer build wrote (no downgrade), and one an
 // earlier pre-release build made (no epoch column).
 func TestSchemaVersionGuards(t *testing.T) {

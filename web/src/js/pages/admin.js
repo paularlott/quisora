@@ -674,7 +674,7 @@ function clientDialogMixin(Alpine) {
     // The types listed above the client's own authorization details (the details field checks against them).
     get detailTypes() { return listValues(this.form.authorization_details_types || []) },
     get usesClientCredentials() { return this.form.token_endpoint_auth_method !== 'none' && (this.form.grant_types || []).includes('client_credentials') },
-    editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canFirstParty: false, tenants: [], tenantId: '',
+    editingClient: null, apiBase: '', issuer: '', clientId: '', secret: '', secretClient: '', secretTitle: '', canFirstParty: false, tenantTotal: 0, tenantId: '',
     shapeClient(c) {
       const b = activeBadge(c.enabled, 'Enabled', 'Disabled')
       const locked = !this.canFirstParty && !!c.first_party // first-party clients: super admins only
@@ -684,8 +684,9 @@ function clientDialogMixin(Alpine) {
         hasSecret: c.token_endpoint_auth_method !== 'none', firstParty: c.first_party,
         canChange: !locked, canRotate: !locked && c.token_endpoint_auth_method !== 'none', grantsText: (c.grant_types || []).map((g) => GRANT_NAMES[g] || g).join(', '), sub: c.description || '' }
     },
-    tenantName(id) { const t = this.tenants.find((x) => x.id === id); return t ? t.display_name : '' },
-    get canMove() { return this.editingClient !== null && this.tenants.length > 1 },
+    // the tenant chosen in the dialog's Tenant field (the client moves there), by name
+    tenantName(id) { return this.combo && id === this.form.tenant_id ? this.combo.tenant_id.label : '' },
+    get canMove() { return this.editingClient !== null && this.tenantTotal > 1 },
     get isEditClient() { return this.editingClient !== null },
     get isPublic() { return this.form.token_endpoint_auth_method === 'none' },
     get notPublic() { return this.form.token_endpoint_auth_method !== 'none' },
@@ -727,6 +728,7 @@ function clientDialogMixin(Alpine) {
       this._form = 'client'
       this.editingClient = c
       this.resetForm(this.clientToForm(c))
+      if (this.comboSet) this.comboSet('tenant_id', c.tenant_id || '', this.tenant ? this.tenant.display_name : '')
       this.resetChipText()
       this.openDlg('client-dialog', opener)
       this.watchEdit({ kinds: ['client'], record: c, fetchOne: () => getOrNull(`${this.apiBase}/clients/${enc(c.id)}`) })
@@ -752,6 +754,10 @@ function clientDialogMixin(Alpine) {
     },
     async submitClient() {
       if (!this.clientListsValid()) return
+      if (this.comboPending && this.comboPending('tenant_id')) {
+        this.setErrors(new ApiError(422, { error: 'Choose a tenant from the list, or clear the field to keep this one.', field: 'tenant_id' }))
+        return
+      }
       const details = checkDetails(this.usesClientCredentials ? this.form.authorization_details : '')
       if (!details.value) {
         const first = details.problems.find((p) => p.severity === 'error')
@@ -1741,7 +1747,15 @@ export default function (Alpine) {
   }))
 
   // The tenant's clients page: the applications that sign users in through it, with their dialogs.
-  Alpine.data('adminTenantClients', () => mix(tableMixin(), formMixin(), dialogMixin(), clientDialogMixin(Alpine), tenantPageMixin(), {
+  // The client dialog's Tenant field: the organization's tenants, looked up as the administrator types (never every
+  // tenant of the organization: there may be thousands).
+  const moveTenantSource = {
+    async search(q) {
+      const r = await get(`${this.apiBase}/tenants${qs({ q, sort: 'name', limit: 8 })}`)
+      return r.items.map((t) => ({ value: t.id, label: t.display_name, detail: t.id === this.tenantId ? 'This tenant' : t.name }))
+    },
+  }
+  Alpine.data('adminTenantClients', () => mix(tableMixin(), formMixin(), dialogMixin(), clientDialogMixin(Alpine), tenantPageMixin(), comboMixin({ tenant_id: moveTenantSource }), {
     pathSuffix: '/clients', _form: 'client',
     async init() {
       const d = this.$el.dataset
@@ -1752,10 +1766,10 @@ export default function (Alpine) {
       await this.initTenantPage(['tenant', 'client'])
     },
     errorKey(f) { return f === 'scopes' ? 'custom_scopes' : f }, // shown on the scopes chip field
-    // all the tenants, for the move select of the client dialog
+    // how many tenants there are: the client dialog offers moving a client only when there is another
     async tenantExtra() {
-      const tenants = await get(`${this.apiBase}/tenants${qs({ sort: 'name', limit: 100 })}`)
-      return { sig: tenants.items.map((x) => [x.id, x.display_name]), use: () => { this.tenants = tenants.items } }
+      const tenants = await get(`${this.apiBase}/tenants${qs({ limit: 1 })}`)
+      return { sig: tenants.total, use: () => { this.tenantTotal = tenants.total } }
     },
     get clientCountText() { return this.tenant ? clientsText(this.tenant.clients) : '' },
     transform(c) { return this.shapeClient(c) },

@@ -296,9 +296,13 @@ test('moving a client to another tenant: it leaves this list and the move is ann
   await page.waitForSelector('tbody tr')
   await page.getByRole('button', { name: 'Edit App 1' }).click()
   const dlg = page.getByRole('dialog', { name: 'Edit client' })
-  await expect(dlg.locator('#f-tenant_id')).toBeVisible()
-  await expect(dlg.locator('#f-tenant_id option:checked')).toHaveText(/^Test /)
-  await dlg.locator('#f-tenant_id').selectOption({ label: 'Move target ' + other })
+  const field = dlg.locator('#f-tenant_id')
+  await expect(field).toBeVisible()
+  await expect(field).toHaveValue(/^Test /) // this tenant, by name
+  // looked up as it is typed (an organization may have thousands of tenants), chosen from the list
+  await field.fill('Move target ' + other.slice(0, 4))
+  await dlg.getByRole('option', { name: new RegExp('Move target ' + other) }).click()
+  await expect(field).toHaveValue('Move target ' + other)
   await dlg.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByRole('row', { name: /App 1/ })).toHaveCount(0)
   await expect(page.getByRole('row', { name: /App 2/ })).toBeVisible()

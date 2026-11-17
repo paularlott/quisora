@@ -262,22 +262,12 @@ func (s *Service) evictUnusedSelfRegistered(ctx context.Context, orgID string) e
 // for resources it owns (TenantSettings.SelfRegistration, TenantForResources): where none does, a registration could
 // never be used, and is refused rather than stored.
 func (s *Service) acceptsSelfRegistered(ctx context.Context, orgID string) (bool, error) {
-	const page = 200
-	for after := ""; ; { // an organization's tenants are its administrators' own, a page at a time
-		l, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: orgID, After: after, Limit: page})
-		if err != nil {
-			return false, mapStore(err)
-		}
-		for _, t := range l {
-			if t.Settings.SelfRegistration && len(t.Resources) > 0 {
-				return true, nil
-			}
-		}
-		if len(l) < page {
-			return false, nil
-		}
-		after = l[len(l)-1].ID
+	// one read of the index, however many tenants the organization has
+	l, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: orgID, Limit: 1, Filters: []store.Filter{{Field: "self_registration", Value: true}}})
+	if err != nil {
+		return false, mapStore(err)
 	}
+	return len(l) > 0, nil
 }
 
 // RegisterClient registers an application of organization orgID by dynamic client registration (RFC 7591). The caller

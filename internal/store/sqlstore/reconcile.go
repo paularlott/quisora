@@ -4,18 +4,19 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/paularlott/quisora/internal/model"
+	"github.com/paularlott/quisora/internal/store"
 )
 
 // reconcile makes the database match model.Schemas after the numbered migrations: it creates the table of any kind
 // that is missing, adds every missing field column and creates missing indexes. It runs under the migration lock and
 // is idempotent, so a database created by an older build gains new kinds, fields and indexes on the next Open.
 //
-// Existing rows get the column's zero value (every field column is NOT NULL with a zero default). Their real value
-// still lives inside the record's data blob; the queryable column is populated the next time the record is written.
-// Services must therefore tolerate zero values in newly added fields until a record is rewritten.
+// A column added to a table that has rows is filled from each live record's data (backfill), as writing the record
+// would fill it, so a filter on a new field finds the records written before it existed.
 func (s *Store) reconcile(ctx context.Context, ex execer) error {
 	d := s.d
 	for _, stmt := range s.partitionDDL() { // the partition protocol's own tables, as for any table that is missing
@@ -36,11 +37,13 @@ func (s *Store) reconcile(ctx context.Context, ex execer) error {
 				"(no epoch or partition columns): there is no conversion; drop the database and start clean (restore "+
 				"from a backup made by this build if needed)", t.name)
 		}
+		var added []model.Field
 		if len(have) > 0 {
 			var add []string
 			for _, f := range t.fields {
 				if !have[strings.ToLower(f.Name)] {
 					add = append(add, "ALTER TABLE "+t.name+" ADD COLUMN "+d.quote(f.Name)+" "+d.colType(f))
+					added = append(added, f)
 				}
 			}
 			stmts = append(add, stmts[1:]...) // table exists: skip its CREATE
@@ -50,8 +53,72 @@ func (s *Store) reconcile(ctx context.Context, ex execer) error {
 				return fmt.Errorf("reconcile %s: %w\n%s", k, err, stmt)
 			}
 		}
+		if len(added) > 0 {
+			if err := s.backfill(ctx, ex, t, added); err != nil {
+				return fmt.Errorf("reconcile %s: filling the added columns: %w", k, err)
+			}
+		}
 	}
 	return nil
+}
+
+// backfillPage is how many rows backfill reads at a time.
+const backfillPage = 500
+
+// backfill fills the columns of fields, just added to t's table, from each live record's data: the values encoding
+// the record gives (store.IndexFields). A page of rows at a time, in id order; the record itself (data, version) is
+// not changed. A record whose data cannot be decoded keeps the zero value, as before the column was filled: one bad
+// record never stops the database from opening.
+func (s *Store) backfill(ctx context.Context, ex execer, t *table, fields []model.Field) error {
+	d := s.d
+	sets := make([]string, len(fields))
+	for i, f := range fields {
+		sets[i] = d.quote(f.Name) + " = ?"
+	}
+	update := d.bind("UPDATE " + t.name + " SET " + strings.Join(sets, ", ") + " WHERE id = ?")
+	page := d.bind("SELECT " + t.cols + " FROM " + t.name + " WHERE deleted = FALSE AND id > ? ORDER BY id LIMIT " +
+		strconv.Itoa(backfillPage))
+	for after := ""; ; {
+		rows, err := ex.QueryContext(ctx, page, after)
+		if err != nil {
+			return err
+		}
+		var recs []*store.Record
+		for rows.Next() {
+			r, err := t.scan(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			recs = append(recs, r)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, r := range recs { // the page is read in full first: one connection cannot write during a read
+			vals, err := store.IndexFields(r)
+			if err != nil {
+				continue
+			}
+			args := make([]any, 0, len(fields)+1)
+			for _, f := range fields {
+				v, err := fieldArg(f, vals[f.Name])
+				if err != nil {
+					return fmt.Errorf("%s: %w", r.ID, err)
+				}
+				args = append(args, v)
+			}
+			if _, err := ex.ExecContext(ctx, update, append(args, r.ID)...); err != nil {
+				return err
+			}
+		}
+		if len(recs) < backfillPage {
+			return nil
+		}
+		after = recs[len(recs)-1].ID
+	}
 }
 
 // columns returns the lower-cased column names of a table, or an empty set when the table does not exist.

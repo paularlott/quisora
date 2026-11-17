@@ -196,27 +196,28 @@ func (s *Service) endGuestThrough(ctx context.Context, c *model.Client, userID s
 }
 
 // guestsOf returns the guest accounts of the user userID of orgID: the users linked to them through the organization
-// providers whose source is orgID, found by the sign-in clients orgID holds for those providers (Client.ProviderID).
+// providers whose source is orgID. They are found by the links that name userID as the source user
+// (Identity.SourceUser), so as many are read as the person has guest accounts, however many organizations sign in
+// through orgID.
 func (s *Service) guestsOf(ctx context.Context, orgID, userID string) []*model.User {
-	var out []*model.User
-	q := store.ListQuery{Scope: orgID, Limit: 100}
-	for {
-		clients, total, err := s.Clients.List(ctx, q)
-		if err != nil {
-			s.Log.WithError(err).Error("guest accounts not found: the organization's clients could not be listed",
-				"org", orgID, "user", userID)
-			return out
-		}
-		for _, c := range clients {
-			if g := s.guestThrough(ctx, c, orgID, userID); g != nil {
-				out = append(out, g)
-			}
-		}
-		q.Offset += len(clients)
-		if len(clients) == 0 || q.Offset >= total {
-			return out
-		}
+	links, _, err := s.Identities.List(ctx, store.ListQuery{Filters: []store.Filter{{Field: "source_user", Value: userID}}})
+	if err != nil {
+		s.Log.WithError(err).Error("guest accounts not found: the links to them could not be listed", "org", orgID, "user", userID)
+		return nil
 	}
+	var out []*model.User
+	for _, l := range links {
+		p, err := s.Providers.Get(ctx, l.ProviderID)
+		if err != nil || p.Type != model.ProviderOrganization || p.SourceOrg != orgID {
+			continue // another provider's account with the same subject, or a provider gone
+		}
+		g, err := s.Users.Get(ctx, l.UserID)
+		if err != nil || g.OrgID != p.OrgID {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
 }
 
 // guestThrough is the guest account of userID that the sign-in client c of orgID leads to, or nil when c is no

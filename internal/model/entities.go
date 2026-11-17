@@ -679,7 +679,7 @@ func (t *Tenant) Index() Index {
 		Partition: t.OrgID,
 		Unique:    uniq,
 		Fields: map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created,
-			"ssh_enabled": t.SSH != nil && t.SSH.Enabled},
+			"ssh_enabled": t.SSH != nil && t.SSH.Enabled, "self_registration": t.Settings.SelfRegistration && len(t.Resources) > 0},
 	}
 }
 
@@ -951,6 +951,7 @@ func (c *Client) Index() Index {
 		Partition: c.OrgID,
 		Fields: map[string]any{"name": c.Name, "tenant_id": c.TenantID, "auth_method": c.AuthMethod,
 			"created": c.Created, "self_registered": c.SelfRegistered, "service_account": c.ServiceAccount,
+			"accepts_api_tokens":     c.AcceptsAPITokens,
 			"unused_self_registered": c.SelfRegistered && c.LastUsed.IsZero()},
 	}
 }
@@ -1182,8 +1183,18 @@ func (i *Identity) Index() Index {
 		Scope:     i.UserID,
 		Partition: i.OrgID,
 		Unique:    []string{IdentityKey(i.ProviderID, i.Subject)},
-		Fields:    map[string]any{"provider_id": i.ProviderID},
+		Fields:    map[string]any{"provider_id": i.ProviderID, "source_user": i.SourceUser()},
 	}
+}
+
+// SourceUser is, for a link through an organization provider (a guest account's), the user of the source organization
+// it names: its subject, a user id of this server. "" for any other provider's link, whose subject is the provider's
+// own (unbounded in length: not indexed).
+func (i *Identity) SourceUser() string {
+	if !strings.HasPrefix(i.Authority, ProviderOrganization+"|") || len(i.Subject) > 255 {
+		return ""
+	}
+	return i.Subject
 }
 
 func IdentityKey(providerID, subject string) string { return providerID + "/" + subject }

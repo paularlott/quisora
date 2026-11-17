@@ -21,20 +21,19 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// clientListFails refuses the listings of the clients of one organization while armed: once (left > 0, counting down),
-// or every one (always). The guest accounts of that organization's users are found through those clients
-// (service.guestsOf), so the tidying that removes their records misses them.
-type clientListFails struct {
+// guestLinkListFails refuses the listings of guests' links by their source user while armed: once (left > 0, counting
+// down), or every one (always). The guest accounts of a user are found by those links (service.guestsOf), so the
+// tidying that removes their records misses them.
+type guestLinkListFails struct {
 	store.Store
-	org    string
 	mu     sync.Mutex
 	left   int
 	always bool
 	failed int
 }
 
-func (s *clientListFails) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
-	if kind == model.KindClient && q.Scope == s.org {
+func (s *guestLinkListFails) List(ctx context.Context, kind model.Kind, q store.ListQuery) (*store.ListResult, error) {
+	if kind == model.KindIdentity && len(q.Filters) == 1 && q.Filters[0].Field == "source_user" {
 		s.mu.Lock()
 		fail := s.always || s.left > 0
 		if fail {
@@ -181,7 +180,7 @@ func (g *guestEnv) heard(u *model.User) {
 }
 
 // The finding: disabling a source user succeeds even when their guest accounts could not be found (one listing of the
-// source organization's clients failed), and nothing retries the tidying. The guest's session, refresh grant (offline
+// guest links by source user failed), and nothing retries the tidying. The guest's session, refresh grant (offline
 // access) and access token must end anyway: they stand on the source account, and every check of their use reads it.
 func TestGuestSignInEndsWithItsSourceWhenTheGuestIsMissed(t *testing.T) {
 	g := newGuestEnv(t, func(in *service.ProviderInput) { in.LinkByEmail = ptr(true) })
@@ -197,13 +196,13 @@ func TestGuestSignInEndsWithItsSourceWhenTheGuestIsMissed(t *testing.T) {
 		t.Fatalf("the guest's application before: refresh %v %q, userinfo %d", ok, e, app.userinfo())
 	}
 
-	good := g.Svc.Clients.S
-	fails := &clientListFails{Store: good, org: g.Primary.ID, left: 1}
-	g.Svc.Clients.S = fails
+	good := g.Svc.Identities.S
+	fails := &guestLinkListFails{Store: good, left: 1}
+	g.Svc.Identities.S = fails
 	if _, err := g.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Active: ptr(false)}); err != nil {
 		t.Fatalf("disabling the source user: %v", err)
 	}
-	g.Svc.Clients.S = good
+	g.Svc.Identities.S = good
 	if fails.failed != 1 {
 		t.Fatalf("the listing failed %d times, want once", fails.failed)
 	}
@@ -265,11 +264,11 @@ func TestGuestOfAGuestStandsOnTheChain(t *testing.T) {
 		t.Fatal("not signed in to beta")
 	}
 
-	good := g.Svc.Clients.S
-	g.Svc.Clients.S = &clientListFails{Store: good, org: g.Primary.ID, always: true}
+	good := g.Svc.Identities.S
+	g.Svc.Identities.S = &guestLinkListFails{Store: good, always: true}
 	_, err = g.Svc.UpdateUser(ctx, service.System, pat.ID, service.UserInput{Active: ptr(false)})
 	g.Svc.WaitBackground()
-	g.Svc.Clients.S = good
+	g.Svc.Identities.S = good
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +279,7 @@ func TestGuestOfAGuestStandsOnTheChain(t *testing.T) {
 }
 
 // Whatever ends the source user's sessions ends their guest's sign-in, with no help from the tidying (every listing of
-// the source organization's clients fails meanwhile): locked out, signed out everywhere, their other sessions signed
+// the guest links by source user fails meanwhile): locked out, signed out everywhere, their other sessions signed
 // out, a credential reset, deleted. Another source user's guest goes on.
 func TestGuestSignInStandsOnItsSource(t *testing.T) {
 	for _, tc := range []struct {
@@ -318,11 +317,11 @@ func TestGuestSignInStandsOnItsSource(t *testing.T) {
 				t.Fatal("the guests are not signed in")
 			}
 
-			good := g.Svc.Clients.S
-			g.Svc.Clients.S = &clientListFails{Store: good, org: g.Primary.ID, always: true}
+			good := g.Svc.Identities.S
+			g.Svc.Identities.S = &guestLinkListFails{Store: good, always: true}
 			err := tc.end(g, pat.ID)
 			g.Svc.WaitBackground()
-			g.Svc.Clients.S = good
+			g.Svc.Identities.S = good
 			if err != nil {
 				t.Fatal(err)
 			}

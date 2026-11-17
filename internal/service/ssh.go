@@ -447,7 +447,8 @@ func (s *Service) SSHAccountTenants(ctx context.Context, u *model.User, ss *SSHS
 	if ok, err := s.UserUsable(ctx, u); err != nil || !ok {
 		return nil, nil, err
 	}
-	tenants, err := s.Tenants.All(ctx, u.OrgID)
+	// only the tenants with SSH on are read, however many others the organization has
+	tenants, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "ssh_enabled", Value: true}}})
 	if err != nil {
 		return nil, nil, mapStore(err)
 	}

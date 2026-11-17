@@ -1098,17 +1098,17 @@ Until the first release, formats change in place. From then on:
   Renaming, removing or re-interpreting one needs a migration, on every backend:
   - BadgerDB: append to `formatMigrations` (`internal/store/kvstore/kvstore.go`);
   - SQL: append to `migrations()` (`internal/store/sqlstore/migrate.go`): statements, and Go code for data.
-- **Making an existing field a column or an index (something a list can filter or sort by) needs a data migration that
-  backfills it.** The SQL stores add a new column to existing tables with its zero value and never fill it in from the
-  stored records (`reconcile` in `internal/store/sqlstore/reconcile.go`; the real value stays in the record's data
-  until the record is next written), so a SQL listing that filters on it silently misses every old record. BadgerDB
-  misses them too: it keeps each record's index fields as they were computed when the record was written, and filters
-  and indexes by those, so an old record has neither the field nor its index entries until it is written again. Nothing
-  reports an error. Put the backfill in the same migration as the change, in both places above: on SQL a `data` step
-  of `migrations()` that reads each record and writes the column (and, for a unique value, its row in the unique
-  table); on BadgerDB a `formatMigrations` step that calls `rewriteRecords` for the kind, which recomputes the stored
-  index fields and entries from each record's data. Test it by creating records with the old build's schema, opening the store with the new one,
-  and listing by the new field on every backend.
+- **Making an existing field a column or an index (something a list can filter or sort by) needs its old records
+  backfilled.** The SQL stores do it for a new column: `reconcile` (`internal/store/sqlstore/reconcile.go`) adds it to
+  an existing table and fills it from each live record's data at open (a record that cannot be decoded keeps the zero
+  value). BadgerDB does not: it keeps each record's index fields as they were computed when the record was written,
+  and filters and indexes by those, so an old record has neither the field nor its index entries until it is written
+  again, and nothing reports an error. Append a `formatMigrations` step that calls `reindexKinds` (or
+  `rewriteRecords`) for the kind, which recomputes the stored index fields and entries from each record's data. A
+  column whose meaning changes (the same name, computed differently) is not new to SQL either: it needs a `data` step
+  of `migrations()` that rewrites it (and, for a unique value, its row in the unique table). Test it by creating
+  records without the field, opening the store with the new build, and listing by the field on every backend
+  (`TestFormat4IndexesFieldsAddedSinceFormat3`, `TestReconcileFillsAddedColumns`).
 - A backup format change: raise `version`, add `upgrades[old]`, and keep `minVersion` at the previous release's
   version (`internal/backup/backup.go`).
 - What nodes send each other changes (a change or a write's data in `internal/cluster/partition.go`, the record encoding in

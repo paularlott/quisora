@@ -333,7 +333,9 @@ func (s *Service) TokenApps(ctx context.Context, a *Actor) ([]TokenApp, error) {
 	for _, g := range groups {
 		gids = append(gids, g.ID)
 	}
-	cs, _, err := s.Clients.List(ctx, store.ListQuery{Scope: u.OrgID})
+	// only the applications that take api tokens are read, however many others the organization has (the sign-in
+	// applications of its organization providers: one per organization its users sign in to)
+	cs, _, err := s.Clients.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "accepts_api_tokens", Value: true}}})
 	if err != nil {
 		return nil, mapStore(err)
 	}

@@ -302,7 +302,7 @@ test('clients: the tenant\'s clients page lists only its own clients, with the t
   await expect(page.locator('#f-tenant_id')).toBeHidden()
   await page.getByRole('button', { name: 'Cancel' }).click()
   await page.getByRole('button', { name: 'Edit Internal tool 1' }).click()
-  await expect(page.locator('#f-tenant_id option:checked')).toHaveText('Staff tools')
+  await expect(page.locator('#f-tenant_id')).toHaveValue('Staff tools') // the tenant search field, showing this tenant
 })
 
 test('org methods turned off are disabled in the tenant dialog', async ({ page }) => {

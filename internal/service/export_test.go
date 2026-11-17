@@ -48,3 +48,13 @@ func (s *Service) EnsureSSHKeysNow(ctx context.Context) error {
 	defer func() { sweepMinAge = saved }()
 	return s.EnsureSSHKeys(ctx)
 }
+
+// AcceptsSelfRegistered reports whether a tenant of orgID takes self-registered applications (acceptsSelfRegistered).
+func (s *Service) AcceptsSelfRegistered(ctx context.Context, orgID string) (bool, error) {
+	return s.acceptsSelfRegistered(ctx, orgID)
+}
+
+// GuestsOf returns the guest accounts of userID of orgID in other organizations (guestsOf).
+func (s *Service) GuestsOf(ctx context.Context, orgID, userID string) []*model.User {
+	return s.guestsOf(ctx, orgID, userID)
+}
