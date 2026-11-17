@@ -107,6 +107,60 @@ quisora serve --data-dir /var/lib/quisora --public-url https://id.example.com
   [break-glass](SECURITY.md#incident-response).
 - Until the server is set up, `/readyz` reports not ready.
 
+## Running as a service
+
+On Linux, run Quisora under systemd as its own user. Generate the master key once with `quisora genkey`, store a copy
+in your password manager, and put it in an environment file only root and Quisora can read:
+
+```bash
+sudo useradd --system --home-dir /var/lib/quisora --shell /usr/sbin/nologin quisora
+sudo install -d -m 750 -o quisora -g quisora /var/lib/quisora
+sudo install -d -m 750 -o root -g quisora /etc/quisora
+sudo install -m 640 -o root -g quisora /dev/null /etc/quisora/quisora.env
+sudoedit /etc/quisora/quisora.env    # QUISORA_MASTER_KEY=<the key>
+```
+
+Settings go in `/etc/quisora/quisora.toml` (found without `--config`), for example `server.public_url` and
+`server.data_dir = "/var/lib/quisora"`. Then `/etc/systemd/system/quisora.service`:
+
+```ini
+[Unit]
+Description=Quisora
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=quisora
+Group=quisora
+EnvironmentFile=/etc/quisora/quisora.env
+ExecStart=/usr/local/bin/quisora serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+# longer than server.shutdown_drain + server.shutdown_timeout (10 + 30 seconds by default)
+TimeoutStopSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/quisora
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Set the server up once as the service user, then start it:
+
+```bash
+sudo -u quisora sh -c 'set -a; . /etc/quisora/quisora.env; exec quisora bootstrap'
+sudo systemctl daemon-reload
+sudo systemctl enable --now quisora
+journalctl -u quisora -f
+```
+
+- `systemctl reload quisora` reloads settings that change without a restart; `systemctl restart quisora` for the rest.
+- `quisora invite` and the other commands need the same key: run them the same way as `bootstrap` above.
+- To listen on port 443 instead of `:8443`, add `AmbientCapabilities=CAP_NET_BIND_SERVICE` and set `server.listen = ":443"`.
+
 ## Signing keys
 
 Tokens are signed with ES256 by default (`tokens.signing_alg`; `EdDSA` is a little faster where every relying party
@@ -1010,7 +1064,15 @@ them is refused at start-up; take them out, and move an existing store or spool 
 start-up. Wipe it and start clean (or restore a backup made by the new build). What has to happen before that
 release: [RELEASE.md](RELEASE.md).
 
-**From the first release:**
+**From the first release**, upgrade a node like this (in a cluster, one node at a time):
+
+1. Take a backup ([Backup and restore](#backup-and-restore)).
+2. Put the new `quisora` binary in place of the old one (or pull the new image).
+3. `sudo systemctl restart quisora` (or restart the container). Storage is migrated as it starts.
+4. Wait until the node is ready (`curl -sk https://localhost:8443/readyz` answers `200`, or the log says it is
+   serving), then move on to the next node.
+
+What to know:
 
 - **Back up first.** Upgrades go forward only. A store or database written by a newer build is refused, so going
   back means restoring the backup.
