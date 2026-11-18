@@ -77,7 +77,9 @@ To build the image yourself: `docker build -t paularlott/quisora .`
 The version is kept in `internal/build/version.go` (`quisora --version` shows it); a build stamps the git commit and
 the date. To release, raise `Version` there, commit, and run `task release`: it tags the commit `v<version>` and pushes
 the tag (`task tag` does only that), builds every platform, and creates the GitHub release with the binaries and their
-SHA-256 checksums. Both refuse while the working tree has uncommitted changes.
+SHA-256 checksums. Both refuse while the working tree has uncommitted changes. `task container` builds the image for
+linux/amd64 and linux/arm64 and pushes it to Docker Hub as `paularlott/quisora:<version>` and `:latest` (Docker
+buildx, or Podman; `REGISTRY=` names another account); `task container-local` builds it without pushing.
 
 ## Run a single node
 

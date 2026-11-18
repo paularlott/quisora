@@ -17,16 +17,20 @@ ARG GO_VERSION=1.27.4
 ARG GO_DIGEST=sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf
 ARG DISTROLESS_DIGEST=sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-FROM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS web
+# The web assets and the binary are built on the build machine's own platform; Go cross-compiles for the target.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine@${NODE_DIGEST} AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY web/ ./
 RUN npm run build
 
-FROM golang:${GO_VERSION}-alpine@${GO_DIGEST} AS build
-# the version is in internal/build/version.go; the build stamps the commit
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@${GO_DIGEST} AS build
+ARG TARGETOS
+ARG TARGETARCH
+# the version is in internal/build/version.go; the build stamps the commit and the date
 ARG COMMIT=
+ARG BUILT_AT=
 # "onepassword" links the 1Password SDK for service accounts (secrets.onepassword.service_account_token)
 ARG GO_TAGS=
 WORKDIR /src
@@ -34,8 +38,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -tags "${GO_TAGS}" \
-      -ldflags "-s -w -X github.com/paularlott/quisora/internal/build.Commit=${COMMIT}" \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -tags "${GO_TAGS}" \
+      -ldflags "-s -w -X github.com/paularlott/quisora/internal/build.Commit=${COMMIT} -X github.com/paularlott/quisora/internal/build.Date=${BUILT_AT}" \
       -o /out/quisora . \
  && mkdir -p /out/data
 

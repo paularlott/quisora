@@ -23,6 +23,15 @@ vars:
     sh: date -u +%Y-%m-%dT%H:%M:%SZ
   BUILD_FLAGS: '-ldflags="-s -w -X github.com/paularlott/quisora/internal/build.Commit={{.COMMIT}} -X github.com/paularlott/quisora/internal/build.Date={{.BUILT_AT}}" -trimpath'
   OUTPUT_DIR: bin
+  # container image: <REGISTRY>/quisora:<version> and :latest on Docker Hub
+  REGISTRY: '{{.REGISTRY | default "paularlott"}}'
+  BUILD_WITH:
+    sh: |
+      if [ -n "${BUILD_WITH}" ]; then echo "${BUILD_WITH}"
+      elif command -v docker >/dev/null 2>&1; then echo "docker"
+      elif command -v podman >/dev/null 2>&1; then echo "podman"
+      else echo "none"; fi
+  PLATFORM_ARG: "--platform linux/amd64,linux/arm64"
 
 tasks:
   default:
@@ -101,6 +110,38 @@ tasks:
       - task: tag
       - cd {{.OUTPUT_DIR}} && rm -f SHA256SUMS && shasum -a 256 {{.PROJECT_NAME}}-* > SHA256SUMS
       - gh release create v{{.VERSION}} {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-* {{.OUTPUT_DIR}}/SHA256SUMS -t "Quisora {{.VERSION}}" --generate-notes
+
+  container:
+    desc: "Build the container image for linux/amd64 and linux/arm64 and push it to Docker Hub as <REGISTRY>/quisora:<version> and :latest (docker buildx, or podman)"
+    method: none
+    preconditions:
+      - sh: test -z "$(git status --porcelain)"
+        msg: "the working tree has uncommitted changes: commit them first, so the image is the committed code"
+    cmds:
+      - |
+        echo "Detected container runtime: {{.BUILD_WITH}}"
+        echo "Building for platforms: {{.PLATFORM_ARG}}"
+        if [ "{{.BUILD_WITH}}" = "podman" ]; then
+          podman manifest create {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
+          podman build {{.PLATFORM_ARG}} --manifest {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} --build-arg COMMIT={{.COMMIT}} --build-arg BUILT_AT={{.BUILT_AT}} .
+          podman tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+          podman manifest push {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}}
+          podman manifest push {{.REGISTRY}}/{{.PROJECT_NAME}}:latest
+        else
+          docker buildx build {{.PLATFORM_ARG}} --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:latest --build-arg COMMIT={{.COMMIT}} --build-arg BUILT_AT={{.BUILT_AT}} --push .
+        fi
+
+  container-local:
+    desc: Build the container image locally as <REGISTRY>/quisora:<version> and :latest (no push)
+    method: none
+    cmds:
+      - |
+        echo "Detected container runtime: {{.BUILD_WITH}}"
+        if [ "{{.BUILD_WITH}}" = "podman" ]; then
+          podman build --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:latest --build-arg COMMIT={{.COMMIT}} --build-arg BUILT_AT={{.BUILT_AT}} .
+        else
+          docker build --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:{{.VERSION}} --tag {{.REGISTRY}}/{{.PROJECT_NAME}}:latest --build-arg COMMIT={{.COMMIT}} --build-arg BUILT_AT={{.BUILT_AT}} .
+        fi
 
   conformance-tools:
     desc: Build the OpenID conformance harness tools (bin/seed, bin/fakeidp); see conformance/README.md
