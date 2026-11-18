@@ -97,7 +97,7 @@ tasks:
       - git rev-parse -q --verify "refs/tags/v{{.VERSION}}" >/dev/null # tagged already
 
   release:
-    desc: "Release the version in internal/build/version.go: build every platform (task all), notarize the macOS binaries (task notarize-macos), tag it (task tag, skipped when the tag exists), and create the GitHub release v<version> with the binaries and their SHA-256 checksums (needs gh)"
+    desc: "Release the version in internal/build/version.go: build every platform (task all), notarize the macOS binaries (task notarize-macos), tag it (task tag, skipped when the tag exists), and create the GitHub release v<version> with the binaries and their SHA-256 checksums (needs gh), then build and push the container image (task container)"
     preconditions:
       - sh: test -z "$(git status --porcelain)"
         msg: "the working tree has uncommitted changes: commit them first, so the release is the tagged code"
@@ -110,6 +110,8 @@ tasks:
       - task: tag
       - cd {{.OUTPUT_DIR}} && rm -f SHA256SUMS && shasum -a 256 {{.PROJECT_NAME}}-* > SHA256SUMS
       - gh release create v{{.VERSION}} {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-* {{.OUTPUT_DIR}}/SHA256SUMS -t "Quisora {{.VERSION}}" --generate-notes
+      # the container image last: if its push fails, "task container" alone finishes the release
+      - task: container
 
   container:
     desc: "Build the container image for linux/amd64 and linux/arm64 and push it to Docker Hub as <REGISTRY>/quisora:<version> and :latest (docker buildx, or podman)"
