@@ -65,6 +65,12 @@ function shape(r) {
     endLabel: `End now: your access to ${r.tenant_display_name}` }
 }
 
+// userLink is the user page of the person a request is for, for managers and administrators (the page's data-users).
+function userLink(el, p) {
+  const base = el.closest('[data-users]')
+  return base ? `${base.dataset.users}/${enc(p.user_id)}` : ''
+}
+
 // accountTable is a table of the account API's list at path, a page at a time, loading again on event (a window
 // event) and when the tab comes back; poll, when set, also every POLL while the page is shown.
 function accountTable(path, event, poll) {
@@ -90,7 +96,7 @@ export default function (Alpine) {
       return r.items.map((t) => ({ value: t.id, label: t.display_name, detail: t.description || t.name }))
     },
   }
-  Alpine.data('accessRequests', () => mix(formMixin(), comboMixin({ tenant_id: tenantSource }), {
+  Alpine.data('accessRequests', () => mix(formMixin(), dialogMixin(), comboMixin({ tenant_id: tenantSource }), {
     approvers: [], loaded: false, guest: false, loadError: '',
     init() {
       this.resetForm({ tenant_id: '', approvers: '', length: '', reason: '' })
@@ -124,6 +130,13 @@ export default function (Alpine) {
       if (!ls.some((l) => l.value === this.form.length)) this.form.length = ls.length ? ls[0].value : ''
     },
     get askLabel() { return this.busy ? 'Sending…' : 'Send request' },
+    openAsk(ev) {
+      const approvers = this.form.approvers
+      this.resetForm({ tenant_id: '', approvers, length: '', reason: '' })
+      this.comboSet('tenant_id', '', '')
+      this.approversChanged()
+      this.openDlg('ask-dialog', ev.currentTarget)
+    },
     async ask() {
       if (this.comboPending('tenant_id') || !this.form.tenant_id) {
         this.setErrors(new ApiError(422, { error: 'Choose a tenant from the list.', field: 'tenant_id' }))
@@ -133,9 +146,8 @@ export default function (Alpine) {
       const res = await this.run(() => post(accountApi('/access-requests'), { tenant_id: f.tenant_id, approvers: f.approvers,
         length: Number(f.length), reason: f.reason }))
       if (!res) return
+      this.closeDlg('ask-dialog')
       toast(`Request sent to ${res.approvers_name}. You get an email when they decide.`)
-      f.reason = ''
-      this.comboSet('tenant_id', '', '')
       window.dispatchEvent(new CustomEvent('requests-changed'))
     },
   }))
@@ -204,7 +216,7 @@ export default function (Alpine) {
   // Waiting for a decision: oldest first, a page at a time. The approver's own request is listed, for someone else.
   Alpine.data('approvalsWaiting', () => mix(tableMixin(), accountTable('/approvals/pending', 'approvals-changed', true), {
     transform(p) {
-      return { ...p, askedText: `Asked ${relTime(p.created)}`, canDecide: !p.yours,
+      return { ...p, askedText: relTime(p.created), canDecide: !p.yours, userHref: userLink(this.$el, p),
         approveLabel: `Approve ${p.user_name}’s request for ${p.tenant_display_name}`, denyLabel: `Deny ${p.user_name}’s request for ${p.tenant_display_name}` }
     },
     get countText() { return String(this.total) },
@@ -218,7 +230,7 @@ export default function (Alpine) {
 
   // Access the approver's groups gave that runs: newest first, a page at a time.
   Alpine.data('approvalsRunning', () => mix(tableMixin(), accountTable('/approvals/active', 'approvals-changed', true), {
-    transform(p) { return { ...p, untilText: fmtDateTime(p.ends), endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` } },
+    transform(p) { return { ...p, untilText: fmtDateTime(p.ends), userHref: userLink(this.$el, p), endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` } },
     async end(ev) {
       const opener = ev.currentTarget
       const r = this.rowFromEvent(ev)

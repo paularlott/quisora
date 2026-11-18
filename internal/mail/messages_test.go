@@ -131,7 +131,7 @@ func TestSendAccessRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approvers, err := m.Svc.CreateGroupWithMembers(ctx, service.System, org.ID, service.GroupInput{DisplayName: ptr("Leads")}, []string{sam.ID, pat.ID})
+	approvers, err := m.Svc.CreateGroupWithMembers(ctx, service.System, org.ID, service.GroupInput{DisplayName: ptr("Leads"), ApprovesRequests: ptr(true)}, []string{sam.ID, pat.ID})
 	if err != nil {
 		t.Fatal(err)
 	}

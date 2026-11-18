@@ -68,13 +68,24 @@ test('structure: no Clients in the navigation; tenants list links to tenant page
   await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible()
 })
 
-test('tenants list: the Clients and SSH columns link to the tenant\'s clients and SSH pages', async ({ page }) => {
+test('tenants list: who can sign in to each; the Clients and SSH columns link to the tenant\'s clients and SSH pages', async ({ page }) => {
   await signIn(page, 'admin')
   await page.goto(`${A}/tenants`)
   await page.waitForSelector('tbody tr')
   await expect(page.getByRole('columnheader', { name: 'Clients' })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'SSH' })).toBeVisible()
   const search = page.getByRole('searchbox', { name: 'Search tenants' })
+  // who can sign in: a members-only tenant, and one open to everyone in the organization
+  const who = uniq('wh')
+  const closed = await apiCall(page, 'POST', `${API}/tenants`, { name: who + 'm', display_name: 'Closed ' + who })
+  const open = await apiCall(page, 'POST', `${API}/tenants`, { name: who + 'e', display_name: 'Open ' + who, settings: { ...closed.settings, members_only: false } })
+  await search.fill('Closed ' + who)
+  await expect(page.getByRole('row', { name: /Closed/ })).toContainText('Members only')
+  await expect(page.getByRole('row', { name: /Closed/ })).toContainText('Users and groups given access')
+  await search.fill('Open ' + who)
+  await expect(page.getByRole('row', { name: /Open/ })).toContainText('Everyone in the organization')
+  await apiCall(page, 'DELETE', `${API}/tenants/${closed.id}`)
+  await apiCall(page, 'DELETE', `${API}/tenants/${open.id}`)
   // SSH is on for the demo's Servers tenant, off for the others
   await search.fill('Servers')
   const servers = page.getByRole('row', { name: /Servers/ })

@@ -27,8 +27,8 @@ const (
 // change drops it at once, on every node told of it.
 const requestGroupsTTL = time.Hour
 
-// requestGroups are an organization's groups whose members may ask for access (requesters) and the approver groups
-// they name (approvers).
+// requestGroups are an organization's groups whose members may ask for access (requesters) and the groups whose
+// members approve access requests (approvers: model.Group.ApprovesRequests, which every group named as approvers is).
 type requestGroups struct {
 	requesters, approvers map[string]bool
 }
@@ -41,8 +41,8 @@ func (s *Service) InvalidateRequestGroups() {
 	s.requestRoles.Clear()
 }
 
-// orgRequestGroups reads organization orgID's requester and approver groups: one indexed read of the groups whose
-// members may ask, kept an hour (requestGroupsTTL) unless a group changes.
+// orgRequestGroups reads organization orgID's requester and approver groups: an indexed read of each, kept an hour
+// (requestGroupsTTL) unless a group changes.
 func (s *Service) orgRequestGroups(ctx context.Context, orgID string) (*requestGroups, error) {
 	if v, ok := s.requestGroups.Get(orgID); ok {
 		return v, nil
@@ -50,18 +50,23 @@ func (s *Service) orgRequestGroups(ctx context.Context, orgID string) (*requestG
 	tok := s.requestGroups.Token(orgID)
 	rg := &requestGroups{requesters: map[string]bool{}, approvers: map[string]bool{}}
 	const page = 500
-	for offset := 0; ; offset += page {
-		l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: orgID, Offset: offset, Limit: page, Filters: []store.Filter{{Field: "requests", Value: true}}})
-		if err != nil {
-			return nil, mapStore(err)
-		}
-		for _, g := range l {
-			if g.Requests != nil {
-				rg.requesters[g.ID], rg.approvers[g.Requests.Approvers] = true, true
+	for _, field := range []string{"requests", "approves"} {
+		for offset := 0; ; offset += page {
+			l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: orgID, Offset: offset, Limit: page, Filters: []store.Filter{{Field: field, Value: true}}})
+			if err != nil {
+				return nil, mapStore(err)
 			}
-		}
-		if len(l) < page {
-			break
+			for _, g := range l {
+				if g.Requests != nil {
+					rg.requesters[g.ID], rg.approvers[g.Requests.Approvers] = true, true
+				}
+				if g.ApprovesRequests {
+					rg.approvers[g.ID] = true
+				}
+			}
+			if len(l) < page {
+				break
+			}
 		}
 	}
 	s.requestGroups.PutIf(orgID, rg, tok)
@@ -164,7 +169,7 @@ func (s *Service) RequestApproversFor(ctx context.Context, u *model.User) ([]Req
 }
 
 // AccessRequestRoles reports whether u may ask for access (a member of a group whose members may) and whether u
-// approves requests (a member of a group another names as its approvers): what shows the account menu's Request
+// approves requests (a member of a group whose members approve them): what shows the account menu's Request
 // access and Approvals. Kept an hour per user, dropped when a group changes (InvalidateRequestGroups): a page render
 // reads nothing for it, and a miss reads u's memberships (and, once an hour, the organization's request groups). The
 // pages and every call check again.
@@ -177,7 +182,7 @@ func (s *Service) AccessRequestRoles(ctx context.Context, u *model.User) (reques
 	if err != nil {
 		return false, false
 	}
-	if len(rg.requesters) > 0 { // an organization without access requests reads nothing more
+	if len(rg.requesters)+len(rg.approvers) > 0 { // an organization without access requests reads nothing more
 		ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
 		if err != nil {
 			return false, false
@@ -378,7 +383,8 @@ func (s *Service) ApprovedByGroups(ctx context.Context, a *Actor, q store.ListQu
 	return s.pageAcross(ctx, u.OrgID, groups, model.RequestApproved, running, true, q)
 }
 
-// approverGroupsOf lists the ids of u's groups that another group names as its approvers, in id order.
+// approverGroupsOf lists the ids of u's groups whose members approve access requests, in id order: every member of
+// such a group sees its waiting requests and the access it gave that runs, named by a group now or not.
 func (s *Service) approverGroupsOf(ctx context.Context, u *model.User) ([]string, error) {
 	rg, err := s.orgRequestGroups(ctx, u.OrgID)
 	if err != nil {

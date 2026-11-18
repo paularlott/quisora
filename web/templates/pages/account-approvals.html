@@ -1,6 +1,6 @@
 {{template "base" .}}
 {{define "content"}}
-<div class="stack-lg" x-data="accessApprovals" @decide="onDecide">
+<div class="stack-lg" x-data="accessApprovals" @decide="onDecide"{{if and .IsMgr .Org}} data-users="/admin/orgs/{{.Org.Name}}/users"{{end}}>
   <div class="page-head glass">
     <div>
       <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
@@ -15,13 +15,14 @@
     <div class="table-wrap" role="region" aria-label="Requests waiting for a decision" tabindex="0" x-show="hasItems" x-cloak>
       <table class="table">
         <caption class="sr-only">Requests waiting for a decision</caption>
-        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">How long</th><th scope="col">Why</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">How long</th><th scope="col">Why</th><th scope="col">Asked</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
-            <th scope="row" class="cell-title"><span x-text="row.user_name"></span><span class="cell-sub" x-text="row.askedText"></span></th>
+            <th scope="row">{{template "approvals-who"}}</th>
             <td x-text="row.tenant_display_name"></td>
             <td x-text="row.length_text"></td>
             <td x-text="row.reason"></td>
+            <td class="whitespace-nowrap" x-text="row.askedText"></td>
             <td class="actions">
               <button type="button" class="btn btn-primary btn-sm" x-show="row.canDecide" :data-id="row.id" :aria-label="row.approveLabel" @click="openApprove">Approve</button>
               <button type="button" class="btn btn-secondary btn-sm" x-show="row.canDecide" :data-id="row.id" :aria-label="row.denyLabel" @click="openDeny">Deny</button>
@@ -36,18 +37,19 @@
 
   <section class="glass-card" aria-labelledby="active-h" x-data="approvalsRunning" data-noun="running approvals">
     <h2 class="section-title mb-4" id="active-h">Access your groups approved</h2>
-    <p class="muted mb-4">Access that has not ended yet. End it early when it is no longer needed: the person is signed out of the tenant's applications at once.</p>
+    <p class="muted mb-4">Access that has not ended yet, approved by anyone in your groups. End it early when it is no longer needed: the person is signed out of the tenant's applications at once.</p>
     <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
     <p class="muted" x-show="showEmpty" x-cloak>None at the moment.</p>
     <div class="table-wrap" role="region" aria-label="Access your groups approved" tabindex="0" x-show="hasItems" x-cloak>
       <table class="table">
         <caption class="sr-only">Access your groups approved</caption>
-        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">Until</th><th scope="col">Approved by</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">Until</th><th scope="col">Why</th><th scope="col">Approved by</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
-            <th scope="row" class="cell-title" x-text="row.user_name"></th>
+            <th scope="row">{{template "approvals-who"}}</th>
             <td x-text="row.tenant_display_name"></td>
             <td x-text="row.untilText"></td>
+            <td x-text="row.reason"></td>
             <td x-text="row.decided_by_name"></td>
             <td class="actions"><button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button></td>
           </tr></template>
@@ -69,3 +71,6 @@
   {{template "dialog-end"}}
 </div>
 {{end}}
+
+{{/* The person a request is for: their name (a link to their user page for managers and administrators) and email. */}}
+{{define "approvals-who"}}<a class="cell-title" x-show="row.userHref" :href="row.userHref" x-text="row.user_name"></a><span class="cell-title" x-show="!row.userHref" x-text="row.user_name"></span><div class="cell-sub" x-text="row.user_email"></div>{{end}}

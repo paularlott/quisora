@@ -16,16 +16,18 @@ Typical uses:
 
 Administrators set it up for their own organization, on **Groups**:
 
-1. Make (or choose) the group whose members **approve**, for example *CST Approval*.
+1. Make (or choose) the group whose members **approve**, for example *CST Approval*, and under **Access requests** turn
+   on **Members approve access requests**.
 2. Edit the group whose members may **ask**, for example *CST*. Under **Access requests**, turn on **Members can
-   request access**, choose the approver group in **Approved by**, and the lengths they may ask for: 1 hour, 4 hours,
-   8 hours, 1 day, 3 days, 1 week, 2 weeks or 1 month (none ticked: all of them).
+   request access**, choose the approver group in **Approved by** (it lists only groups that approve), and the
+   lengths they may ask for: 1 hour, 4 hours, 8 hours, 1 day, 3 days, 1 week, 2 weeks or 1 month (none ticked: all of
+   them).
 3. Optionally turn on **Service accounts can approve**, for a bot (below). Changing it applies to the requests already
    waiting too.
 
-From then on, only administrators (and provisioning by an administrator) can change who is in either group: a
-manager cannot add themselves, or anyone else, and approve their own way in. An approver group cannot be deleted
-while a group names it.
+Only administrators (and provisioning by an administrator) can change who is in a group with either switch on: a
+manager cannot add themselves, or anyone else, and approve their own way in. A group that approves keeps approving,
+and cannot be deleted, while a group names it in **Approved by**.
 
 People can ask for any **members-only** tenant of the organization (the ones only the people given access can use).
 
@@ -56,7 +58,7 @@ now**), and past.
 
 ## Approving
 
-Members of an approver group see **Approvals** in their account menu: the requests waiting for them, oldest first and a
+Every member of a group that approves sees **Approvals** in their account menu: the requests waiting for them, oldest first and a
 page at a time, with who asked, for which tenant, how long and why. An approver who asked for access themselves sees
 their own request there too, marked as theirs: someone else decides it. **Approve** or **Deny**, with an optional note that the person sees. Before
 deciding, they confirm it is them (their password and second factor, or a passkey), unless they did within the last
@@ -69,7 +71,8 @@ Approving gives the person access to the tenant from now until the end of the le
 - access with no end (given meanwhile by an administrator): nothing changes, and the request says so.
 
 The person gets an email either way. The page also lists the access the approver's groups gave that has not ended,
-newest first, with **End now**. When the access reaches its end, the request shows as **Expired** (on the person's page,
+whoever in them approved it, newest first, with why it was asked for and **End now**. A group that no longer approves
+any group's requests still sees, and may end, the access it gave. When the access reaches its end, the request shows as **Expired** (on the person's page,
 **Ended**).
 
 ## Ending early

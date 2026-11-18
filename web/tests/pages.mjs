@@ -338,6 +338,8 @@ PAGES.push(
     await p.locator('#f-mcode').waitFor()
   }] },
   { name: 'account-requests', path: '/o/acme/account/requests', as: 'user', steps: [async (p) => { await p.locator('tbody tr').first().waitFor() }] },
+  { name: 'account-requests-ask', path: '/o/acme/account/requests', as: 'user', dialog: true, steps: [async (p) => {
+    await p.locator('tbody tr').first().waitFor() }, async (p) => { await p.getByRole('button', { name: 'Request access' }).click(); await p.waitForTimeout(450) }] },
   { name: 'account-approvals', path: '/o/acme/account/approvals', as: 'manager', steps: [async (p) => { await p.locator('tbody tr').first().waitFor() }] },
   { name: 'account-approvals-decide', path: '/o/acme/account/approvals', as: 'manager', dialog: true, steps: [async (p) => {
     await p.locator('tbody tr').first().waitFor() }, async (p) => { await p.getByRole('button', { name: /^Deny/ }).first().click(); await p.waitForTimeout(450) }] },

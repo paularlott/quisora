@@ -91,6 +91,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "pending", Type: FieldBool, Index: true},     // groups with committed member changes not yet materialized
 		{Name: "requests", Type: FieldBool, Index: true},    // groups whose members may ask for access
 		{Name: "approvers", Type: FieldString, Index: true}, // the groups an approver group decides for
+		{Name: "approves", Type: FieldBool, Index: true},    // groups whose members approve access requests
 	}},
 	KindAccessRequest: {KindAccessRequest, []Field{
 		// Each list of requests reads one exact index value (a value only while the request is in that list), so it

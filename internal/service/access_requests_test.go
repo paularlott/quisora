@@ -35,7 +35,7 @@ func newRequestWorld(t *testing.T) *requestWorld {
 	w.sam = e.user(w.org.ID, "sam", model.RoleUser)
 	w.alex = e.user(w.org.ID, "alex", model.RoleUser)
 	var err error
-	if w.approvers, err = e.svc.CreateGroupWithMembers(e.ctx, service.System, w.org.ID, service.GroupInput{DisplayName: ptr("CST Approval")},
+	if w.approvers, err = e.svc.CreateGroupWithMembers(e.ctx, service.System, w.org.ID, service.GroupInput{DisplayName: ptr("CST Approval"), ApprovesRequests: ptr(true)},
 		[]string{w.alex.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -82,9 +82,10 @@ func fieldOfErr(err error) string {
 	return err.Error()
 }
 
-// The groups an access request setting names are protected: a manager, who adds plain users to groups, cannot add
-// anyone to the requester group or the approver group (they could approve their own way in); an administrator can.
-// An approver group in use cannot be deleted, and the settings are checked.
+// The groups that ask for and approve access are protected: a manager, who adds plain users to groups, cannot add
+// anyone to a requester group or a group that approves (they could approve their own way in), even one no group
+// names yet; an administrator can. Only a group that approves may be named as approvers; one named cannot stop
+// approving, nor be deleted; and the settings are checked.
 func TestAccessRequestGroupsAreProtected(t *testing.T) {
 	w := newRequestWorld(t)
 	other := w.user(w.org.ID, "other", model.RoleUser)
@@ -103,12 +104,29 @@ func TestAccessRequestGroupsAreProtected(t *testing.T) {
 	if err := w.svc.SetMembership(w.ctx, actor(w.mgr), plain.ID, other.ID, true); err != nil {
 		t.Errorf("a manager could not add someone to an ordinary group: %v", err)
 	}
+	spare, err := w.svc.CreateGroup(w.ctx, service.System, w.org.ID, service.GroupInput{DisplayName: ptr("Spare approvers"), ApprovesRequests: ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.svc.SetMembership(w.ctx, actor(w.mgr), spare.ID, other.ID, true); fieldOfErr(err) != "members" {
+		t.Errorf("a manager added someone to a group that approves, named by none yet: %v", err)
+	}
+	if _, err := w.svc.UpdateGroup(w.ctx, actor(w.mgr), spare.ID, service.GroupInput{ApprovesRequests: ptr(false)}); !errors.Is(err, service.ErrForbidden) {
+		t.Errorf("a manager turned approving off: %v", err)
+	}
+	if _, err := w.svc.UpdateGroup(w.ctx, actor(w.admin), w.approvers.ID, service.GroupInput{ApprovesRequests: ptr(false)}); fieldOfErr(err) != "approves_requests" {
+		t.Errorf("a group named as approvers stopped approving: %v", err)
+	}
+	if g, err := w.svc.UpdateGroup(w.ctx, actor(w.admin), spare.ID, service.GroupInput{ApprovesRequests: ptr(false)}); err != nil || g.ApprovesRequests {
+		t.Errorf("a group nobody names stopped approving: %v %+v", err, g)
+	}
 	if err := w.svc.DeleteGroup(w.ctx, actor(w.admin), w.approvers.ID); fieldOfErr(err) != "access_requests" {
 		t.Errorf("the approver group in use was deleted: %v", err)
 	}
 	for name, in := range map[string]service.GroupRequestsInput{
 		"no approvers":   {Enabled: true},
 		"itself":         {Enabled: true, Approvers: plain.ID},
+		"not approving":  {Enabled: true, Approvers: spare.ID},
 		"unknown group":  {Enabled: true, Approvers: model.NewID()},
 		"unknown length": {Enabled: true, Approvers: w.approvers.ID, Lengths: []int{60}},
 	} {
@@ -417,5 +435,49 @@ func TestAccessRequestNotices(t *testing.T) {
 		"new by " + w.pat.Username, "approved by " + alex}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("notices:\n got %v\nwant %v", got, want)
+	}
+}
+
+// Every member of a group that approves sees its lists, not only who decided: the waiting requests and the access the
+// group gave that runs, which any of them may end. A group that approves sees them even when no group names it (any
+// more), and its members get Approvals in the account menu.
+func TestApproverGroupMembersAllSeeItsLists(t *testing.T) {
+	w := newRequestWorld(t)
+	kim := w.user(w.org.ID, "kim", model.RoleUser)
+	if err := w.svc.SetMembership(w.ctx, actor(w.admin), w.approvers.ID, kim.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	r, err := w.ask(w.pat, w.tenant.ID, 3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q, n, err := w.svc.ApprovalQueue(w.ctx, actor(kim), store.ListQuery{}); err != nil || n != 1 || q[0].ID != r.ID {
+		t.Fatalf("kim's queue: %v %d", err, n)
+	}
+	if _, err := w.svc.DecideAccessRequest(w.ctx, actor(w.alex), r.ID, true, "", true); err != nil {
+		t.Fatal(err)
+	}
+	if l, n, err := w.svc.ApprovedByGroups(w.ctx, actor(kim), store.ListQuery{}); err != nil || n != 1 || l[0].ID != r.ID {
+		t.Fatalf("the access alex approved, as kim sees it: %v %d", err, n)
+	}
+
+	// the requester group moves to other approvers: the old group still sees, and may end, the access it gave
+	other, err := w.svc.CreateGroupWithMembers(w.ctx, service.System, w.org.ID, service.GroupInput{DisplayName: ptr("Other approvers"),
+		ApprovesRequests: ptr(true)}, []string{w.sam.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.UpdateGroup(w.ctx, actor(w.admin), w.cst.ID, service.GroupInput{AccessRequests: &service.GroupRequestsInput{Enabled: true,
+		Approvers: other.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if req, appr := w.svc.AccessRequestRoles(w.ctx, kim); req || !appr {
+		t.Errorf("kim's roles, the group named by none now: %v %v", req, appr)
+	}
+	if l, n, err := w.svc.ApprovedByGroups(w.ctx, actor(kim), store.ListQuery{}); err != nil || n != 1 || l[0].ID != r.ID {
+		t.Fatalf("the running access, the group named by none now: %v %d", err, n)
+	}
+	if r, err = w.svc.EndAccessRequest(w.ctx, actor(kim), r.ID, true); err != nil || r.State != model.RequestEnded {
+		t.Fatalf("kim ended it: %v %+v", err, r)
 	}
 }

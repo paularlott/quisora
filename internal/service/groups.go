@@ -19,8 +19,10 @@ type GroupInput struct {
 	DisplayName *string   `json:"display_name"`
 	ExternalID  *string   `json:"external_id"`
 	Tags        *[]string `json:"tags"`
-	// AccessRequests are the group's access request settings (model.GroupRequests): administrators only.
-	AccessRequests *GroupRequestsInput `json:"access_requests"`
+	// AccessRequests are the group's access request settings (model.GroupRequests), and ApprovesRequests whether its
+	// members approve access requests (model.Group.ApprovesRequests): administrators only.
+	AccessRequests   *GroupRequestsInput `json:"access_requests"`
+	ApprovesRequests *bool               `json:"approves_requests"`
 }
 
 // GroupRequestsInput sets a group's access request settings: with Enabled, its members may ask for access to a
@@ -32,6 +34,23 @@ type GroupRequestsInput struct {
 	Approvers       string `json:"approvers"`
 	Lengths         []int  `json:"lengths"`
 	ServiceAccounts bool   `json:"service_accounts"`
+}
+
+// applyApproves settles whether g's members approve access requests (nil: unchanged). It stays on while a group
+// names g as its approvers.
+func (s *Service) applyApproves(ctx context.Context, g *model.Group, approves *bool) error {
+	if approves == nil || *approves == g.ApprovesRequests {
+		return nil
+	}
+	if !*approves && g.ID != "" {
+		if l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "approvers", Value: g.ID}}}); err != nil {
+			return mapStore(err)
+		} else if len(l) > 0 {
+			return Invalid("approves_requests", l[0].DisplayName+" uses this group to approve its requests: choose other approvers there first")
+		}
+	}
+	g.ApprovesRequests = *approves
+	return nil
 }
 
 // applyGroupRequests settles g's access request settings from in (nil: unchanged).
@@ -57,6 +76,9 @@ func (s *Service) applyGroupRequests(ctx context.Context, g *model.Group, in *Gr
 	if err != nil {
 		return mapStore(err)
 	}
+	if !ag.ApprovesRequests {
+		return Invalid("access_requests", ag.DisplayName+" does not approve access requests: turn that on in its settings first")
+	}
 	lengths := []int{}
 	for _, l := range model.AccessLengths { // in the standard order, each once
 		if slices.Contains(in.Lengths, l) {
@@ -76,17 +98,8 @@ func (s *Service) applyGroupRequests(ctx context.Context, g *model.Group, in *Gr
 }
 
 // groupProtected reports whether g's members may be changed by administrators only: its members may ask for access,
-// or it approves another group's requests (otherwise a manager could add someone to either and approve their way in).
-func (s *Service) groupProtected(ctx context.Context, g *model.Group) (bool, error) {
-	if g.Requests != nil {
-		return true, nil
-	}
-	l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "approvers", Value: g.ID}}})
-	if err != nil {
-		return false, mapStore(err)
-	}
-	return len(l) > 0, nil
-}
+// or they approve access requests (otherwise a manager could add someone to either and approve their way in).
+func groupProtected(g *model.Group) bool { return g.Requests != nil || g.ApprovesRequests }
 
 // errProtectedGroup refuses a change of the members of a protected group (groupProtected) by someone who is not an
 // administrator.
@@ -169,6 +182,9 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 	}
 	g := &model.Group{Meta: model.Meta{ID: model.NewID()}, OrgID: orgID}
 	if err := applyGroup(g, in); err != nil {
+		return nil, err
+	}
+	if err := s.applyApproves(ctx, g, in.ApprovesRequests); err != nil {
 		return nil, err
 	}
 	if err := s.applyGroupRequests(ctx, g, in.AccessRequests); err != nil {
@@ -435,11 +451,14 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 	if err := applyGroup(&next, in); err != nil {
 		return nil, err
 	}
+	if err := s.applyApproves(ctx, &next, in.ApprovesRequests); err != nil {
+		return nil, err
+	}
 	if err := s.applyGroupRequests(ctx, &next, in.AccessRequests); err != nil {
 		return nil, err
 	}
 	tagsChanged := !slices.Equal(model.NormTags(next.Tags), model.NormTags(g.Tags))
-	requestsChanged := !reflect.DeepEqual(next.Requests, g.Requests)
+	requestsChanged := !reflect.DeepEqual(next.Requests, g.Requests) || next.ApprovesRequests != g.ApprovesRequests
 	fieldsChanged := next.DisplayName != g.DisplayName || next.ExternalID != g.ExternalID || tagsChanged || requestsChanged
 	if fieldsChanged && !s.canAdminOrg(a, g.OrgID) {
 		return nil, ErrForbidden // a manager adds and removes members, and changes nothing else
@@ -449,9 +468,7 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		return nil, ErrTooLarge
 	}
 	if len(add)+len(remove) > 0 && !s.canAdminOrg(a, g.OrgID) {
-		if protected, err := s.groupProtected(ctx, g); err != nil {
-			return nil, err
-		} else if protected {
+		if groupProtected(g) {
 			return nil, errProtectedGroup
 		}
 	}

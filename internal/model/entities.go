@@ -530,6 +530,9 @@ type Group struct {
 	Pending []GroupChange `msgpack:"pc,omitempty" json:"-"`
 	// Requests are the group's access request settings: nil when its members may not ask for access.
 	Requests *GroupRequests `msgpack:"rq,omitempty" json:"access_requests"`
+	// ApprovesRequests marks a group whose members approve access requests: only such a group may be named as
+	// another's approvers (GroupRequests.Approvers), and only administrators change its members.
+	ApprovesRequests bool `msgpack:"apr,omitempty" json:"approves_requests"`
 }
 
 // GroupChange is one committed change of a group's members (Group.Pending).
@@ -560,7 +563,7 @@ func (g *Group) Index() Index {
 		Unique:    uq,
 		Fields: map[string]any{"display_name": g.DisplayName, "created": g.Created,
 			"tags": strings.Join(g.Tags, " "), "pending": len(g.Pending) > 0,
-			"requests": g.Requests != nil, "approvers": g.ApproverGroup()},
+			"requests": g.Requests != nil, "approvers": g.ApproverGroup(), "approves": g.ApprovesRequests},
 	}
 }
 

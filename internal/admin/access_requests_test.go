@@ -16,7 +16,7 @@ func TestAccessRequestsAPI(t *testing.T) {
 	ctx := context.Background()
 	user := w.users["user"]
 	approver := w.users["manager"]
-	appr, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Approvers")}, []string{approver.ID})
+	appr, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Approvers"), ApprovesRequests: ptr(true)}, []string{approver.ID})
 	if err != nil {
 		t.Fatal(err)
 	}

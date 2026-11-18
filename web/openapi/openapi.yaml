@@ -1780,6 +1780,12 @@ paths:
         - {$ref: "#/components/parameters/Desc"}
         - {$ref: "#/components/parameters/Offset"}
         - {$ref: "#/components/parameters/Limit"}
+        - name: approves
+          in: query
+          description: "true: only the groups whose members approve access requests (those a group's access_requests may name as approvers)"
+          schema:
+            type: string
+            enum: ["true"]
         - name: tag
           in: query
           description: only the groups with this tag (the whole tag, ignoring case)
@@ -5675,6 +5681,9 @@ components:
         access_requests:
           allOf: [{$ref: "#/components/schemas/GroupRequests"}]
           description: its access request settings; null when its members may not ask for access
+        approves_requests:
+          type: boolean
+          description: its members approve access requests; only such a group may be named as another's approvers
         org_id:
           type: string
         tags:
@@ -5698,7 +5707,10 @@ components:
       properties:
         access_requests:
           allOf: [{$ref: "#/components/schemas/GroupRequests"}]
-          description: 'administrators only; {"enabled": false} turns them off'
+          description: 'administrators only; {"enabled": false} turns them off. The approvers must be a group that approves access requests'
+        approves_requests:
+          type: boolean
+          description: "administrators only: its members approve access requests (and only administrators change its members); refused off while a group names it as approvers"
         display_name:
           type: string
         external_id:

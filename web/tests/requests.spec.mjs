@@ -11,7 +11,7 @@ async function setUp(page) {
   const [alan, grace] = [await id('alan'), await id('grace')]
   const tag = uniq('rq')
   const tenant = await apiCall(page, 'POST', `${API}/tenants`, { name: tag, display_name: 'Requested ' + tag })
-  const approvers = await apiCall(page, 'POST', `${API}/groups`, { display_name: 'Approvers ' + tag })
+  const approvers = await apiCall(page, 'POST', `${API}/groups`, { display_name: 'Approvers ' + tag, approves_requests: true })
   await apiCall(page, 'PUT', `${API}/groups/${approvers.id}/members/${grace}`)
   const requesters = await apiCall(page, 'POST', `${API}/groups`, { display_name: 'Requesters ' + tag,
     access_requests: { enabled: true, approvers: approvers.id, lengths: [3600, 86400] } })
@@ -35,14 +35,19 @@ test('access requests: Alan asks, Grace approves, Alan ends it; the menu shows e
     await expect(page.locator('#user-menu').getByRole('link', { name: 'Request access' })).toBeVisible()
     await expect(page.locator('#user-menu').getByRole('link', { name: 'Approvals' })).toHaveCount(0)
     await page.keyboard.press('Escape')
-    const tenant = page.getByRole('combobox', { name: 'Tenant' })
+    const opener = page.getByRole('button', { name: 'Request access' })
+    await opener.click()
+    const ask = page.getByRole('dialog', { name: 'Request access' })
+    const tenant = ask.getByRole('combobox', { name: 'Tenant' })
     await tenant.fill('Requested ' + s.tag.slice(0, 4))
-    await page.getByRole('option', { name: new RegExp('Requested ' + s.tag) }).click()
-    const from = page.locator('#f-approvers')
+    await ask.getByRole('option', { name: new RegExp('Requested ' + s.tag) }).click()
+    const from = ask.locator('#f-approvers')
     if (await from.isVisible()) await from.selectOption({ label: s.approvers.display_name }) // Alan is in Support too
-    await page.locator('#f-length').selectOption({ label: '1 day' })
-    await page.getByLabel(/Why you need it/).fill('INC-77: a customer cannot sign in')
-    await page.getByRole('button', { name: 'Send request' }).click()
+    await ask.locator('#f-length').selectOption({ label: '1 day' })
+    await ask.getByLabel(/Why you need it/).fill('INC-77: a customer cannot sign in')
+    await ask.getByRole('button', { name: 'Send request' }).click()
+    await expect(ask).toBeHidden()
+    await expect(opener).toBeFocused() // focus goes back to the button that opened it
     await expect(page.locator('.toasts')).toContainText('Request sent')
     const mine = page.getByRole('row', { name: new RegExp('Requested ' + s.tag) })
     await expect(mine).toContainText('Waiting')
@@ -54,6 +59,9 @@ test('access requests: Alan asks, Grace approves, Alan ends it; the menu shows e
     const row = page.getByRole('row', { name: new RegExp('Requested ' + s.tag) })
     await expect(row).toContainText('Alan Turing')
     await expect(row).toContainText('INC-77')
+    // who: the name (a manager's link to the user page) and the email below it
+    await expect(row.getByRole('link', { name: 'Alan Turing' })).toHaveAttribute('href', /^\/admin\/orgs\/acme\/users\/[A-Za-z0-9_-]+$/)
+    await expect(row).toContainText('@acme.example')
     await row.getByRole('button', { name: /^Approve/ }).click()
     const dlg = page.getByRole('dialog', { name: 'Approve the request' })
     await expect(dlg).toContainText('Alan Turing asks for access to Requested ' + s.tag + ' for 1 day.')
@@ -76,16 +84,20 @@ test('access requests: Alan asks, Grace approves, Alan ends it; the menu shows e
   }
 })
 
-test('groups: an administrator turns access requests on, choosing the approver group by name; managers cannot add members to either group', async ({ page }) => {
+test('groups: an administrator turns access requests on, choosing from the groups that approve; one in use keeps approving; managers cannot add members to either group', async ({ page }) => {
   const s = await setUp(page)
   try {
     const plain = await apiCall(page, 'POST', `${API}/groups`, { display_name: 'Plain ' + s.tag })
+    const other = await apiCall(page, 'POST', `${API}/groups`, { display_name: 'Other ' + s.tag })
     await page.reload({ waitUntil: 'load' })
     await page.getByRole('searchbox').first().fill('Plain ' + s.tag)
     await page.getByRole('button', { name: 'Edit Plain ' + s.tag }).click()
     const dlg = page.getByRole('dialog', { name: 'Edit group' })
     await dlg.getByRole('switch', { name: /Members can request access/ }).check()
+    await expect(dlg.getByText('Only administrators can change who is in this group.')).toBeVisible()
     const by = dlg.getByRole('combobox', { name: 'Approved by' })
+    await by.fill('Other ' + s.tag) // a group that does not approve is not offered
+    await expect(dlg.getByRole('option', { name: 'Other ' + s.tag })).toHaveCount(0)
     await by.fill('Approvers ' + s.tag.slice(0, 3))
     await dlg.getByRole('option', { name: 'Approvers ' + s.tag }).click()
     await dlg.getByLabel('4 hours').check()
@@ -95,6 +107,18 @@ test('groups: an administrator turns access requests on, choosing the approver g
     expect(g.access_requests).toEqual({ approvers: s.approvers.id, lengths: [14400], service_accounts: false })
     await expect(page.getByRole('row', { name: new RegExp('Plain ' + s.tag) })).toContainText('Can request access')
     await apiCall(page, 'DELETE', `${API}/groups/${plain.id}`)
+    await apiCall(page, 'DELETE', `${API}/groups/${other.id}`)
+
+    // the approver group is marked, and keeps approving while a group uses it
+    await page.getByRole('searchbox').first().fill('Approvers ' + s.tag)
+    await expect(page.getByRole('row', { name: new RegExp('Approvers ' + s.tag) })).toContainText('Approves requests')
+    await page.getByRole('button', { name: 'Edit Approvers ' + s.tag }).click()
+    const sw = dlg.getByRole('switch', { name: /Members approve access requests/ })
+    await expect(sw).toBeChecked()
+    await sw.uncheck()
+    await dlg.getByRole('button', { name: 'Save changes' }).click()
+    await expect(dlg.getByText(/uses this group to approve its requests/).first()).toBeVisible()
+    await dlg.getByRole('button', { name: 'Cancel' }).click()
 
     // a manager is refused adding anyone to a protected group
     await signIn(page, 'manager')

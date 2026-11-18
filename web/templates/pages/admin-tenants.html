@@ -22,6 +22,7 @@
         <caption class="sr-only">Tenants</caption>
         <thead><tr>
           {{template "sort-th" (dict "key" "display_name" "label" "Tenant")}}
+          <th scope="col">Who can sign in</th>
           <th scope="col">Sign-in methods</th>
           <th scope="col">Clients</th>
           <th scope="col">SSH</th>
@@ -30,6 +31,7 @@
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
             <td><a class="cell-title" :href="row.href" x-text="row.display_name"></a> <span class="badge badge-info ml-1" x-show="row.isDefault">Built-in</span><div class="cell-sub"><code class="mono" x-text="row.name"></code><span x-show="row.hasDescription"> · <span x-text="row.description"></span></span></div></td>
+            <td><span :class="row.whoClass" x-text="row.whoText"></span><div class="cell-sub mt-1" x-text="row.whoSub"></div></td>
             <td><div x-text="row.methodsText"></div><div class="cell-sub" x-text="row.mfaText"></div></td>
             <td><a class="clients-link" :href="row.clientsHref" :aria-label="row.clientsLabel"><span x-text="row.clientsText"></span>{{template "icon" "chevron-right"}}</a></td>
             <td><a class="clients-link" :href="row.sshHref" :aria-label="row.sshLabel"><span :class="row.sshClass" x-text="row.sshText"></span>{{template "icon" "chevron-right"}}</a></td>

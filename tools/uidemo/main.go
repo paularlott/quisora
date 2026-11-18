@@ -555,7 +555,7 @@ func demoSkin(ctx context.Context, svc *service.Service, super *model.User, v st
 // waits for a decision, the other member's was approved.
 func seedAccessRequests(ctx context.Context, svc *service.Service, acme *model.Org, alan, grace, other *model.User) {
 	sys := service.System
-	leads, err := svc.CreateGroupWithMembers(ctx, sys, acme.ID, service.GroupInput{DisplayName: ptr("On-call leads")}, []string{grace.ID})
+	leads, err := svc.CreateGroupWithMembers(ctx, sys, acme.ID, service.GroupInput{DisplayName: ptr("On-call leads"), ApprovesRequests: ptr(true)}, []string{grace.ID})
 	must(err)
 	_, err = svc.CreateGroupWithMembers(ctx, sys, acme.ID, service.GroupInput{DisplayName: ptr("On-call"),
 		AccessRequests: &service.GroupRequestsInput{Enabled: true, Approvers: leads.ID, Lengths: []int{3600, 4 * 3600, 86400}}},

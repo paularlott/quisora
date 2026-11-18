@@ -1522,7 +1522,7 @@ export default function (Alpine) {
   // the group dialog's approver group: the organization's other groups, looked up as the administrator types
   const approverSource = {
     async search(q) {
-      const r = await get(`${this.apiBase}/groups${qs({ q, limit: 8 })}`)
+      const r = await get(`${this.apiBase}/groups${qs({ q, limit: 8, approves: 'true' })}`)
       return r.items.filter((g) => !this.editing || g.id !== this.editing.id).map((g) => ({ value: g.id, label: g.display_name }))
     },
   }
@@ -1566,10 +1566,11 @@ export default function (Alpine) {
     get dialogTitle() { return this.editing ? 'Edit group' : 'New group' },
     get submitLabel() { return this.busy ? 'Saving…' : this.editing ? 'Save changes' : 'Create group' },
     lengthChoices: RQ_LENGTHS,
-    errorKey(f) { return f === 'access_requests' ? 'rq_approvers' : f },
+    errorKey(f) { return { access_requests: 'rq_approvers', approves_requests: 'rq_approves' }[f] || f },
+    get protectedNote() { return this.form.rq_enabled || this.form.rq_approves },
     openCreate(ev) {
       this.editing = null
-      this.resetForm({ display_name: '', external_id: '', tags: [], rq_enabled: false, rq_approvers: '', rq_lengths: [], rq_sa: false })
+      this.resetForm({ display_name: '', external_id: '', tags: [], rq_approves: false, rq_enabled: false, rq_approvers: '', rq_lengths: [], rq_sa: false })
       this.comboSet('rq_approvers', '', '')
       this.resetChipText()
       this.openDlg('group-dialog', ev.currentTarget)
@@ -1580,7 +1581,7 @@ export default function (Alpine) {
       const rq = g.access_requests
       this.resetForm({ display_name: g.display_name, external_id: g.external_id || '', tags: [...(g.tags || [])],
         rq_enabled: !!rq, rq_approvers: rq ? rq.approvers : '', rq_lengths: rq && rq.lengths.length < RQ_LENGTHS.length ? rq.lengths.map(String) : [],
-        rq_sa: !!(rq && rq.service_accounts) })
+        rq_sa: !!(rq && rq.service_accounts), rq_approves: !!g.approves_requests })
       this.comboSet('rq_approvers', rq ? rq.approvers : '', rq ? '…' : '')
       if (rq) getOrNull(`${this.apiBase}/groups/${enc(rq.approvers)}`).then((a) => { if (this.editing === g) this.comboSet('rq_approvers', rq.approvers, a ? a.display_name : 'Deleted group') })
       this.resetChipText()
@@ -1597,6 +1598,7 @@ export default function (Alpine) {
           return
         }
         body.access_requests = { enabled: !!f.rq_enabled, approvers: f.rq_approvers, lengths: f.rq_lengths.map(Number), service_accounts: !!f.rq_sa }
+        body.approves_requests = !!f.rq_approves
       }
       const res = await this.run(() => this.editing ? patch(`${this.apiBase}/groups/${enc(this.editing.id)}`, body) : post(`${this.apiBase}/groups`, body))
       if (!res) return
@@ -1681,7 +1683,10 @@ export default function (Alpine) {
       this.initTable()
     },
     transform(t) {
-      return { ...t, methodsText: methodsText(t), mfaText: this.orgMFA || t.settings.require_mfa ? 'Requires a second factor' : '', clientsText: clientsText(t.clients),
+      const only = !!t.settings.members_only
+      return { ...t, whoText: only ? 'Members only' : 'Everyone', whoClass: only ? 'badge badge-info' : 'badge badge-plain',
+        whoSub: only ? 'Users and groups given access' : 'Everyone in the organization',
+        methodsText: methodsText(t), mfaText: this.orgMFA || t.settings.require_mfa ? 'Requires a second factor' : '', clientsText: clientsText(t.clients),
         editLabel: 'Edit ' + t.display_name, deleteLabel: 'Delete ' + t.display_name, isDefault: t.name === 'default', hasDescription: !!t.description,
         href: `${this.pageBase}/${enc(t.name)}`, clientsHref: `${this.pageBase}/${enc(t.name)}/clients`, clientsLabel: 'Clients of ' + t.display_name + ': ' + clientsText(t.clients),
         ...sshState(t), sshHref: `${this.pageBase}/${enc(t.name)}/ssh`, sshLabel: 'SSH certificates of ' + t.display_name + ': ' + sshState(t).sshText }

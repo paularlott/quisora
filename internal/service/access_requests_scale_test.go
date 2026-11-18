@@ -47,7 +47,8 @@ func busyRequests(t *testing.T, st store.Store) {
 	// alex approves for two requester groups, through two approver groups
 	group := func(name string, members []string, in *service.GroupRequestsInput) *model.Group {
 		t.Helper()
-		g, err := e.svc.CreateGroupWithMembers(ctx, service.System, org.ID, service.GroupInput{DisplayName: ptr(name), AccessRequests: in}, members)
+		g, err := e.svc.CreateGroupWithMembers(ctx, service.System, org.ID, service.GroupInput{DisplayName: ptr(name), AccessRequests: in,
+			ApprovesRequests: ptr(in == nil)}, members)
 		if err != nil {
 			t.Fatal(err)
 		}

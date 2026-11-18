@@ -24,7 +24,7 @@
         </tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
-            <td><span class="cell-title" x-text="row.display_name"></span><span class="badge badge-info ml-1" x-show="row.asks" x-cloak>Can request access</span>
+            <td><span class="cell-title" x-text="row.display_name"></span><span class="badge badge-info ml-1" x-show="row.asks" x-cloak>Can request access</span><span class="badge badge-info ml-1" x-show="row.approves_requests" x-cloak>Approves requests</span>
               <ul class="tag-badges" aria-label="Tags" x-show="row.hasTags" x-cloak><template x-for="t in row.tagItems" :key="t.value"><li><span class="badge badge-tag badge-plain" x-text="t.value"></span></li></template></ul></td>
             <td class="text-right tabular-nums" x-text="row.membersText"></td>
             <td class="mono" x-text="row.externalText"></td>
@@ -52,9 +52,9 @@
       {{template "tag-field" (dict "help" "Every member of the group receives these in their tags claim.")}}
       <fieldset class="fieldset" x-show="admin" x-cloak>
         <legend>Access requests</legend>
-        {{template "check-field" (dict "name" "rq_enabled" "label" "Members can request access" "switch" true "help" "They can ask for access to a tenant for a while, from Request access in their account menu. Only administrators can change who is in this group and in its approver group.")}}
+        {{template "check-field" (dict "name" "rq_enabled" "label" "Members can request access" "switch" true "help" "To a tenant for a while, from their account menu.")}}
         <div class="stack" x-show="form.rq_enabled" x-cloak>
-          {{template "combo-field" (dict "name" "rq_approvers" "label" "Approved by" "placeholder" "Type a group’s name" "help" "Members of this group approve or deny the requests, from Approvals in their account menu. Nobody approves their own.")}}
+          {{template "combo-field" (dict "name" "rq_approvers" "label" "Approved by" "placeholder" "Type a group’s name" "help" "A group whose members approve access requests. Nobody approves their own.")}}
           <div class="field" role="group" aria-labelledby="l-rq_lengths">
             <span class="label" id="l-rq_lengths">Lengths they can ask for</span>
             <div class="check-tiles">
@@ -62,8 +62,10 @@
             </div>
             <p class="help">None ticked: all of them.</p>
           </div>
-          {{template "check-field" (dict "name" "rq_sa" "label" "Service accounts can approve" "help" "A service account with the access_requests:approve scope can approve or deny these requests too, for example a chat bot.")}}
+          {{template "check-field" (dict "name" "rq_sa" "label" "Service accounts can approve" "help" "One with the access_requests:approve scope, for example a chat bot.")}}
         </div>
+        {{template "check-field" (dict "name" "rq_approves" "label" "Members approve access requests" "switch" true "help" "They decide requests from their account menu.")}}
+        <p class="help" x-show="protectedNote" x-cloak>Only administrators can change who is in this group.</p>
       </fieldset>
     </div>
     {{template "form-foot" (dict "label" "submitLabel" "default" "Save")}}

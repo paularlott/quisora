@@ -180,7 +180,7 @@ func TestScriptlingApprovalBot(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
 	user, other := w.users["user"], w.users["manager"]
-	appr, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Approvers")}, []string{w.users["admin"].ID})
+	appr, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Approvers"), ApprovesRequests: ptr(true)}, []string{w.users["admin"].ID})
 	if err != nil {
 		t.Fatal(err)
 	}
