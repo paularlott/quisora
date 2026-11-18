@@ -11,7 +11,7 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// The account pages for access requests (docs/design/access-requests.md): Request access, for the members of groups
+// The account pages for access requests (docs/ACCESS-REQUESTS.md): Request access, for the members of groups
 // whose members may ask, and Approvals, for the members of approver groups. Both are reached from the account menu,
 // which shows each only to whom it concerns.
 

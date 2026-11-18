@@ -61,7 +61,7 @@ operation's `serviceAccount` security requirement.
 | `tenants` | Create, change and delete tenants | any |
 | `clients` | Manage applications (OAuth clients) and the self-registered ones | any |
 | `access` | Manage tenants' access lists | any |
-| `access_requests:approve` | Approve or deny [access requests](ACCESS-REQUESTS.md), for the groups whose settings let service accounts | any |
+| `access_requests:approve` | Approve or deny [access requests](ACCESS-REQUESTS.md), and end the access they gave, for the groups whose settings let service accounts | any |
 | `ssh` | Manage tenants' SSH certificate authorities: settings, CA keys and issued certificates ([SSH certificates](ssh/README.md)) | any |
 | `ssh:host` | Only sign SSH host certificates, for the machines that need one (`quisora ssh host-sign`: [host certificates](ssh/README.md#host-certificates)) | any |
 | `import` | With `users`, create users with a password hash, an authenticator secret or provider links from another system ([API-TOKENS.md](API-TOKENS.md#importing-users-with-their-passwords-authenticator-apps-and-provider-links-import)) | any |

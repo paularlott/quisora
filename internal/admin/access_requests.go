@@ -9,7 +9,7 @@ import (
 	"github.com/paularlott/quisora/internal/web"
 )
 
-// Access requests through the management API (docs/design/access-requests.md): a person's own requests with a
+// Access requests through the management API (docs/ACCESS-REQUESTS.md): a person's own requests with a
 // personal API token holding access_requests; deciding with a service account holding access_requests:approve; and
 // every request of the organization for its administrators.
 

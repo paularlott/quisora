@@ -46,9 +46,10 @@ changing them later changes no existing access. Approved access always covers al
 
 ## Asking
 
-Members of a requester group see **Request access** in their account menu. They choose the tenant (type its name),
-**Request approval from** (only when their groups have more than one approver group), how long, and why: a ticket
-number and what they need to do. The approvers get an email.
+Members of a requester group see **Request access** in their account menu; on that page, **Request access** opens the
+form. They choose the tenant (type its name), **Request approval from** (only when their groups have more than one
+approver group), how long, and why: a ticket number and what they need to do. The approvers get an email. A guest
+signed in from another organization asks in their own organization, not here.
 
 They cannot ask for a tenant they have access to with no end, and only once at a time for each tenant. A request for a
 tenant they hold until a time asks to extend it. A request nobody decides within a day lapses. One person may have 10
@@ -74,13 +75,13 @@ Approving gives the person access to the tenant from now until the end of the le
 The person gets an email either way. The page also lists **Your groups' decisions**, whoever in the groups made them,
 newest first: **Active** (access that runs, with **End now**; where it starts), **Ended** (it ran to its end, or was
 ended early), **Denied**, or **All**, and a search finds them by the person's name or email, the tenant or the reason
-(each by how it starts). A group that no longer approves any group's requests still sees its decisions, and may end
-the access it gave. When the access reaches its end, the request shows as **Expired**.
+(each by how it starts). A group that approves but that no group names any more still sees its decisions, and may end
+the access it gave; turning **Members approve access requests** off takes Approvals away from its members. When the access reaches its end, the request shows as **Expired**.
 
 ## Ending early
 
-The person themselves (**End now** on their Request access page), a member of the approver group, or an administrator
-can end the access a request gave. It is removed at once, and the person is signed out of the tenant's applications.
+The person themselves (**End now** on their Request access page), a member of the approver group, a service account
+that may decide its requests, or an administrator can end the access a request gave. It is removed at once, and the person is signed out of the tenant's applications.
 Someone else ending it emails the person.
 
 An administrator who removes the access on the tenant's **Access** card instead (or through the API) takes it away just
@@ -98,7 +99,7 @@ approvers), **Access request decided** and **Access ended** (to the person who a
 | Call | Who |
 | --- | --- |
 | `GET/POST /api/orgs/{org}/access-requests`, `GET …/options`, `POST …/{id}/cancel`, `POST …/{id}/end` | the person, with a personal API token holding `access_requests` (or `admin`) |
-| `GET …/pending`, `POST …/{id}/approve`, `POST …/{id}/deny`, `POST …/{id}/end` | a service account with `access_requests:approve`, for the groups that allow service accounts |
+| `GET …/pending`, `POST …/{id}/approve`, `POST …/{id}/deny`, `POST …/{id}/end` | a service account with `access_requests:approve`, for the groups that allow service accounts; `GET …/pending` also an approver signed in (their browser session) |
 | `GET …/all?state=` | administrators, or a service account with `access` |
 
 The lists take `offset` and `limit` and answer `{"items": [...], "total": n}`. A personal API token never approves: it

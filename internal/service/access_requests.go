@@ -12,7 +12,7 @@ import (
 	"github.com/paularlott/quisora/internal/ttlcache"
 )
 
-// Access requests (docs/design/access-requests.md): a member of a group whose settings let its members ask
+// Access requests (docs/ACCESS-REQUESTS.md): a member of a group whose settings let its members ask
 // (model.GroupRequests) asks for access to a members-only tenant of the organization for a while; a member of the
 // approver group decides (or a service account, where the group allows it); approving gives a timed access entry on
 // the tenant, which then ends as any timed entry does (ExpireAccess).
