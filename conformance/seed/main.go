@@ -38,7 +38,7 @@ func ptr[T any](v T) *T { return &v }
 func main() {
 	dataDir := flag.String("data-dir", "", "data directory of the stopped node")
 	masterKey := flag.String("master-key", "", "the node's master key")
-	publicURL := flag.String("public-url", "https://host.docker.internal:8090", "the node's public URL")
+	publicURL := flag.String("public-url", "https://host.docker.internal:8490", "the node's public URL")
 	suite := flag.String("suite", "https://localhost.emobix.co.uk:8453/test/a/quisora", "the suite's base URL for alias quisora")
 	relay := flag.String("relay", "https://127.0.0.1:8096/test/a/quisora", "fakeidp's back-channel relay, as Quisora reaches it")
 	issuer := flag.String("idp", "https://127.0.0.1:8095", "fakeidp's issuer, as Quisora reaches it")

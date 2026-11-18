@@ -5,17 +5,18 @@ set -e
 C=$(cd "$(dirname "$0")" && pwd)
 ROOT=$C/..
 R=$C/.run
-URL=https://host.docker.internal:8090 # how the suite's container (and its browser) reach this machine
+PORT=8490 # an uncommon port: a development server elsewhere on 127.0.0.1 would take the node's local requests
+URL=https://host.docker.internal:$PORT # how the suite's container (and its browser) reach this machine
 mkdir -p "$R"
 [ -f "$R/masterkey" ] || "$ROOT/bin/quisora" genkey > "$R/masterkey"
 K=$(tr -d '\n' < "$R/masterkey")
 case "$1" in
 start)
-  nohup "$ROOT/bin/quisora" serve --listen 0.0.0.0:8090 --public-url "$URL" --data-dir "$R/data" --master-key "$K" \
+  nohup "$ROOT/bin/quisora" serve --listen 0.0.0.0:$PORT --public-url "$URL" --data-dir "$R/data" --master-key "$K" \
     --extra-ca-file "$R/fakeidp.pem" --allow-private-networks --log-level debug >> "$R/node.log" 2>&1 &
   echo $! > "$R/node.pid"
-  for i in $(seq 1 40); do curl -skf https://127.0.0.1:8090/healthz > /dev/null && break; sleep 0.5; done
-  curl -sk https://127.0.0.1:8090/healthz; echo;;
+  for i in $(seq 1 40); do curl -skf https://127.0.0.1:$PORT/healthz > /dev/null && break; sleep 0.5; done
+  curl -sk https://127.0.0.1:$PORT/healthz; echo;;
 stop)
   [ -f "$R/node.pid" ] && kill "$(cat "$R/node.pid")" 2> /dev/null || true
   sleep 1.5; rm -f "$R/node.pid";;

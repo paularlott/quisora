@@ -9,7 +9,7 @@ expected and why, and what was fixed because of the runs are in [docs/conformanc
 | `fakeidp/` | A sign-in provider with no UI, over HTTPS with its own self-signed certificate (written to `.run/fakeidp.pem`; Quisora trusts it through `--extra-ca-file`). `/authorize` redirects straight back with a code; `/token` issues an ES256 ID token for `user@acme.test` with a verified address, which Quisora links to the seeded user. It also relays Quisora's back-channel logout posts to the suite's own self-signed endpoint. |
 | `config/` | Suite configuration templates (`@CLIENT1_ID@` … filled in by `seed`): `basic.json`, `backchannel.json`, `post.json` (client_secret_post), `jwt.json` (private_key_jwt), and `fapi2.json` and `fapi2-ps256.json` (the FAPI 2.0 plan with ES256 or PS256 client keys; the protected resource is userinfo), and `fapi2-cc.json` (its client credentials variant; the protected resource is the `acme` organization's SCIM users). The browser steps click the provider button on `/o/<org>/login` (a plain link, so no JavaScript is needed) and the sign-out page's form button, and wait for the error, sign-in and signed-out pages the "review" steps screenshot. |
 | `suite.patch` | One local change to the suite: it listens on port 8453 instead of 8443 (so it does not collide with `task run-server`). The tests themselves are unmodified; the seeded clients have Require PKCE turned off because the suite's OIDC client sends no PKCE. |
-| `node.sh` | Starts, stops and seeds the node under test (`https://host.docker.internal:8090`) and the fake provider. State goes in `.run/` (ignored). |
+| `node.sh` | Starts, stops and seeds the node under test (`https://host.docker.internal:8490`) and the fake provider. State goes in `.run/` (ignored). |
 | `run.sh`, `runall.sh` | Run one plan, or the four certification plans (config, basic, RP-initiated logout, back-channel logout). |
 | `run-plan.py` | What `run.sh` runs: the suite's own `run-test-plan.py`, unmodified, with a real signing key rotation where `oidcc-server-rotate-keys` needs one (between the module's set-up and its start, which the runner alone cannot do). Before that module starts it waits until no other module of the plan is in flight, then signs in as the seeded super admin (password, then TOTP) and calls `POST /api/keys/rotate` with that session. The rotation is part of the plan run, so the plan's export has the module's real result. |
 | `summ.py` | Each module's result from a run log, with the failure and warning messages, through the suite's API. |
@@ -97,7 +97,7 @@ One module on its own: append `:<module>` to the plan, for example the key rotat
 CONFIG=post.json conformance/run.sh "oidcc-test-plan[client_auth_type=client_secret_post][response_type=code][response_mode=default][client_registration=static_client]:oidcc-server-rotate-keys" rotate
 ```
 
-The suite tests the `acme` organization's own issuer, `https://host.docker.internal:8090/o/<acme's id>` (its discovery
+The suite tests the `acme` organization's own issuer, `https://host.docker.internal:8490/o/<acme's id>` (its discovery
 document, endpoints and sign-in pages are all under it); the configurations `seed` writes name it.
 
 Details of a plan's modules: `python3 conformance/summ.py conformance/.run/logs/basic-r1.log`. The suite's UI at

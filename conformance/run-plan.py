@@ -14,7 +14,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.join(HERE, ".run", "suite", "scripts")
-NODE = os.environ.get("QUISORA_NODE", "https://127.0.0.1:8090")
+NODE = os.environ.get("QUISORA_NODE", "https://127.0.0.1:8490")
 ROTATE_MODULE = "oidcc-server-rotate-keys"
 
 
