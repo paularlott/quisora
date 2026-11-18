@@ -249,6 +249,10 @@ func testSharedNodes(t *testing.T, backend string, shared func(*config.Config), 
 	}
 	samePrimary(t, []*App{a, b})
 	crossNodeOAuth(t, []*App{a, b}, hc, public())
+	if b.Node.ToldOfChanges() {
+		t.Fatal("a node sharing its database without cluster.notify is not told of the others' changes")
+	}
+	menuRolesFollow(t, a, b, 10*time.Second) // as its short cache expires (sharedCacheTTL)
 }
 
 // crossNodeOAuth runs an OAuth sign-in through apps (nodes of one cluster sharing the public URL), sending each step
@@ -446,6 +450,7 @@ func TestGossipNodes(t *testing.T) {
 	samePrimary(t, apps) // (readiness waits for it: a node that has not copied it yet is not ready)
 	crossNodeOAuth(t, apps, hc, publicURL)
 	gossipAudit(t, apps)
+	menuRolesFollow(t, apps[0], apps[2], 5*time.Second) // by the change hook, as the group record replicates
 }
 
 // gossipAudit: audit events stay on the node that records them (cluster.TestAuditIsNodeLocalAndMerged); an audit page

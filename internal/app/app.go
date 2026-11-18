@@ -190,6 +190,10 @@ func Start(ctx context.Context, c *config.Config, log logger.Logger) (*App, erro
 	srv.Use(modules(bg, a)...)
 	// Replication is already applying records (node.Start): the hook goes in once what it calls (the modules'
 	// caches and their onChange hooks) is built. Until the server starts nothing is cached, so nothing is missed.
+	if !node.ToldOfChanges() {
+		// never told of the other nodes' group changes: who asks and approves follows them as the other caches do
+		a.Svc.ShortRequestGroups(sharedCacheTTL)
+	}
 	node.OnChange(func(rec *store.Record, local bool) { a.evict(rec) })
 	if a.OIDC != nil {
 		// Back-channel logouts a relying party did not take are retried from this node's queue in the store, also
@@ -305,6 +309,10 @@ func checkSharedKey(ctx context.Context, st store.Store, sealer *secure.Sealer, 
 	}
 	return nil
 }
+
+// sharedCacheTTL is how long a node never told of the other nodes' writes (a shared database without cluster.notify)
+// keeps what it caches: as the organizations, sessions and sign-in caches.
+const sharedCacheTTL = 5 * time.Second
 
 // evict drops per-node caches when a record changes here or on another node.
 func (a *App) evict(rec *store.Record) {

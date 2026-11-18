@@ -9,6 +9,7 @@ import (
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/store"
+	"github.com/paularlott/quisora/internal/ttlcache"
 )
 
 // Access requests (docs/design/access-requests.md): a member of a group whose settings let its members ask
@@ -24,8 +25,16 @@ const (
 )
 
 // requestGroupsTTL is how long the account menu's view of who asks and approves is kept (requestGroups): a group
-// change drops it at once, on every node told of it.
+// change drops it at once, on every node told of it. A node that is not told of other nodes' changes (a shared
+// database without cluster.notify) keeps it as briefly as its other caches (ShortRequestGroups).
 const requestGroupsTTL = time.Hour
+
+// ShortRequestGroups keeps the account menu's view of who asks and approves for ttl instead of an hour: for a node
+// never told of the other nodes' writes, whose caches follow them only as they expire. Call it before serving.
+func (s *Service) ShortRequestGroups(ttl time.Duration) {
+	s.requestGroups = ttlcache.New[*requestGroups](ttl, 20_000)
+	s.requestRoles = ttlcache.New[[2]bool](ttl, 100_000)
+}
 
 // requestGroups are an organization's groups whose members may ask for access (requesters) and the groups whose
 // members approve access requests (approvers: model.Group.ApprovesRequests, which every group named as approvers is).
@@ -185,8 +194,8 @@ func (s *Service) RequestApproversFor(ctx context.Context, u *model.User) ([]Req
 // AccessRequestRoles reports whether u may ask for access (a member of a group whose members may) and whether u
 // approves requests (a member of a group whose members approve them): what shows the account menu's Request
 // access and Approvals. Kept an hour per user, dropped when a group changes (InvalidateRequestGroups): a page render
-// reads nothing for it, and a miss reads u's memberships (and, once an hour, the organization's request groups). The
-// pages and every call check again.
+// reads nothing for it, and a miss reads u's groups (and, once an hour, the organization's request groups). The pages
+// and every call check again.
 func (s *Service) AccessRequestRoles(ctx context.Context, u *model.User) (requester, approver bool) {
 	if v, ok := s.requestRoles.Get(u.ID); ok {
 		return v[0], v[1]
@@ -197,13 +206,15 @@ func (s *Service) AccessRequestRoles(ctx context.Context, u *model.User) (reques
 		return false, false
 	}
 	if len(rg.requesters)+len(rg.approvers) > 0 { // an organization without access requests reads nothing more
-		ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
+		// u's groups as every reader of memberships sees them (UserGroups): a change of members is committed on the
+		// group's record before its membership records are written, here or on another node
+		groups, err := s.UserGroups(ctx, u)
 		if err != nil {
 			return false, false
 		}
-		for _, m := range ms {
-			requester = requester || rg.requesters[m.GroupID]
-			approver = approver || rg.approvers[m.GroupID]
+		for _, g := range groups {
+			requester = requester || rg.requesters[g.ID]
+			approver = approver || rg.approvers[g.ID]
 		}
 	}
 	s.requestRoles.PutIf(u.ID, [2]bool{requester, approver}, tok)

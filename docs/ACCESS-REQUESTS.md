@@ -32,9 +32,10 @@ and cannot be deleted, while a group names it in **Approved by**.
 People can ask for any **members-only** tenant of the organization (the ones only the people given access can use).
 
 The account menu shows **Request access** and **Approvals** to the members of these groups. Who sees them is kept for
-an hour and worked out again whenever a group changes (its settings or its members), so a change shows at once. On
-servers that share a database without change notices (`cluster.notify`), another server may take up to that hour; the
-pages themselves (`/account/requests`, `/account/approvals`) always check the groups as they are.
+an hour and worked out again whenever a group changes (its settings or its members), so a change shows at once, on
+every server. Servers that share a database without change notices (`cluster.notify`) are not told of each other's
+changes, so they keep it only 5 seconds, as they do their other caches. The pages themselves (`/account/requests`,
+`/account/approvals`) always check the groups as they are.
 
 ### What approved access gives
 

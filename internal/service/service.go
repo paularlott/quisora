@@ -241,8 +241,8 @@ type Service struct {
 	// requestGroups are each organization's groups whose members may ask for access and the approver groups they
 	// name; requestRoles whether each user asks and approves (AccessRequestRoles: the account menu). Both are kept an
 	// hour and dropped whole when a group changes, here or on another node told of it (InvalidateRequestGroups): its
-	// settings, or its members, whose changes are written on the group's record. The pages and every call check the
-	// groups as they are.
+	// settings, or its members, whose changes are written on the group's record; a node never told of other nodes'
+	// changes keeps them briefly (ShortRequestGroups). The pages and every call check the groups as they are.
 	requestGroups *ttlcache.Cache[*requestGroups]
 	requestRoles  *ttlcache.Cache[[2]bool]
 	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)

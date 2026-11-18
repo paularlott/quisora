@@ -852,6 +852,11 @@ func (n *Node) Ephemeral() *Ephemeral { return n.eph }
 // about their writes: caches must stay short).
 func (n *Node) SharedDatabase() bool { return n.shared != nil }
 
+// ToldOfChanges reports whether this node hears of the other nodes' writes (its change hooks run for them, OnChange):
+// it is the only node, or it replicates, or it shares its database with change notices (cluster.notify, best effort).
+// A node sharing its database without them is never told: its caches follow others' changes only as they expire.
+func (n *Node) ToldOfChanges() bool { return n.shared == nil || n.ngc != nil }
+
 // LocalEphemeral is this node's in-memory short-lived state, for its metrics (with a shared database and no gossip the
 // state lives in the database, and this holds nothing: SharedEphemeral).
 func (n *Node) LocalEphemeral() *ephemeral.Local { return n.eph.local }
