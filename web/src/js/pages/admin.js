@@ -17,6 +17,7 @@ import { listFieldMixin, listRows, listValues } from '../lib/listfield.js'
 import { subscribe, liveRunner, announceUpdate, getOrNull, typingNow, CHANGED_TEXT } from '../lib/live.js'
 import { fmtDate, fmtDateTime, relTime, isSet, localZoneText, endInput, ROLE_LABEL, ROLE_BADGE } from '../lib/format.js'
 import { withReauth, describeAgent } from './account.js'
+import { requestStatus } from '../lib/requeststatus.js'
 import { skinPreviewMixin } from '../lib/skinpreview.js'
 import { pictureMixin } from '../lib/picture.js'
 import { avatarOf } from '../lib/avatar.js'
@@ -2045,20 +2046,12 @@ export default function (Alpine) {
   ]
   const SERVICE_METHODS = { client_secret_post: 'Secret (POST)', client_secret_basic: 'Secret (Basic)', private_key_jwt: 'Private key JWT' }
   // ---- Access requests (every request of the organization, for its administrators) ----------------------------
-  const RQ_STATE = { pending: ['Waiting', 'badge-warning'], approved: ['Active', 'badge-success'], expired: ['Expired', 'badge-plain'],
-    denied: ['Denied', 'badge-danger'], cancelled: ['Cancelled', 'badge-plain'], lapsed: ['Lapsed', 'badge-plain'], ended: ['Ended early', 'badge-plain'] }
   Alpine.data('adminAccessRequests', () => mix(tableMixin(), {
     init() { this.initTable() },
     stateChanged(ev) { this.extra = ev.target.value ? { state: ev.target.value } : {}; this.offset = 0; this.load() },
     transform(r) {
-      const [stateText, badge] = RQ_STATE[r.state] || [r.state, 'badge-plain']
-      let detail = ''
-      if (r.state === 'pending') detail = `Waiting for ${r.approvers_name}`
-      else if (r.state === 'approved') detail = `By ${r.decided_by_name}${r.ends && !r.ends.startsWith('0001-') ? ', until ' + fmtDateTime(r.ends) : ''}`
-      else if (r.state === 'denied') detail = `By ${r.decided_by_name}${r.note ? `: “${r.note}”` : ''}`
-      else if (r.state === 'ended') detail = `By ${r.ended_by_name}, ${fmtDateTime(r.ended_at)}`
-      else if (r.state === 'expired') detail = `Approved by ${r.decided_by_name}, ended ${fmtDateTime(r.ends)}`
-      return { ...r, stateText, stateClass: 'badge ' + badge, detail, askedText: fmtDateTime(r.created) }
+      const st = requestStatus(r)
+      return { ...r, stateText: st.stateText, stateClass: st.badgeClass, statusLines: st.lines, askedText: fmtDateTime(r.created) }
     },
   }))
 

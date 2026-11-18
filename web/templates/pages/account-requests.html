@@ -24,7 +24,7 @@
           <template x-for="row in items" :key="row.id"><tr>
             <th scope="row"><span class="cell-title" x-text="row.tenant_display_name"></span><div class="cell-sub" x-text="row.reason"></div></th>
             <td x-text="row.length_text"></td>
-            <td><span :class="row.badgeClass" x-text="row.stateText"></span><div class="cell-sub mt-1" x-text="row.detail"></div></td>
+            <td><span :class="row.badgeClass" x-text="row.stateText"></span><div class="mt-1"><template x-for="(l, i) in row.statusLines" :key="i"><div class="cell-sub" x-text="l"></div></template></div></td>
             <td class="actions">
               <button type="button" class="btn btn-secondary btn-sm" x-show="row.canCancel" :data-id="row.id" :aria-label="row.cancelLabel" @click="cancel">Cancel</button>
               <button type="button" class="btn btn-secondary btn-sm" x-show="row.live" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button>

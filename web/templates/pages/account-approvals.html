@@ -50,7 +50,7 @@
             <td x-text="row.tenant_display_name"></td>
             <td x-text="row.untilText"></td>
             <td x-text="row.reason"></td>
-            <td x-text="row.decided_by_name"></td>
+            <td><a class="cell-title" x-show="row.deciderHref" :href="row.deciderHref" x-text="row.decided_by_name"></a><span class="cell-title" x-show="!row.deciderHref" x-text="row.decided_by_name"></span><div class="cell-sub" x-show="row.decided_by_email" x-text="row.decided_by_email"></div></td>
             <td class="actions"><button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button></td>
           </tr></template>
         </tbody>

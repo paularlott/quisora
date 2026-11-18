@@ -13,62 +13,26 @@ import { mix } from '../lib/mix.js'
 import { fmtDateTime, relTime } from '../lib/format.js'
 import { refetchOnReturn } from '../lib/live.js'
 import { withReauth } from './account.js'
+import { requestStatus } from '../lib/requeststatus.js'
 
 const enc = encodeURIComponent
 const LENGTHS = { 3600: '1 hour', 14400: '4 hours', 28800: '8 hours', 86400: '1 day', 259200: '3 days', 604800: '1 week',
   1209600: '2 weeks', 2592000: '1 month' }
 const lengthText = (secs) => LENGTHS[secs] || `${Math.round(secs / 3600)} hours`
-const isSet = (t) => !!t && !t.startsWith('0001-')
 const POLL = 30000 // the approver lists look again this often while the page is shown: requests come in meanwhile
 
-// shape gives one of your requests the status line the Request access page shows.
+// shape gives one of your requests its status (requestStatus) and the labels of its buttons.
 function shape(r) {
-  const now = Date.now()
-  let stateText = 'Waiting', badge = 'badge-warning', detail = ''
-  switch (r.state) {
-    case 'pending':
-      detail = `Waiting for ${r.approvers_name}. Lapses ${relTime(r.lapses)} if nobody decides.`
-      break
-    case 'approved':
-      if (r.live) {
-        stateText = 'Active'; badge = 'badge-success'
-        detail = isSet(r.ends) ? `Until ${fmtDateTime(r.ends)}. Approved by ${r.decided_by_name}.` : `Approved by ${r.decided_by_name}. You had access with no end already.`
-      } else {
-        stateText = 'Ended'; badge = 'badge-plain'
-        detail = `Ended ${fmtDateTime(r.ends)}. Approved by ${r.decided_by_name}.`
-      }
-      break
-    case 'expired':
-      stateText = 'Ended'; badge = 'badge-plain'
-      detail = `Ended ${fmtDateTime(r.ends)}. Approved by ${r.decided_by_name}.`
-      break
-    case 'denied':
-      stateText = 'Denied'; badge = 'badge-danger'
-      detail = `By ${r.decided_by_name}${r.note ? `: “${r.note}”` : '.'}`
-      break
-    case 'cancelled':
-      stateText = 'Cancelled'; badge = 'badge-plain'
-      detail = `Cancelled ${fmtDateTime(r.decided_at)}.`
-      break
-    case 'lapsed':
-      stateText = 'Lapsed'; badge = 'badge-plain'
-      detail = 'Nobody decided it in time.'
-      break
-    case 'ended':
-      stateText = 'Ended early'; badge = 'badge-plain'
-      detail = `Ended by ${r.ended_by_name}, ${fmtDateTime(r.ended_at)}.`
-      break
-  }
-  if (r.note && (r.state === 'approved' || r.state === 'expired')) detail += ` Note: “${r.note}”`
-  return { ...r, stateText, badgeClass: 'badge ' + badge, detail, live: !!r.live && (!isSet(r.ends) || Date.parse(r.ends) > now),
+  const st = requestStatus(r)
+  return { ...r, stateText: st.stateText, badgeClass: st.badgeClass, statusLines: st.lines, live: st.live,
     canCancel: r.state === 'pending', cancelLabel: `Cancel the request for ${r.tenant_display_name}`,
     endLabel: `End now: your access to ${r.tenant_display_name}` }
 }
 
-// userLink is the user page of the person a request is for, for managers and administrators (the page's data-users).
-function userLink(el, p) {
+// userLink is the user page of user id, for managers and administrators (the page's data-users); none without an id.
+function userLink(el, id) {
   const base = el.closest('[data-users]')
-  return base ? `${base.dataset.users}/${enc(p.user_id)}` : ''
+  return base && id ? `${base.dataset.users}/${enc(id)}` : ''
 }
 
 // accountTable is a table of the account API's list at path, a page at a time, loading again on event (a window
@@ -216,7 +180,7 @@ export default function (Alpine) {
   // Waiting for a decision: oldest first, a page at a time. The approver's own request is listed, for someone else.
   Alpine.data('approvalsWaiting', () => mix(tableMixin(), accountTable('/approvals/pending', 'approvals-changed', true), {
     transform(p) {
-      return { ...p, askedText: relTime(p.created), canDecide: !p.yours, userHref: userLink(this.$el, p),
+      return { ...p, askedText: relTime(p.created), canDecide: !p.yours, userHref: userLink(this.$el, p.user_id),
         approveLabel: `Approve ${p.user_name}’s request for ${p.tenant_display_name}`, denyLabel: `Deny ${p.user_name}’s request for ${p.tenant_display_name}` }
     },
     get countText() { return String(this.total) },
@@ -230,7 +194,9 @@ export default function (Alpine) {
 
   // Access the approver's groups gave that runs: newest first, a page at a time.
   Alpine.data('approvalsRunning', () => mix(tableMixin(), accountTable('/approvals/active', 'approvals-changed', true), {
-    transform(p) { return { ...p, untilText: fmtDateTime(p.ends), userHref: userLink(this.$el, p), endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` } },
+    transform(p) {
+      return { ...p, untilText: fmtDateTime(p.ends), userHref: userLink(this.$el, p.user_id),
+        deciderHref: p.decided_via === 'account' ? userLink(this.$el, p.decided_by) : '', endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` } },
     async end(ev) {
       const opener = ev.currentTarget
       const r = this.rowFromEvent(ev)

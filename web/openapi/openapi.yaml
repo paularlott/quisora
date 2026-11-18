@@ -5553,6 +5553,9 @@ components:
           type: string
           description: who approved, denied or cancelled it (a user id, or a service account's client id)
         decided_by_name: {type: string}
+        decided_by_email:
+          type: string
+          description: the email of the person who decided it (none when a service account did)
         decided_via:
           type: string
           enum: [account, api]
@@ -5564,6 +5567,9 @@ components:
           description: when the access an approval gave ends (UTC)
         ended_by: {type: string}
         ended_by_name: {type: string}
+        ended_by_email:
+          type: string
+          description: the email of the person who ended it early (none when a service account did)
         ended_at: {type: string, format: date-time}
         live:
           type: boolean

@@ -942,6 +942,13 @@ type AccessRequestView struct {
 	LengthText        string `json:"length_text"`
 	// Live is true while the access an approved request gave lasts.
 	Live bool `json:"live"`
+	// DecidedByName and EndedByName are who decided it (or cancelled it) and who ended it early: the person's name as
+	// it is now, else the name recorded then (a service account's, or a removed user's); DecidedByEmail and
+	// EndedByEmail their email (none for a service account). They stand in for the record's own names.
+	DecidedByName  string `json:"decided_by_name,omitempty"`
+	DecidedByEmail string `json:"decided_by_email,omitempty"`
+	EndedByName    string `json:"ended_by_name,omitempty"`
+	EndedByEmail   string `json:"ended_by_email,omitempty"`
 	// Yours marks, in an approver's lists, the approver's own request (someone else decides it).
 	Yours bool `json:"yours,omitempty"`
 }
@@ -959,6 +966,22 @@ func (s *Service) AccessRequestViews(ctx context.Context, rs []*model.AccessRequ
 		}
 		if u := users[r.UserID]; u != nil {
 			v.UserName, v.UserEmail = u.FullName(), u.Email
+		}
+		person := func(id string) *model.User { // a user, or nil (a service account's client id, a removed user)
+			if id == "" {
+				return nil
+			}
+			if _, ok := users[id]; !ok {
+				users[id], _ = s.Users.Get(ctx, id)
+			}
+			return users[id]
+		}
+		v.DecidedByName, v.EndedByName = r.DecidedName, r.EndedName
+		if u := person(r.DecidedBy); u != nil && r.DecidedVia != "api" {
+			v.DecidedByName, v.DecidedByEmail = u.FullName(), u.Email
+		}
+		if u := person(r.EndedBy); u != nil {
+			v.EndedByName, v.EndedByEmail = u.FullName(), u.Email
 		}
 		if _, ok := tenants[r.TenantID]; !ok {
 			tenants[r.TenantID], _ = s.Tenants.Get(ctx, r.TenantID)

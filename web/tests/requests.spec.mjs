@@ -68,17 +68,26 @@ test('access requests: Alan asks, Grace approves, Alan ends it; the menu shows e
     await dlg.getByLabel(/Note for them/).fill('Go ahead')
     await dlg.getByRole('button', { name: 'Approve' }).click()
     await expect(page.locator('.toasts')).toContainText('Approved: Alan Turing has access to Requested ' + s.tag)
-    await expect(page.getByRole('row', { name: new RegExp('Requested ' + s.tag) })).toContainText('Grace Hopper')
+    const running = page.getByRole('row', { name: new RegExp('Requested ' + s.tag) })
+    await expect(running).toContainText('INC-77') // why
+    // approved by: Grace's name (a link for a manager) and email
+    await expect(running.getByRole('link', { name: 'Grace Hopper' })).toHaveAttribute('href', /^\/admin\/orgs\/acme\/users\/[A-Za-z0-9_-]+$/)
+    await expect(running).toContainText(/grace\S*@acme\.example/)
 
     // Alan sees it active, and ends it
     await signIn(page, 'user')
     await page.goto('/o/acme/account/requests', { waitUntil: 'load' })
     await expect(mine).toContainText('Active')
-    await expect(mine).toContainText('Note: “Go ahead”')
+    // the status: the badge, then who (with their email), when, and the note, each a line of its own
+    const lines = mine.locator('td .cell-sub')
+    await expect(lines.nth(0)).toHaveText('Approved by Grace Hopper · grace@acme.example')
+    await expect(lines.nth(1)).toHaveText(/^Until /)
+    await expect(lines.nth(2)).toHaveText('“Go ahead”')
     await mine.getByRole('button', { name: /^End now: your access/ }).click()
     await page.getByRole('dialog', { name: 'End your access' }).getByRole('button', { name: 'End access' }).click()
     await expect(page.locator('.toasts')).toContainText('has ended')
     await expect(mine).toContainText('Ended early')
+    await expect(mine.locator('td .cell-sub').nth(0)).toHaveText(/^Ended by Alan Turing · alan\S*@acme\.example$/)
   } finally {
     await s.tearDown()
   }

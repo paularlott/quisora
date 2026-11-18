@@ -35,7 +35,7 @@
             <td x-text="row.tenant_display_name"></td>
             <td x-text="row.length_text"></td>
             <td x-text="row.reason"></td>
-            <td><span :class="row.stateClass" x-text="row.stateText"></span><div class="cell-sub" x-text="row.detail"></div></td>
+            <td><span :class="row.stateClass" x-text="row.stateText"></span><div class="mt-1"><template x-for="(l, i) in row.statusLines" :key="i"><div class="cell-sub" x-text="l"></div></template></div></td>
             <td x-text="row.askedText"></td>
           </tr></template>
         </tbody>
