@@ -32,11 +32,12 @@ export default function (Alpine) {
     },
     chosen(p) { this.form.acc_subject = p.id; this.clearErrors() },
   }), {
-    apiBase: '', tenantId: '', clients: [], editing: null, endWas: endInput(''),
+    apiBase: '', usersBase: '', tenantId: '', clients: [], editing: null, endWas: endInput(''),
 
     init() {
       const d = this.$el.dataset
       this.apiBase = d.base
+      this.usersBase = d.users || ''
       this.tenantId = d.tenant
       const clientsLive = liveRunner(() => this.loadClients())
       subscribe(['client'], () => clientsLive.trigger())
@@ -66,7 +67,10 @@ export default function (Alpine) {
         expiresText = e.expired ? 'Ended ' + fmtDateTime(e.expires) : fmtDateTime(e.expires)
         expiresClass = e.expired ? 'badge badge-warning' : ''
       }
-      return { ...e, whoName: name, whoSub: isGroup ? 'Group' : e.detail || '', isGroup,
+      // a user's name opens their user page (the console's: /admin/orgs/<org>/users/<id>); a group's, or a deleted
+      // user's, is text
+      const userHref = !isGroup && e.name && this.usersBase ? `${this.usersBase}/${enc(e.subject_id)}` : ''
+      return { ...e, whoName: name, whoSub: isGroup ? 'Group' : e.detail || '', isGroup, userHref,
         rolesText: (e.roles || []).join(', ') || '—', tagsText: (e.tags || []).join(', '),
         appsText: e.all_clients ? 'All clients' : (e.clients || []).map((id) => this.clientName(id)).join(', '),
         expiresText, expiresClass, editLabel: 'Edit access for ' + name, removeLabel: 'Remove access for ' + name }

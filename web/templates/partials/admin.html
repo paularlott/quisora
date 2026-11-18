@@ -192,7 +192,7 @@
 
 {{/* The tenant page's Access card and its add / edit dialog (pages/access.js). Dot = the page. */}}
 {{define "tenant-access"}}
-<section class="glass-card" aria-labelledby="access-h" x-show="membersOnly" x-data="tenantAccess" data-api="{{.Data.API}}/tenants/{{.Data.TenantID}}/access" data-base="{{.Data.API}}" data-tenant="{{.Data.TenantID}}" data-sort="name" data-noun="entries" data-live="access user group" data-live-text="Access list updated" data-search="access-search">
+<section class="glass-card" aria-labelledby="access-h" x-show="membersOnly" x-data="tenantAccess" data-api="{{.Data.API}}/tenants/{{.Data.TenantID}}/access" data-base="{{.Data.API}}" data-users="{{.Data.Base}}/users" data-tenant="{{.Data.TenantID}}" data-sort="name" data-noun="entries" data-live="access user group" data-live-text="Access list updated" data-search="access-search">
   <div class="card-head">
     <div>
       <h2 class="section-title" id="access-h">Access <span class="badge badge-plain ml-1" x-text="accessCountText"></span></h2>
@@ -214,7 +214,7 @@
       </tr></thead>
       <tbody>
         <template x-for="row in items" :key="row.id"><tr>
-          <td><div class="cell-title"><span x-text="row.whoName"></span> <span class="badge badge-plain" x-show="row.isGroup">Group</span></div><div class="cell-sub" x-show="row.detail" x-text="row.detail"></div></td>
+          <td><div class="cell-title"><a x-show="row.userHref" :href="row.userHref" x-text="row.whoName"></a><span x-show="!row.userHref" x-text="row.whoName"></span> <span class="badge badge-plain" x-show="row.isGroup">Group</span></div><div class="cell-sub" x-show="row.detail" x-text="row.detail"></div></td>
           <td><span x-text="row.rolesText"></span><div class="cell-sub" x-show="row.tagsText" x-text="row.tagsText"></div></td>
           <td x-text="row.appsText"></td>
           <td><span :class="row.expiresClass" x-text="row.expiresText"></span></td>

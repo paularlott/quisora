@@ -75,6 +75,7 @@ test('access: add a user by keyboard with roles, tags, some applications and an 
   await expect(page.locator('.toasts')).toContainText('Alan Turing now has access.')
 
   const row = page.locator('section[aria-labelledby="access-h"] tbody tr').filter({ hasText: 'Alan Turing' })
+  await expect(row.getByRole('link', { name: 'Alan Turing' })).toHaveAttribute('href', /^\/admin\/orgs\/acme\/users\/[A-Za-z0-9_-]+$/) // their user page
   await expect(row).toContainText('editor, viewer')
   await expect(row).toContainText('team:blue')
   await expect(row).toContainText('Billing')
@@ -146,6 +147,7 @@ test('access: a group, search in the list, and an open tenant hides the Access c
   const rows = page.locator('section[aria-labelledby="access-h"] tbody tr')
   await expect(rows).toHaveCount(2)
   await expect(rows.filter({ hasText: g.display_name })).toContainText('Group')
+  await expect(rows.filter({ hasText: g.display_name }).getByRole('link')).toHaveCount(0) // a group's name is text
 
   // the list's own search
   await page.locator('#access-search').fill('zzzz-nothing')
