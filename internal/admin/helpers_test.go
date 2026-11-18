@@ -53,6 +53,7 @@ func newWorldLogged(t *testing.T, cfgFn func(*config.Config), log logger.Logger)
 	// Sessions here count as recently re-authenticated (the dangerous changes need it: stepUp); tests of the
 	// re-authentication itself set their own.
 	w.env.Server.Reauthed = func(*http.Request) bool { return true }
+	w.env.Server.Bearer = w.bearer
 	ctx := context.Background()
 	sys := service.System
 	// Everyone may make api tokens here (the tokens most tests make are not about that); tests of the setting change it.
@@ -127,13 +128,6 @@ func (w *world) withBearer(key string, scopes ...string) *caller {
 	_, tok, err := w.env.Svc.CreateAPIToken(context.Background(), service.ActorForUser(u, ""), service.APITokenInput{Name: "t", Scopes: scopes})
 	if err != nil {
 		w.t.Fatal(err)
-	}
-	w.env.Server.Bearer = func(ctx context.Context, r *http.Request, token string) (*service.Actor, error) {
-		t, u, err := w.env.Svc.ValidateAPIToken(ctx, token)
-		if err != nil {
-			return nil, err
-		}
-		return service.ActorForToken(t, u, web.ClientIP(r)), nil
 	}
 	return &caller{w: w, c: detach(w.env.Client()), bearer: tok}
 }

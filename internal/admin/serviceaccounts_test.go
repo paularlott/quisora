@@ -20,22 +20,26 @@ func (w *world) asServiceAccount(org *model.Org, scopes ...string) *caller {
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	w.env.Server.Bearer = func(ctx context.Context, r *http.Request, token string) (*service.Actor, error) {
-		id, ok := strings.CutPrefix(token, "sa:")
-		if !ok {
-			t, u, err := w.env.Svc.ValidateAPIToken(ctx, token)
-			if err != nil {
-				return nil, err
-			}
-			return service.ActorForToken(t, u, web.ClientIP(r)), nil
-		}
-		c, err := w.env.Svc.Clients.Get(ctx, id)
-		if err != nil || !c.Enabled {
-			return nil, service.ErrBadToken
-		}
-		return service.ActorForServiceAccount(c, c.Scopes, web.ClientIP(r)), nil
-	}
 	return &caller{w: w, c: detach(w.env.Client()), bearer: "sa:" + sa.ID}
+}
+
+// bearer resolves a test bearer token as the app does: an API token, or "sa:<id>" for a service account (the caller
+// asServiceAccount returns). It is installed once, before any request, since a token from an external process (the
+// Scriptling CLI) gives the race detector no ordering with a later change of Server.Bearer.
+func (w *world) bearer(ctx context.Context, r *http.Request, token string) (*service.Actor, error) {
+	id, ok := strings.CutPrefix(token, "sa:")
+	if !ok {
+		t, u, err := w.env.Svc.ValidateAPIToken(ctx, token)
+		if err != nil {
+			return nil, err
+		}
+		return service.ActorForToken(t, u, web.ClientIP(r)), nil
+	}
+	c, err := w.env.Svc.Clients.Get(ctx, id)
+	if err != nil || !c.Enabled {
+		return nil, service.ErrBadToken
+	}
+	return service.ActorForServiceAccount(c, c.Scopes, web.ClientIP(r)), nil
 }
 
 // guardRefused reports whether r is the management API's refusal of a service account for want of the route's scope.
