@@ -28,7 +28,7 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
   [docs/oauth](docs/oauth/README.md).
 - **Automation.** SCIM 2.0 per organization (Entra ID and Okta dialects), a versioned management API with an OpenAPI
   document, personal API tokens with scopes, and service accounts for automation that belongs to no person. Keys and passwords can be read from HashiCorp Vault or 1Password
-  (Connect, or a service account in the 1Password build) and rotated without a restart.
+  (Connect, or a service account; `quisora-slim` leaves service accounts out) and rotated without a restart.
 - **SSH certificate authority.** Per tenant, Quisora signs short-lived OpenSSH certificates for people who signed in with
   a second factor (from `quisora ssh login` or their account page), and host certificates for servers. Servers trust the
   tenant's CA key instead of a list of user keys, who may log in as which account follows the people's groups, and a
@@ -63,10 +63,14 @@ fixed (`clock_offset_ms` in `/readyz` shows the offset). Details: [docs/REPLICAT
 Build from source (Go 1.27, Node 24 and [Task](https://taskfile.dev)):
 
 ```bash
-task build        # bin/quisora
+task build        # bin/quisora, the full build (with 1Password service accounts)
+task build-slim   # bin/quisora-slim, without them (about 15 MB smaller)
 ```
 
-Or run the container image, `paularlott/quisora` on Docker Hub ([Docker](docs/RUNNING.md#docker)):
+Each release has both for every platform: `quisora-<os>-<arch>` and `quisora-slim-<os>-<arch>`.
+
+Or run the container image, `paularlott/quisora` on Docker Hub (the full build, for linux/amd64 and linux/arm64;
+[Docker](docs/RUNNING.md#docker)):
 
 ```bash
 docker pull paularlott/quisora

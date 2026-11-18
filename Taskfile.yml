@@ -70,20 +70,20 @@ tasks:
       - npm run lint:api --silent
 
   build:
-    desc: Build the binary for the current platform
+    desc: "Build quisora for the current platform: the full build, with 1Password service accounts (the onepassword tag: the 1Password SDK, about 15 MB, which calls 1Password's servers)"
     deps: [webassets]
     env:
       CGO_ENABLED: "0"
     cmds:
-      - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} .
+      - go build -tags onepassword {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} .
 
-  build-1password:
-    desc: "Build the binary for the current platform with 1Password service accounts (the onepassword tag: the 1Password SDK, about 15 MB, which calls 1Password's servers)"
+  build-slim:
+    desc: Build quisora-slim for the current platform, without 1Password service accounts (1Password Connect still works)
     deps: [webassets]
     env:
       CGO_ENABLED: "0"
     cmds:
-      - go build -tags onepassword {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} .
+      - go build {{.BUILD_FLAGS}} -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-slim{{exeExt}} .
 
   tag:
     desc: Tag the current commit v<version> (internal/build/version.go) and push the tag
@@ -114,7 +114,7 @@ tasks:
       - task: container
 
   container:
-    desc: "Build the container image for linux/amd64 and linux/arm64 and push it to Docker Hub as <REGISTRY>/quisora:<version> and :latest (docker buildx, or podman)"
+    desc: "Build the container image (the full build, with 1Password service accounts) for linux/amd64 and linux/arm64 and push it to Docker Hub as <REGISTRY>/quisora:<version> and :latest (docker buildx, or podman)"
     method: none
     preconditions:
       - sh: test -z "$(git status --porcelain)"
@@ -157,37 +157,38 @@ tasks:
       - go build -o {{.OUTPUT_DIR}}/loadtest{{exeExt}} ./tools/loadtest
 
   all:
-    desc: Build the binary for every platform, with and without 1Password service accounts (quisora-1password-…)
+    desc: Build every platform, quisora-<os>-<arch> (the full build, with 1Password service accounts) and quisora-slim-<os>-<arch> (without)
     deps: [webassets]
     cmds:
       - for: { var: PLATFORMS }
         cmd: >-
           CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
-          go build {{.BUILD_FLAGS}}
+          go build -tags onepassword {{.BUILD_FLAGS}}
           -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
       - for: { var: PLATFORMS }
         cmd: >-
           CGO_ENABLED=0 GOOS={{splitList "/" .ITEM | first}} GOARCH={{splitList "/" .ITEM | last}}
-          go build -tags onepassword {{.BUILD_FLAGS}}
-          -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
+          go build {{.BUILD_FLAGS}}
+          -o {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-slim-{{splitList "/" .ITEM | first}}-{{splitList "/" .ITEM | last}}{{if eq (splitList "/" .ITEM | first) "windows"}}.exe{{end}} .
       - |
         # Developer ID signature for release (MACOS_SIGN_IDENTITY in .env, see
         # .env.example): the hardened runtime and a secure timestamp are
         # required for notarization. Skipped without an identity (or off
         # macOS), leaving Go's ad-hoc signature.
         if [ -n "$MACOS_SIGN_IDENTITY" ] && command -v codesign >/dev/null 2>&1; then
-          for f in {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-darwin-* {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-darwin-*; do
+          for f in {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-darwin-* {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-slim-darwin-*; do
             name=$(basename "$f")
             id="com.paularlott.${name%-darwin-*}"
             case $name in
-              # The 1Password SDK runs on wazero, which compiles WebAssembly at
-              # runtime: the hardened runtime needs the entitlement to allow it.
-              *-1password-*)
+              *-slim-*)
                 codesign --force --timestamp --options runtime --identifier "$id" \
-                  --entitlements scripts/macos/onepassword.entitlements \
                   --sign "$MACOS_SIGN_IDENTITY" "$f" || exit 1 ;;
+              # The full build's 1Password SDK runs on wazero, which compiles
+              # WebAssembly at runtime: the hardened runtime needs the
+              # entitlement to allow it.
               *)
                 codesign --force --timestamp --options runtime --identifier "$id" \
+                  --entitlements scripts/macos/onepassword.entitlements \
                   --sign "$MACOS_SIGN_IDENTITY" "$f" || exit 1 ;;
             esac
           done
@@ -217,7 +218,7 @@ tasks:
 
         # Check each macOS binary carries a Developer ID signature before
         # anything is sent to Apple.
-        set -- {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-darwin-* {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password-darwin-*
+        set -- {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-darwin-* {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-slim-darwin-*
         for f in "$@"; do
           if ! codesign -dvv "$f" 2>&1 | grep -q '^Authority=Developer ID Application'; then
             echo "$f is not Developer ID signed: set MACOS_SIGN_IDENTITY in .env and rebuild (task all)" >&2
@@ -266,8 +267,8 @@ tasks:
       - '{{.OUTPUT_DIR}}/{{.PROJECT_NAME}} serve --data-dir ./data/dev --master-key "{{.DEV_MASTER_KEY}}"'
 
   run-server:
-    desc: "Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at localhost:1025, or DEV_SMTP_HOST from .env. Uses the full build, with 1Password service accounts (bin/quisora-1password)"
-    deps: [build-1password]
+    desc: "Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at localhost:1025, or DEV_SMTP_HOST from .env."
+    deps: [build]
     vars:
       PUBLIC_URL: '{{.DEV_PUBLIC_URL | default "https://localhost:8443"}}'
       LISTEN: '{{.DEV_LISTEN | default "localhost:8443"}}'
@@ -275,13 +276,13 @@ tasks:
     cmds:
       - mkdir -p ./data/dev
       - >-
-        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} bootstrap
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} bootstrap
         --master-key "{{.DEV_MASTER_KEY}}"
         --data-dir ./data/dev
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --bootstrap-admin admin@example.com
       - >-
-        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} serve
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} serve
         --master-key "{{.DEV_MASTER_KEY}}"
         --listen {{.LISTEN | default "127.0.0.1:8443"}}
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
@@ -295,8 +296,8 @@ tasks:
         --log-level debug
 
   run-server-db:
-    desc: "Like run-server, but stores its data in the remote database server named by DEV_DB_HOST, DEV_DB_USER, DEV_DB_PASSWORD, DEV_DB_NAME (and DEV_DB_BACKEND, mysql or mariadb, default mysql) in .env. Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at localhost:1025, or DEV_SMTP_HOST from .env. Uses the full build, with 1Password service accounts (bin/quisora-1password)"
-    deps: [build-1password]
+    desc: "Like run-server, but stores its data in the remote database server named by DEV_DB_HOST, DEV_DB_USER, DEV_DB_PASSWORD, DEV_DB_NAME (and DEV_DB_BACKEND, mysql or mariadb, default mysql) in .env. Run a standalone instance on https://localhost:8443, or DEV_PUBLIC_URL / DEV_LISTEN from .env (self-signed certificate in data/dev/tls), with a bootstrap admin (the first run prints the invitation link); mail goes to the Mailpit test server at localhost:1025, or DEV_SMTP_HOST from .env."
+    deps: [build]
     vars:
       DB_BACKEND: '{{.DEV_DB_BACKEND | default "mysql"}}'
       PUBLIC_URL: '{{.DEV_PUBLIC_URL | default "https://localhost:8443"}}'
@@ -309,13 +310,13 @@ tasks:
     cmds:
       - mkdir -p ./data/db
       - >-
-        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} bootstrap
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} bootstrap
         --master-key "{{.DEV_MASTER_KEY}}"
         --data-dir ./data/dev
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
         --bootstrap-admin admin@example.com
       - >-
-        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}-1password{{exeExt}} serve
+        {{.OUTPUT_DIR}}/{{.PROJECT_NAME}}{{exeExt}} serve
         --master-key "{{.DEV_MASTER_KEY}}"
         --listen {{.LISTEN | default "127.0.0.1:8443"}}
         --public-url {{.PUBLIC_URL | default "https://localhost:8443"}}
@@ -363,12 +364,13 @@ tasks:
     cmds:
       - task: test
       - task: test-cluster
-      - go vet -tags onepassword ./...      # the build with 1Password service accounts compiles too
+      - go vet -tags onepassword ./...      # the full build (quisora), with 1Password service accounts
       - go test -tags onepassword ./internal/secrets/
       - task: chaos
       - task: cover
       - task: apidocs-lint
-      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - go run golang.org/x/vuln/cmd/govulncheck@latest -tags onepassword ./...   # quisora
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...                     # quisora-slim
       - cd web && node audit.mjs  # npm audit, high and above, with the accepted advisories it lists
 
   upgrade:

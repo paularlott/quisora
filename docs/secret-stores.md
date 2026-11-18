@@ -35,7 +35,7 @@ token_file = "/etc/quisora/vault-token"   # or token = "…"; or AppRole: role_i
 [secrets.onepassword]
 connect_url = "https://op-connect.internal:8080"   # 1Password Connect
 connect_token_file = "/etc/quisora/op-connect-token"
-# service_account_token = "ops_…"         # a service account instead of Connect: needs the 1Password build (below)
+# service_account_token = "ops_…"         # a service account instead of Connect: not in quisora-slim (below)
 ```
 
 Use `https` (with `ca_file` for a private CA). Plain `http` works, for a store on the same host or a sidecar, but the
@@ -86,8 +86,13 @@ They go in the configuration file, in a file it names (`*_file`: the file's firs
 
 ## 1Password service accounts
 
-1Password service accounts use 1Password's SDK, which talks to 1Password's servers over the internet. Builds include
-it only with the `onepassword` build tag: `task build-1password`, the `quisora-1password-…` release binaries, or
-`docker build --build-arg GO_TAGS=onepassword` (about 15 MB larger). Any other build reads 1Password through a Connect
-server you run, and refuses a service account token with a message saying so. Vault and Connect can both run on your
-own network.
+1Password service accounts use 1Password's SDK, which talks to 1Password's servers over the internet. Quisora comes
+in two builds:
+
+- **`quisora`**, the full build: the `quisora-<os>-<arch>` release binaries, the `paularlott/quisora` container image
+  and `task build`. It includes the SDK and takes service accounts.
+- **`quisora-slim`**: the `quisora-slim-<os>-<arch>` release binaries and `task build-slim`, about 15 MB smaller. It
+  leaves the SDK out: it reads 1Password through a Connect server you run, and refuses a service account token with a
+  message saying so.
+
+Vault and Connect work in both, and can both run on your own network.

@@ -959,8 +959,8 @@ docker run -d --name quisora --restart unless-stopped -p 8443:8443 -v quisora-da
 - Compose: [deploy/compose.yml](../deploy/compose.yml) (one node), [deploy/compose.cluster.yml](../deploy/compose.cluster.yml)
   (three nodes on PostgreSQL with the notice gossip, a lab example: it needs `POSTGRES_PASSWORD` and `QUISORA_NOTIFY_KEY`
   as well as `QUISORA_MASTER_KEY`). Each runs from its own directory; the repository is not needed.
-- To build the image yourself, from the repository: `docker build -t paularlott/quisora .` (the
-  [1Password build](secret-stores.md#1password-service-accounts): `--build-arg GO_TAGS=onepassword`).
+- The image is the full build, with [1Password service accounts](secret-stores.md#1password-service-accounts). To build
+  it yourself, from the repository: `docker build -t paularlott/quisora .`.
 
 ## Backup and restore
 

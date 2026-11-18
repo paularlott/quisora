@@ -148,5 +148,5 @@ access = true                             # log every HTTP request (never its qu
 # [secrets.onepassword]
 # connect_url = "https://op-connect.internal:8080"
 # connect_token_file = "/etc/quisora/op-connect-token"   # or connect_token
-# service_account_token_file = ""         # a service account instead of Connect: the 1Password build only
+# service_account_token_file = ""         # a service account instead of Connect: not in quisora-slim
 # ca_file = ""
