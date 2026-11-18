@@ -574,4 +574,21 @@ func seedAccessRequests(ctx context.Context, svc *service.Service, acme *model.O
 	must(err)
 	_, err = svc.DecideAccessRequest(ctx, service.ActorForUser(grace, ""), r.ID, true, "Fine for this ticket", true)
 	must(err)
+	// "Billing admin": alan's earlier requests there, one approved and ended early, one denied, so his list and the
+	// approvers' decisions show every outcome
+	billing, err := svc.CreateTenant(ctx, sys, acme.ID, service.TenantInput{Name: ptr("billing-admin"), DisplayName: ptr("Billing admin"),
+		Description: ptr("Refunds and invoices, by request"), Settings: &set})
+	must(err)
+	r, err = svc.CreateAccessRequest(ctx, service.ActorForUser(alan, ""), service.AccessRequestInput{TenantID: billing.ID, Length: 3600,
+		Reason: "SUP-298: refund a double charge"})
+	must(err)
+	_, err = svc.DecideAccessRequest(ctx, service.ActorForUser(grace, ""), r.ID, true, "", true)
+	must(err)
+	_, err = svc.EndAccessRequest(ctx, service.ActorForUser(alan, ""), r.ID, false)
+	must(err)
+	r, err = svc.CreateAccessRequest(ctx, service.ActorForUser(alan, ""), service.AccessRequestInput{TenantID: billing.ID, Length: 86400,
+		Reason: "Look at last month's invoices"})
+	must(err)
+	_, err = svc.DecideAccessRequest(ctx, service.ActorForUser(grace, ""), r.ID, false, "Needs a ticket number", true)
+	must(err)
 }
