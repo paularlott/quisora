@@ -1,9 +1,10 @@
-# Quisora, single node (BadgerDB in a named volume). From the repository root:
+# Quisora, single node (BadgerDB in a named volume). The image is paularlott/quisora on Docker Hub; pin a release
+# (paularlott/quisora:<version>) for production. Download this file, then from its directory:
 #
-#   export QUISORA_MASTER_KEY=$(docker run --rm quisora genkey)
-#   docker compose -f deploy/compose.yml build
-#   docker compose -f deploy/compose.yml run --rm quisora bootstrap     # once: prints the first admin's invitation link
-#   docker compose -f deploy/compose.yml up -d
+#   docker run --rm paularlott/quisora genkey        # once: save the key in a password manager
+#   export QUISORA_MASTER_KEY=<the key>
+#   docker compose -f compose.yml run --rm quisora bootstrap     # once: prints the first admin's invitation link
+#   docker compose -f compose.yml up -d
 #
 # Serving never creates anything: until "quisora bootstrap" has run, the server reports not ready. Settings: QUISORA_*
 # variables (see "quisora serve --help").
@@ -16,7 +17,7 @@
 # days; the certificate is the container's self-signed one unless you configured your own). The backup is encrypted
 # with the password piped in (at least 12 characters; keep it apart from the backup):
 #
-#   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f deploy/compose.yml exec -T -e QUISORA_ADMIN_TOKEN quisora \
+#   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f compose.yml exec -T -e QUISORA_ADMIN_TOKEN quisora \
 #     quisora backup --server https://127.0.0.1:8443 --insecure - > quisora.bak
 #
 # Restore: start on a new, empty volume with the same QUISORA_MASTER_KEY, the backup mounted,
@@ -25,8 +26,7 @@
 
 services:
   quisora:
-    image: quisora
-    build: ..
+    image: paularlott/quisora
     restart: unless-stopped
     # hardening: nothing to write but the data volume and /tmp (a restore from standard input), no capabilities
     read_only: true

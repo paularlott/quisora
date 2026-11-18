@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # Quisora container image: a static binary (web assets embedded) on a distroless base, running as a non-root user.
 #
-#   docker build -t quisora .
-#   docker build --build-arg GO_TAGS=onepassword -t quisora:1password .   # with 1Password service accounts
+#   docker build -t paularlott/quisora .
+#   docker build --build-arg GO_TAGS=onepassword -t paularlott/quisora:1password .   # with 1Password service accounts
 #   docker run -p 8443:8443 -v quisora-data:/data -e QUISORA_PUBLIC_URL=https://localhost:8443 \
-#     -e QUISORA_BOOTSTRAP_ADMIN=admin@example.com quisora
+#     -e QUISORA_MASTER_KEY -e QUISORA_BOOTSTRAP_ADMIN=admin@example.com paularlott/quisora
 #
 # Every setting is an QUISORA_* environment variable, a flag after "serve", or /etc/quisora/quisora.toml (mount it).
 

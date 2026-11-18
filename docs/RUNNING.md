@@ -934,24 +934,33 @@ curl http://victorialogs:9428/select/logsql/query \
 
 ## Docker
 
-The [Dockerfile](../Dockerfile) builds a static binary on a distroless base (non-root, data in `/data`). Settings are
-`QUISORA_*` variables.
+The image is `paularlott/quisora` on Docker Hub: a static binary on a distroless base, running as a non-root user,
+with its data in `/data`. `paularlott/quisora:latest` is the newest release; for production, pin a release
+(`paularlott/quisora:<version>`) and change it on purpose when you [upgrade](#upgrading). Settings are `QUISORA_*`
+variables.
 
 ```bash
-docker build -t quisora .
-export QUISORA_MASTER_KEY="$(docker run --rm quisora genkey)"   # keep it
+docker run --rm paularlott/quisora genkey    # once: save the key it prints in a password manager
+export QUISORA_MASTER_KEY=<the key>
 
-docker run --rm -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_URL=https://localhost:8443 quisora bootstrap
-docker run -d -p 8443:8443 -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_URL=https://localhost:8443 quisora
+docker run --rm -v quisora-data:/data -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_URL=https://localhost:8443 paularlott/quisora bootstrap
+docker run -d --name quisora --restart unless-stopped -p 8443:8443 -v quisora-data:/data \
+  -e QUISORA_MASTER_KEY -e QUISORA_PUBLIC_URL=https://localhost:8443 paularlott/quisora
 ```
 
+- `bootstrap` prints the first admin's invitation link (`docker logs` does not have it: it is printed by the
+  `bootstrap` run). The container then serves on port 8443.
 - The container's data directory is `/data`: mount a volume there; it holds the store (BadgerDB or SQLite), the node's
   id and the audit spool.
 - `quisora healthcheck` is the container health check (liveness, `/healthz`). Don't restart a node for being unready:
   a cluster node catching up is alive. `quisora healthcheck --ready` checks `/readyz`.
+- To upgrade: `docker pull` the new release, then remove the container and run it again with the same volume and
+  variables. Storage is migrated as it starts.
 - Compose: [deploy/compose.yml](../deploy/compose.yml) (one node), [deploy/compose.cluster.yml](../deploy/compose.cluster.yml)
   (three nodes on PostgreSQL with the notice gossip, a lab example: it needs `POSTGRES_PASSWORD` and `QUISORA_NOTIFY_KEY`
-  as well as `QUISORA_MASTER_KEY`).
+  as well as `QUISORA_MASTER_KEY`). Each runs from its own directory; the repository is not needed.
+- To build the image yourself, from the repository: `docker build -t paularlott/quisora .` (the
+  [1Password build](secret-stores.md#1password-service-accounts): `--build-arg GO_TAGS=onepassword`).
 
 ## Backup and restore
 

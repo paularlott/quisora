@@ -66,11 +66,13 @@ Build from source (Go 1.27, Node 24 and [Task](https://taskfile.dev)):
 task build        # bin/quisora
 ```
 
-Or build the container image:
+Or run the container image, `paularlott/quisora` on Docker Hub ([Docker](docs/RUNNING.md#docker)):
 
 ```bash
-docker build -t quisora .
+docker pull paularlott/quisora
 ```
+
+To build the image yourself: `docker build -t paularlott/quisora .`
 
 The version is kept in `internal/build/version.go` (`quisora --version` shows it); a build stamps the git commit and
 the date. To release, raise `Version` there, commit, and run `task release`: it tags the commit `v<version>` and pushes

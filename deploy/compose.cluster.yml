@@ -1,12 +1,14 @@
 # Quisora, three nodes on one PostgreSQL database (shared database; the nodes tell each other of changes over the
-# notice gossip, cluster.notify). From the repository root:
+# notice gossip, cluster.notify). The image is paularlott/quisora on Docker Hub; pin a release
+# (paularlott/quisora:<version>) for production. Download this file, then from its directory:
 #
-#   export QUISORA_MASTER_KEY=$(docker run --rm quisora genkey)
-#   export QUISORA_NOTIFY_KEY=$(docker run --rm quisora genkey)
+#   docker run --rm paularlott/quisora genkey        # once: save the key in a password manager
+#   export QUISORA_MASTER_KEY=<the key>
+#   export QUISORA_NOTIFY_KEY=<a second key from genkey, saved the same way>
 #   export POSTGRES_PASSWORD=$(openssl rand -hex 24)   # hex: it goes into the database URL unescaped
-#   docker compose -f deploy/compose.cluster.yml up -d --build postgres
-#   docker compose -f deploy/compose.cluster.yml run --rm node1 bootstrap   # once, for the whole cluster
-#   docker compose -f deploy/compose.cluster.yml up -d
+#   docker compose -f compose.cluster.yml up -d postgres
+#   docker compose -f compose.cluster.yml run --rm node1 bootstrap   # once, for the whole cluster
+#   docker compose -f compose.cluster.yml up -d
 #
 # The database is the only copy: short-lived sign-in state lives there too, so any node serves any request and the
 # load balancer needs no sticky sessions. One node at a time runs housekeeping (a lease in the database). In
@@ -17,7 +19,7 @@
 # it. Back up while they run, through any node (QUISORA_ADMIN_TOKEN: a super admin's API token, backup scope), encrypted
 # with the password piped in:
 #
-#   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f deploy/compose.cluster.yml exec -T -e QUISORA_ADMIN_TOKEN node1 \
+#   printf '%s\n' "$BACKUP_PASSWORD" | docker compose -f compose.cluster.yml exec -T -e QUISORA_ADMIN_TOKEN node1 \
 #     quisora backup --server https://127.0.0.1:8443 --insecure - > quisora.bak
 
 x-env: &env
@@ -33,8 +35,7 @@ x-env: &env
     QUISORA_CLUSTER_NOTIFY_KEY: ${QUISORA_NOTIFY_KEY:?set QUISORA_NOTIFY_KEY (quisora genkey)}
 
 x-node: &node
-  image: quisora
-  build: ..
+  image: paularlott/quisora
   restart: unless-stopped
   depends_on: { postgres: { condition: service_healthy } }
   # hardening: nothing to write but the data volume and /tmp (a restore from standard input), no capabilities
