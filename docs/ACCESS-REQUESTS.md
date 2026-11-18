@@ -51,7 +51,7 @@ The same page lists their requests: waiting (they can cancel), active (with the 
 Members of an approver group see **Approvals** in their account menu: the requests waiting for them, with who asked,
 for which tenant, how long and why. **Approve** or **Deny**, with an optional note that the person sees. Before
 deciding, they confirm it is them (their password and second factor, or a passkey), unless they did within the last
-few minutes. Nobody decides their own request, and a guest from another organization never approves.
+5 minutes. Nobody decides their own request, and a guest from another organization never approves.
 
 Approving gives the person access to the tenant from now until the end of the length they asked for:
 
@@ -67,6 +67,11 @@ with **End now**.
 The person themselves (**End now** on their Request access page), a member of the approver group, or an administrator
 can end the access a request gave. It is removed at once, and the person is signed out of the tenant's applications.
 Someone else ending it emails the person.
+
+An administrator who removes the access on the tenant's **Access** card instead (or through the API) takes it away just
+as surely, but the request is not told: it keeps showing **Active** on the Request access, Approvals and console pages
+until its end time passes. Use **End now** on the request to end access a request gave, so the request, the emails and
+the audit log all agree. If the access was removed already, **End now** on the request still marks it ended.
 
 ## Emails
 
