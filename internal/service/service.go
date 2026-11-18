@@ -236,9 +236,15 @@ type Service struct {
 	members confirmedMembers // memberships a fresh read decided (membersAt)
 	reseal  resealState      // where this node's master key re-seal stands (ResealSecrets)
 
-	orgCache      *ttlcache.Cache[*model.Org]  // organizations by id and by name (Org, OrgByRef)
-	orgMiss       *ttlcache.Cache[struct{}]    // references that named no organization (cachedOrg)
-	requestRoles  *ttlcache.Cache[[2]bool]     // whether each user asks for and approves access (AccessRequestRoles)
+	orgCache *ttlcache.Cache[*model.Org] // organizations by id and by name (Org, OrgByRef)
+	orgMiss  *ttlcache.Cache[struct{}]   // references that named no organization (cachedOrg)
+	// requestGroups are each organization's groups whose members may ask for access and the approver groups they
+	// name; requestRoles whether each user asks and approves (AccessRequestRoles: the account menu). Both are kept an
+	// hour and dropped whole when a group changes, here or on another node told of it (InvalidateRequestGroups): its
+	// settings, or its members, whose changes are written on the group's record. The pages and every call check the
+	// groups as they are.
+	requestGroups *ttlcache.Cache[*requestGroups]
+	requestRoles  *ttlcache.Cache[[2]bool]
 	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)
 	primaryID     atomic.Pointer[string]       // the primary organization's id, once read (PrimaryOrgID)
 	bg            background                   // Background work
@@ -315,7 +321,8 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		orgMiss:   ttlcache.New[struct{}](orgTTL, 1_000),
 		skinCache: ttlcache.New[*model.Skin](orgTTL, 1_000),
 
-		requestRoles: ttlcache.New[[2]bool](orgTTL, 20_000),
+		requestGroups: ttlcache.New[*requestGroups](requestGroupsTTL, 20_000),
+		requestRoles:  ttlcache.New[[2]bool](requestGroupsTTL, 100_000),
 	}
 }
 

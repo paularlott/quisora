@@ -317,6 +317,8 @@ func (a *App) evict(rec *store.Record) {
 		a.Server.Svc.InvalidateOrgs() // its name, settings or emergency sign-out counters may have moved
 	case model.KindSkin:
 		a.Server.Svc.InvalidateSkins()
+	case model.KindGroup:
+		a.Server.Svc.InvalidateRequestGroups() // who asks for and approves access (the account menu)
 	}
 	for _, fn := range a.onChange {
 		fn(rec)

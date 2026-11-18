@@ -192,6 +192,12 @@ const (
 	MaxGrantsPerUser = 100000
 )
 
+// Bounds of limits.access_requests_waiting.
+const (
+	MinAccessRequestsWaiting = 1
+	MaxAccessRequestsWaiting = 10000
+)
+
 // Bounds of limits.sessions_per_user.
 const (
 	MinSessionsPerUser = 1
@@ -224,7 +230,11 @@ type Limits struct {
 	// sign-in's own session nor one signed in since. A sign-in is never refused for it: a person cannot be locked out by
 	// their own forgotten sessions.
 	SessionsPerUser int `toml:"sessions_per_user" flag:"sessions-per-user" usage:"Browser sessions one user may hold, 1 to 10000; past it the least recently used are ended (a sign-in is never refused for it)"`
-	EphemeralMB     int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
+	// AccessRequestsWaiting is how many access requests one person may have waiting for a decision at once
+	// (service.CreateAccessRequest): enough for the busiest support work, few enough that one person cannot flood the
+	// approvers' queues.
+	AccessRequestsWaiting int `toml:"access_requests_waiting" flag:"access-requests-waiting" usage:"Access requests one person may have waiting for a decision at once, 1 to 10000"`
+	EphemeralMB           int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
 	// FlowsPerIP is how many authorization flows (sign-ins started at an authorization endpoint and not finished yet)
 	// one client address may hold at once, an IPv6 /64 counting as one address (its /48 allowed sixteen times as
 	// many, its /32 sixty-four times): so that a few addresses cannot fill ephemeral_mb with flows they never finish.
@@ -273,7 +283,7 @@ func Default() *Config {
 		Session:  Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:     Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:    Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
-		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, HeldKB: 2048, PasswordMinLength: 15, GrantsPerUser: 1000, SessionsPerUser: 100},
+		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, HeldKB: 2048, PasswordMinLength: 15, GrantsPerUser: 1000, SessionsPerUser: 100, AccessRequestsWaiting: 10},
 		Log:      Log{Level: "info", Format: "console", Access: true},
 		reloaded: new(atomic.Pointer[Limits]),
 	}
@@ -720,6 +730,9 @@ func limitErrors(l Limits) []error {
 	nonNegative("limits.password_workers", l.PasswordWorkers)
 	if l.GrantsPerUser < MinGrantsPerUser || l.GrantsPerUser > MaxGrantsPerUser {
 		errs = append(errs, fmt.Errorf("limits.grants_per_user must be between %d and %d", MinGrantsPerUser, MaxGrantsPerUser))
+	}
+	if l.AccessRequestsWaiting < MinAccessRequestsWaiting || l.AccessRequestsWaiting > MaxAccessRequestsWaiting {
+		errs = append(errs, fmt.Errorf("limits.access_requests_waiting must be between %d and %d", MinAccessRequestsWaiting, MaxAccessRequestsWaiting))
 	}
 	if l.SessionsPerUser < MinSessionsPerUser || l.SessionsPerUser > MaxSessionsPerUser {
 		errs = append(errs, fmt.Errorf("limits.sessions_per_user must be between %d and %d", MinSessionsPerUser, MaxSessionsPerUser))

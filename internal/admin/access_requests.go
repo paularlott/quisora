@@ -36,19 +36,19 @@ func (m *Module) listAllRequests(w http.ResponseWriter, r *http.Request) {
 	writeList(w, m.s.Svc.AccessRequestViews(r.Context(), l), n)
 }
 
-// listOwnRequests answers GET /api/orgs/{org}/access-requests: the caller's own requests, newest first.
+// listOwnRequests answers GET /api/orgs/{org}/access-requests: a page of the caller's own requests, newest first.
 func (m *Module) listOwnRequests(w http.ResponseWriter, r *http.Request) {
 	_, a, found := m.orgFor(w, r)
 	if !found {
 		return
 	}
 	ctx := r.Context()
-	l, err := m.s.Svc.OwnAccessRequests(ctx, a)
+	l, n, err := m.s.Svc.OwnAccessRequests(ctx, a, listQuery(r))
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	writeList(w, m.s.Svc.AccessRequestViews(ctx, l), len(l))
+	writeList(w, m.s.Svc.AccessRequestViews(ctx, l), n)
 }
 
 // createRequest answers POST /api/orgs/{org}/access-requests.
@@ -98,18 +98,23 @@ func (m *Module) requestOptions(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, map[string]any{"approvers": approvers, "tenants": tenants})
 }
 
-// pendingRequests answers GET /api/orgs/{org}/access-requests/pending: the requests the caller may decide.
+// pendingRequests answers GET /api/orgs/{org}/access-requests/pending: a page of the requests the caller may decide,
+// oldest first.
 func (m *Module) pendingRequests(w http.ResponseWriter, r *http.Request) {
 	_, a, found := m.orgFor(w, r)
 	if !found {
 		return
 	}
-	l, err := m.s.Svc.ApprovalQueue(r.Context(), a)
+	l, n, err := m.s.Svc.ApprovalQueue(r.Context(), a, listQuery(r))
 	if err != nil {
 		web.WriteError(w, err)
 		return
 	}
-	writeList(w, m.s.Svc.AccessRequestViews(r.Context(), l), len(l))
+	views := m.s.Svc.AccessRequestViews(r.Context(), l)
+	for i := range views {
+		views[i].Yours = a.ClientID == "" && views[i].UserID == a.UserID
+	}
+	writeList(w, views, n)
 }
 
 // decideRequest answers POST /api/orgs/{org}/access-requests/{id}/approve and …/deny, with an optional

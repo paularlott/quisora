@@ -1,11 +1,13 @@
-// Access requests (docs/design/access-requests.md): the Request access page (ask for access to a tenant for a while,
-// see your requests, cancel or end them) and the Approvals page (decide the requests your groups approve, end access
-// they gave). Both talk to the account API (session + CSRF); deciding and ending someone's access ask you to confirm it
-// is you first (withReauth).
+// Access requests (docs/ACCESS-REQUESTS.md): the Request access page (ask for access to a tenant for a while, see your
+// requests a page at a time, cancel or end them) and the Approvals page (decide the requests your groups approve, end
+// access they gave, each list a page at a time). Both talk to the account API (session + CSRF); deciding and ending
+// someone's access ask you to confirm it is you first (withReauth). The lists are tables of their own (tableMixin) in
+// the page, told to load again by window events when the page changes something: requests-changed, approvals-changed.
 import { ApiError, accountApi, get, post, qs } from '../lib/api.js'
 import { formMixin } from '../lib/form.js'
 import { dialogMixin } from '../lib/dialog.js'
 import { comboMixin } from '../lib/combo.js'
+import { tableMixin } from '../lib/table.js'
 import { toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
 import { fmtDateTime, relTime } from '../lib/format.js'
@@ -17,8 +19,9 @@ const LENGTHS = { 3600: '1 hour', 14400: '4 hours', 28800: '8 hours', 86400: '1 
   1209600: '2 weeks', 2592000: '1 month' }
 const lengthText = (secs) => LENGTHS[secs] || `${Math.round(secs / 3600)} hours`
 const isSet = (t) => !!t && !t.startsWith('0001-')
+const POLL = 30000 // the approver lists look again this often while the page is shown: requests come in meanwhile
 
-// shape gives a request the status line the pages show.
+// shape gives one of your requests the status line the Request access page shows.
 function shape(r) {
   const now = Date.now()
   let stateText = 'Waiting', badge = 'badge-warning', detail = ''
@@ -35,6 +38,10 @@ function shape(r) {
         detail = `Ended ${fmtDateTime(r.ends)}. Approved by ${r.decided_by_name}.`
       }
       break
+    case 'expired':
+      stateText = 'Ended'; badge = 'badge-plain'
+      detail = `Ended ${fmtDateTime(r.ends)}. Approved by ${r.decided_by_name}.`
+      break
     case 'denied':
       stateText = 'Denied'; badge = 'badge-danger'
       detail = `By ${r.decided_by_name}${r.note ? `: “${r.note}”` : '.'}`
@@ -45,17 +52,34 @@ function shape(r) {
       break
     case 'lapsed':
       stateText = 'Lapsed'; badge = 'badge-plain'
-      detail = 'Nobody decided it within a day.'
+      detail = 'Nobody decided it in time.'
       break
     case 'ended':
       stateText = 'Ended early'; badge = 'badge-plain'
       detail = `Ended by ${r.ended_by_name}, ${fmtDateTime(r.ended_at)}.`
       break
   }
-  if (r.note && r.state === 'approved') detail += ` Note: “${r.note}”`
+  if (r.note && (r.state === 'approved' || r.state === 'expired')) detail += ` Note: “${r.note}”`
   return { ...r, stateText, badgeClass: 'badge ' + badge, detail, live: !!r.live && (!isSet(r.ends) || Date.parse(r.ends) > now),
     canCancel: r.state === 'pending', cancelLabel: `Cancel the request for ${r.tenant_display_name}`,
     endLabel: `End now: your access to ${r.tenant_display_name}` }
+}
+
+// accountTable is a table of the account API's list at path, a page at a time, loading again on event (a window
+// event) and when the tab comes back; poll, when set, also every POLL while the page is shown.
+function accountTable(path, event, poll) {
+  return {
+    _poll: null,
+    init() {
+      this.$el.dataset.api = accountApi(path)
+      refetchOnReturn(() => this.load(false, true))
+      window.addEventListener(event, () => this.load())
+      if (poll) this._poll = setInterval(() => { if (!document.hidden) this.load(false, true) }, POLL)
+      return this.initTable()
+    },
+    destroy() { clearInterval(this._poll) },
+    get hasLoadError() { return this.loadError !== '' },
+  }
 }
 
 export default function (Alpine) {
@@ -67,7 +91,7 @@ export default function (Alpine) {
     },
   }
   Alpine.data('accessRequests', () => mix(formMixin(), comboMixin({ tenant_id: tenantSource }), {
-    approvers: [], items: [], loaded: false, guest: false, loadError: '',
+    approvers: [], loaded: false, guest: false, loadError: '',
     init() {
       this.resetForm({ tenant_id: '', approvers: '', length: '', reason: '' })
       this.load()
@@ -75,9 +99,8 @@ export default function (Alpine) {
     },
     async load() {
       try {
-        const r = await get(accountApi('/access-requests'))
+        const r = await get(accountApi('/access-requests/options'))
         this.approvers = r.approvers
-        this.items = r.items.map(shape)
         this.guest = !!r.guest
         this.loadError = ''
         if (!this.approvers.some((g) => g.id === this.form.approvers)) this.form.approvers = this.approvers.length ? this.approvers[0].id : ''
@@ -100,8 +123,6 @@ export default function (Alpine) {
       const ls = this.lengths
       if (!ls.some((l) => l.value === this.form.length)) this.form.length = ls.length ? ls[0].value : ''
     },
-    get isEmpty() { return this.loaded && this.items.length === 0 },
-    get hasItems() { return this.items.length > 0 },
     get askLabel() { return this.busy ? 'Sending…' : 'Send request' },
     async ask() {
       if (this.comboPending('tenant_id') || !this.form.tenant_id) {
@@ -115,10 +136,15 @@ export default function (Alpine) {
       toast(`Request sent to ${res.approvers_name}. You get an email when they decide.`)
       f.reason = ''
       this.comboSet('tenant_id', '', '')
-      await this.load()
+      window.dispatchEvent(new CustomEvent('requests-changed'))
     },
+  }))
+
+  // Your requests: newest first, a page at a time.
+  Alpine.data('ownRequests', () => mix(tableMixin(), accountTable('/access-requests', 'requests-changed', false), {
+    transform: shape,
     async cancel(ev) {
-      const r = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      const r = this.rowFromEvent(ev)
       if (!r) return
       try {
         await post(accountApi(`/access-requests/${enc(r.id)}/cancel`))
@@ -127,7 +153,7 @@ export default function (Alpine) {
       } catch (e) { toast(e.message, 'error') }
     },
     async end(ev) {
-      const r = this.items.find((i) => i.id === ev.currentTarget.dataset.id)
+      const r = this.rowFromEvent(ev)
       if (!r) return
       const ok = await Alpine.store('confirm').ask({ title: 'End your access', message: `End your access to ${r.tenant_display_name} now?`,
         detail: 'You are signed out of its applications. To use it again, send a new request.', confirmLabel: 'End access' })
@@ -141,34 +167,11 @@ export default function (Alpine) {
   }))
 
   // ---- Approvals -----------------------------------------------------------------------------------------------
+  // The page holds the decision dialog; its two lists ask it to open (a decide event) and are told to load again
+  // after a decision (approvals-changed).
   Alpine.data('accessApprovals', () => mix(formMixin(), dialogMixin(), {
-    pending: [], active: [], loaded: false, loadError: '', deciding: null, approving: true, opener: null, timer: null,
-    init() {
-      this.resetForm({ note: '' })
-      this.load()
-      refetchOnReturn(() => this.load())
-      this.timer = setInterval(() => { if (!document.hidden) this.load() }, 30000) // new requests come in meanwhile
-    },
-    destroy() { clearInterval(this.timer) },
-    async load() {
-      try {
-        const r = await get(accountApi('/approvals'))
-        this.pending = r.pending.map((p) => ({ ...p, askedText: `Asked ${relTime(p.created)}`,
-          approveLabel: `Approve ${p.user_name}’s request for ${p.tenant_display_name}`, denyLabel: `Deny ${p.user_name}’s request for ${p.tenant_display_name}` }))
-        this.active = r.active.map((p) => ({ ...p, untilText: fmtDateTime(p.ends), endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` }))
-        this.loadError = ''
-      } catch (e) {
-        this.loadError = e.message
-      } finally {
-        this.loaded = true
-      }
-    },
-    get hasLoadError() { return this.loadError !== '' },
-    get pendingCount() { return String(this.pending.length) },
-    get noPending() { return this.loaded && this.pending.length === 0 },
-    get hasPending() { return this.pending.length > 0 },
-    get noActive() { return this.loaded && this.active.length === 0 },
-    get hasActive() { return this.active.length > 0 },
+    deciding: null, approving: true, opener: null,
+    init() { this.resetForm({ note: '' }) },
     get decideTitle() { return this.approving ? 'Approve the request' : 'Deny the request' },
     get decideLabel() { return this.busy ? (this.approving ? 'Approving…' : 'Denying…') : (this.approving ? 'Approve' : 'Deny') },
     get decideSummary() {
@@ -176,17 +179,14 @@ export default function (Alpine) {
       return d ? `${d.user_name} asks for access to ${d.tenant_display_name} for ${d.length_text}.` : ''
     },
     get decideReason() { return this.deciding ? `Why: ${this.deciding.reason}` : '' },
-    open(ev, approving) {
-      const r = this.pending.find((p) => p.id === ev.currentTarget.dataset.id)
-      if (!r) return
-      this.deciding = r
+    onDecide(ev) {
+      const { row, approving, opener } = ev.detail
+      this.deciding = row
       this.approving = approving
-      this.opener = ev.currentTarget
+      this.opener = opener
       this.resetForm({ note: '' })
-      this.openDlg('decide-dialog', ev.currentTarget)
+      this.openDlg('decide-dialog', opener)
     },
-    openApprove(ev) { this.open(ev, true) },
-    openDeny(ev) { this.open(ev, false) },
     async submitDecision() {
       const r = this.deciding
       if (!r) return
@@ -197,11 +197,31 @@ export default function (Alpine) {
       this.closeDlg('decide-dialog')
       toast(this.approving ? `Approved: ${r.user_name} has access to ${r.tenant_display_name} until ${fmtDateTime(res.ends)}.` :
         `Denied ${r.user_name}’s request for ${r.tenant_display_name}.`)
-      await this.load()
+      window.dispatchEvent(new CustomEvent('approvals-changed'))
     },
+  }))
+
+  // Waiting for a decision: oldest first, a page at a time. The approver's own request is listed, for someone else.
+  Alpine.data('approvalsWaiting', () => mix(tableMixin(), accountTable('/approvals/pending', 'approvals-changed', true), {
+    transform(p) {
+      return { ...p, askedText: `Asked ${relTime(p.created)}`, canDecide: !p.yours,
+        approveLabel: `Approve ${p.user_name}’s request for ${p.tenant_display_name}`, denyLabel: `Deny ${p.user_name}’s request for ${p.tenant_display_name}` }
+    },
+    get countText() { return String(this.total) },
+    decide(ev, approving) {
+      const row = this.rowFromEvent(ev)
+      if (row) this.$dispatch('decide', { row, approving, opener: ev.currentTarget })
+    },
+    openApprove(ev) { this.decide(ev, true) },
+    openDeny(ev) { this.decide(ev, false) },
+  }))
+
+  // Access the approver's groups gave that runs: newest first, a page at a time.
+  Alpine.data('approvalsRunning', () => mix(tableMixin(), accountTable('/approvals/active', 'approvals-changed', true), {
+    transform(p) { return { ...p, untilText: fmtDateTime(p.ends), endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` } },
     async end(ev) {
       const opener = ev.currentTarget
-      const r = this.active.find((p) => p.id === opener.dataset.id)
+      const r = this.rowFromEvent(ev)
       if (!r) return
       const ok = await Alpine.store('confirm').ask({ title: 'End access', message: `End ${r.user_name}’s access to ${r.tenant_display_name} now?`,
         detail: 'They are signed out of its applications at once, and get an email saying so.', confirmLabel: 'End access' })

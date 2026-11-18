@@ -198,6 +198,10 @@ func (s *Service) CreateGroupWithMembers(ctx context.Context, a *Actor, orgID st
 	if err != nil {
 		return nil, s.groupConflict(ctx, err, g)
 	}
+	if g.Requests != nil {
+		s.InvalidateRequestGroups()
+		s.refreshRequestBots(context.WithoutCancel(ctx), g.OrgID, g.Requests.Approvers)
+	}
 	if entry != nil {
 		g = s.finishGroupChange(ctx, g)
 	}
@@ -242,7 +246,12 @@ func (s *Service) DeleteGroup(ctx context.Context, a *Actor, id string) error {
 	} else if len(l) > 0 {
 		return Invalid("access_requests", g.DisplayName+" approves the access requests of "+l[0].DisplayName+": choose other approvers there first")
 	}
-	return mapStore(s.audited(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil, func() error { return s.Groups.DeleteIf(ctx, id, g.Version) }))
+	err = s.audited(ctx, a, g.OrgID, "group.delete", g.DisplayName, nil, func() error { return s.Groups.DeleteIf(ctx, id, g.Version) })
+	if err == nil && g.Requests != nil {
+		s.InvalidateRequestGroups()
+		s.refreshRequestBots(context.WithoutCancel(ctx), g.OrgID, g.Requests.Approvers)
+	}
+	return mapStore(err)
 }
 
 // GroupMemberCount returns how many of group g's users a may see (no permission check: the caller has read g): its
@@ -512,6 +521,16 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		return nil, s.groupConflict(ctx, err, &next)
 	}
 	// Committed. Nothing below can fail the change; a client gone away does not stop it being finished.
+	if requestsChanged {
+		s.InvalidateRequestGroups()
+		var approvers []string
+		for _, r := range []*model.GroupRequests{g.Requests, next.Requests} {
+			if r != nil {
+				approvers = append(approvers, r.Approvers)
+			}
+		}
+		s.refreshRequestBots(context.WithoutCancel(ctx), g.OrgID, approvers...)
+	}
 	return s.finishGroupChange(context.WithoutCancel(ctx), &next), nil
 }
 

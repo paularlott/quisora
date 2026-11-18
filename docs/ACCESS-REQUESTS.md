@@ -20,13 +20,19 @@ Administrators set it up for their own organization, on **Groups**:
 2. Edit the group whose members may **ask**, for example *CST*. Under **Access requests**, turn on **Members can
    request access**, choose the approver group in **Approved by**, and the lengths they may ask for: 1 hour, 4 hours,
    8 hours, 1 day, 3 days, 1 week, 2 weeks or 1 month (none ticked: all of them).
-3. Optionally turn on **Service accounts can approve**, for a bot (below).
+3. Optionally turn on **Service accounts can approve**, for a bot (below). Changing it applies to the requests already
+   waiting too.
 
 From then on, only administrators (and provisioning by an administrator) can change who is in either group: a
 manager cannot add themselves, or anyone else, and approve their own way in. An approver group cannot be deleted
 while a group names it.
 
 People can ask for any **members-only** tenant of the organization (the ones only the people given access can use).
+
+The account menu shows **Request access** and **Approvals** to the members of these groups. Who sees them is kept for
+an hour and worked out again whenever a group changes (its settings or its members), so a change shows at once. On
+servers that share a database without change notices (`cluster.notify`), another server may take up to that hour; the
+pages themselves (`/account/requests`, `/account/approvals`) always check the groups as they are.
 
 ### What approved access gives
 
@@ -42,14 +48,17 @@ Members of a requester group see **Request access** in their account menu. They 
 number and what they need to do. The approvers get an email.
 
 They cannot ask for a tenant they have access to with no end, and only once at a time for each tenant. A request for a
-tenant they hold until a time asks to extend it. A request nobody decides within a day lapses.
+tenant they hold until a time asks to extend it. A request nobody decides within a day lapses. One person may have 10
+requests waiting at once; the server's `limits.access_requests_waiting` changes that ([RUNNING.md](RUNNING.md)).
 
-The same page lists their requests: waiting (they can cancel), active (with the end, and **End now**), and past.
+The same page lists their requests, a page at a time: waiting (they can cancel), active (with the end, and **End
+now**), and past.
 
 ## Approving
 
-Members of an approver group see **Approvals** in their account menu: the requests waiting for them, with who asked,
-for which tenant, how long and why. **Approve** or **Deny**, with an optional note that the person sees. Before
+Members of an approver group see **Approvals** in their account menu: the requests waiting for them, oldest first and a
+page at a time, with who asked, for which tenant, how long and why. An approver who asked for access themselves sees
+their own request there too, marked as theirs: someone else decides it. **Approve** or **Deny**, with an optional note that the person sees. Before
 deciding, they confirm it is them (their password and second factor, or a passkey), unless they did within the last
 5 minutes. Nobody decides their own request, and a guest from another organization never approves.
 
@@ -60,7 +69,8 @@ Approving gives the person access to the tenant from now until the end of the le
 - access with no end (given meanwhile by an administrator): nothing changes, and the request says so.
 
 The person gets an email either way. The page also lists the access the approver's groups gave that has not ended,
-with **End now**.
+newest first, with **End now**. When the access reaches its end, the request shows as **Expired** (on the person's page,
+**Ended**).
 
 ## Ending early
 
@@ -86,13 +96,16 @@ approvers), **Access request decided** and **Access ended** (to the person who a
 | `GET …/pending`, `POST …/{id}/approve`, `POST …/{id}/deny`, `POST …/{id}/end` | a service account with `access_requests:approve`, for the groups that allow service accounts |
 | `GET …/all?state=` | administrators, or a service account with `access` |
 
-A personal API token never approves: it cannot show a recent second factor. The [Scriptling](../scriptling/README.md)
+The lists take `offset` and `limit` and answer `{"items": [...], "total": n}`. A personal API token never approves: it
+cannot show a recent second factor. The [Scriptling](../scriptling/README.md)
 library wraps these calls, and `examples/approve_requests.py` is an approval bot that approves the requests whose
-reason starts with a ticket prefix.
+reason starts with a ticket prefix. A bot reads every page of the waiting requests before deciding any
+(`pending_access_requests` does): each decision takes a request off the list, which moves the pages.
 
 ## Records and audit
 
 Requests are kept for 90 days after they close; the audit log keeps the history:
 `access_request.create`, `.approve`, `.deny`, `.cancel`, `.lapse`, `.end`, and the `tenant.access.add`,
 `tenant.access.update` and `tenant.access.remove` an approval or an early end makes (with the request's id and reason).
-The console's **Access requests** page lists every request of the organization.
+The console's **Access requests** page lists every request of the organization: **Active** (its access runs),
+**Expired** (it ran to its end), **Ended early**, and the waiting, denied, cancelled and lapsed ones.

@@ -196,11 +196,11 @@ func TestAccessRequestFlow(t *testing.T) {
 	}
 
 	// the queue: the approvers', never the requester's own
-	q, err := w.svc.ApprovalQueue(w.ctx, actor(w.alex))
+	q, _, err := w.svc.ApprovalQueue(w.ctx, actor(w.alex), store.ListQuery{})
 	if err != nil || len(q) != 1 || q[0].ID != r.ID {
 		t.Fatalf("alex's queue: %v %d", err, len(q))
 	}
-	if q, err := w.svc.ApprovalQueue(w.ctx, actor(w.pat)); err != nil || len(q) != 0 {
+	if q, _, err := w.svc.ApprovalQueue(w.ctx, actor(w.pat), store.ListQuery{}); err != nil || len(q) != 0 {
 		t.Errorf("pat's queue: %v %d", err, len(q))
 	}
 	if req, appr := w.svc.AccessRequestRoles(w.ctx, w.pat); !req || appr {
@@ -322,7 +322,7 @@ func TestAccessRequestServiceAccountApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q, err := w.svc.ApprovalQueue(w.ctx, bot); err != nil || len(q) != 0 {
+	if q, _, err := w.svc.ApprovalQueue(w.ctx, bot, store.ListQuery{}); err != nil || len(q) != 0 {
 		t.Errorf("the bot's queue before the group allows it: %v %d", err, len(q))
 	}
 	if _, err := w.svc.DecideAccessRequest(w.ctx, bot, r.ID, true, "", false); fieldOfErr(err) != "state" {
@@ -332,7 +332,7 @@ func TestAccessRequestServiceAccountApproval(t *testing.T) {
 		Approvers: w.approvers.ID, Lengths: []int{3600}, ServiceAccounts: true}}); err != nil {
 		t.Fatal(err)
 	}
-	if q, err := w.svc.ApprovalQueue(w.ctx, bot); err != nil || len(q) != 1 {
+	if q, _, err := w.svc.ApprovalQueue(w.ctx, bot, store.ListQuery{}); err != nil || len(q) != 1 {
 		t.Fatalf("the bot's queue: %v %d", err, len(q))
 	}
 	noScope := service.ActorForServiceAccount(sa, []string{service.ScopeAccess}, "127.0.0.1")
@@ -358,7 +358,7 @@ func TestAccessRequestsLapseAndGo(t *testing.T) {
 	if err := w.svc.Requests.Update(w.ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if q, _ := w.svc.ApprovalQueue(w.ctx, actor(w.alex)); len(q) != 0 {
+	if q, _, _ := w.svc.ApprovalQueue(w.ctx, actor(w.alex), store.ListQuery{}); len(q) != 0 {
 		t.Error("a lapsed request is still in the queue")
 	}
 	if _, err := w.svc.DecideAccessRequest(w.ctx, actor(w.alex), r.ID, true, "", true); fieldOfErr(err) != "state" {

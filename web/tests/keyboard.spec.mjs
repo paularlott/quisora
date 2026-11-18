@@ -773,6 +773,8 @@ test('tag editor: saving keeps typed-but-uncommitted text, the server validates,
   await dlg.getByRole('textbox', { name: 'Tags' }).fill('last-word') // not committed with a key
   await dlg.getByRole('button', { name: 'Create group' }).click()
   await expect(dlg).toBeHidden()
+  // found by searching: groups other tests made earlier may push it past the first page
+  await page.getByRole('searchbox', { name: 'Search groups' }).fill(name)
   const row = page.getByRole('row', { name: new RegExp(name) })
   await expect(row.getByRole('list', { name: 'Tags' }).getByRole('listitem')).toHaveText(['last-word', 'team:z'])
 })

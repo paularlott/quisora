@@ -1496,12 +1496,15 @@ paths:
     get:
       tags: [Access requests]
       summary: Your own access requests
-      description: "The caller's requests, newest first. A personal API token needs access_requests (or admin); service accounts cannot call it."
+      description: "A page of the caller's requests, newest first. A personal API token needs access_requests (or admin); service accounts cannot call it."
       operationId: get_orgs_org_access_requests
       security:
         - session: []
         - bearer: [access_requests]
         - bearer: [admin]
+      parameters:
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
       responses:
         "200":
           description: Success
@@ -1608,11 +1611,14 @@ paths:
     get:
       tags: [Access requests]
       summary: Requests waiting for your decision
-      description: "For a service account with access_requests:approve: the waiting requests of the groups that let service accounts approve. For a person signed in: those of the approver groups they are in, never their own. Oldest first."
+      description: "A page of the waiting requests, oldest first. For a service account with access_requests:approve: those of the groups that let service accounts approve. For a person signed in: those of the approver groups they are in, their own among them marked yours (someone else decides it)."
       operationId: get_orgs_org_access_requests_pending
       security:
         - session: []
         - serviceAccount: [access_requests:approve]
+      parameters:
+        - {$ref: "#/components/parameters/Offset"}
+        - {$ref: "#/components/parameters/Limit"}
       responses:
         "200":
           description: Success
@@ -1727,7 +1733,7 @@ paths:
     get:
       tags: [Access requests]
       summary: Every access request of the organization
-      description: "Administrators: newest first; state narrows it (pending, approved, denied, cancelled, lapsed, ended). Closed requests are kept for 90 days."
+      description: "Administrators: newest first; state narrows it (pending, approved: its access runs, expired: its access ran to its end, denied, cancelled, lapsed, ended: ended early). Closed requests are kept for 90 days."
       operationId: get_orgs_org_access_requests_all
       security:
         - session: []
@@ -1736,7 +1742,7 @@ paths:
       parameters:
         - {$ref: "#/components/parameters/Offset"}
         - {$ref: "#/components/parameters/Limit"}
-        - {name: state, in: query, schema: {type: string, enum: [pending, approved, denied, cancelled, lapsed, ended]}}
+        - {name: state, in: query, schema: {type: string, enum: [pending, approved, expired, denied, cancelled, lapsed, ended]}}
       responses:
         "200":
           description: Success
@@ -5531,7 +5537,8 @@ components:
         reason: {type: string}
         state:
           type: string
-          enum: [pending, approved, denied, cancelled, lapsed, ended]
+          description: "approved: its access runs (or the person had access with no end already); expired: its access ran to its end; ended: someone ended it early"
+          enum: [pending, approved, expired, denied, cancelled, lapsed, ended]
         lapses:
           type: string
           format: date-time
@@ -5555,6 +5562,12 @@ components:
         live:
           type: boolean
           description: the access an approval gave still lasts
+        service_accounts:
+          type: boolean
+          description: service accounts with access_requests:approve may decide it (a group of the requester naming these approvers allows it)
+        yours:
+          type: boolean
+          description: in an approver's list of waiting requests, the approver's own (someone else decides it)
         created: {type: string, format: date-time}
         updated: {type: string, format: date-time}
     AccessRequestList:

@@ -23,8 +23,60 @@ const (
 	ScopeAccessRequestsApprove = "access_requests:approve"
 )
 
-// maxPendingRequests bounds the requests one person may have waiting.
-const maxPendingRequests = 10
+// requestGroupsTTL is how long the account menu's view of who asks and approves is kept (requestGroups): a group
+// change drops it at once, on every node told of it.
+const requestGroupsTTL = time.Hour
+
+// requestGroups are an organization's groups whose members may ask for access (requesters) and the approver groups
+// they name (approvers).
+type requestGroups struct {
+	requesters, approvers map[string]bool
+}
+
+// InvalidateRequestGroups drops what is kept of who asks for and approves access (requestGroups, requestRoles): call
+// it when a group's record changes, here or on another node (its settings, or its members: a change of members is
+// written on the group's record). Each organization's groups and each user's roles are read again when next needed.
+func (s *Service) InvalidateRequestGroups() {
+	s.requestGroups.Clear()
+	s.requestRoles.Clear()
+}
+
+// orgRequestGroups reads organization orgID's requester and approver groups: one indexed read of the groups whose
+// members may ask, kept an hour (requestGroupsTTL) unless a group changes.
+func (s *Service) orgRequestGroups(ctx context.Context, orgID string) (*requestGroups, error) {
+	if v, ok := s.requestGroups.Get(orgID); ok {
+		return v, nil
+	}
+	tok := s.requestGroups.Token(orgID)
+	rg := &requestGroups{requesters: map[string]bool{}, approvers: map[string]bool{}}
+	const page = 500
+	for offset := 0; ; offset += page {
+		l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: orgID, Offset: offset, Limit: page, Filters: []store.Filter{{Field: "requests", Value: true}}})
+		if err != nil {
+			return nil, mapStore(err)
+		}
+		for _, g := range l {
+			if g.Requests != nil {
+				rg.requesters[g.ID], rg.approvers[g.Requests.Approvers] = true, true
+			}
+		}
+		if len(l) < page {
+			break
+		}
+	}
+	s.requestGroups.PutIf(orgID, rg, tok)
+	return rg, nil
+}
+
+// waitingPerPerson is how many requests one person may have waiting (limits.access_requests_waiting).
+func (s *Service) waitingPerPerson() int {
+	if s.Cfg != nil {
+		if n := s.Cfg.LiveLimits().AccessRequestsWaiting; n > 0 {
+			return n
+		}
+	}
+	return 10
+}
 
 // AccessRequestNotice is what Service.OnAccessRequest hears: a request made ("new"), decided ("approved",
 // "denied"), or the access it gave ended early by someone else ("ended"); By names who did it.
@@ -40,6 +92,7 @@ type RequestApprovers struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Lengths []int  `json:"lengths"`
+	bots    bool   // a group naming these approvers lets service accounts decide
 }
 
 // AccessRequestInput is a request: the tenant (id or name), who approves it (an approver group's id; may be left out
@@ -94,6 +147,7 @@ func (s *Service) RequestApproversFor(ctx context.Context, u *model.User) ([]Req
 			out = append(out, RequestApprovers{ID: ag.ID, Name: ag.DisplayName})
 			i = len(out) - 1
 		}
+		out[i].bots = out[i].bots || g.Requests.ServiceAccounts
 		for _, l := range g.Requests.Lengths {
 			if !slices.Contains(out[i].Lengths, l) {
 				out[i].Lengths = append(out[i].Lengths, l)
@@ -110,25 +164,27 @@ func (s *Service) RequestApproversFor(ctx context.Context, u *model.User) ([]Req
 }
 
 // AccessRequestRoles reports whether u may ask for access (a member of a group whose members may) and whether u
-// approves requests (a member of a group that approves another's): what shows the account menu's Request access and
-// Approvals. Kept for a few seconds per user: the pages and every call check again.
+// approves requests (a member of a group another names as its approvers): what shows the account menu's Request
+// access and Approvals. Kept an hour per user, dropped when a group changes (InvalidateRequestGroups): a page render
+// reads nothing for it, and a miss reads u's memberships (and, once an hour, the organization's request groups). The
+// pages and every call check again.
 func (s *Service) AccessRequestRoles(ctx context.Context, u *model.User) (requester, approver bool) {
 	if v, ok := s.requestRoles.Get(u.ID); ok {
 		return v[0], v[1]
 	}
 	tok := s.requestRoles.Token(u.ID)
-	groups, err := s.UserGroups(ctx, u)
+	rg, err := s.orgRequestGroups(ctx, u.OrgID)
 	if err != nil {
 		return false, false
 	}
-	for _, g := range groups {
-		if g.Requests != nil {
-			requester = true
+	if len(rg.requesters) > 0 { // an organization without access requests reads nothing more
+		ms, _, err := s.Members.List(ctx, store.ListQuery{Scope: u.OrgID, Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
+		if err != nil {
+			return false, false
 		}
-		if !approver {
-			if l, _, err := s.Groups.List(ctx, store.ListQuery{Scope: g.OrgID, Limit: 1, Filters: []store.Filter{{Field: "approvers", Value: g.ID}}}); err == nil && len(l) > 0 {
-				approver = true
-			}
+		for _, m := range ms {
+			requester = requester || rg.requesters[m.GroupID]
+			approver = approver || rg.approvers[m.GroupID]
 		}
 	}
 	s.requestRoles.PutIf(u.ID, [2]bool{requester, approver}, tok)
@@ -145,7 +201,7 @@ type RequestableTenant struct {
 
 // RequestableTenants finds the members-only tenants of the actor's organization whose name starts with q (all of
 // them when q is empty), up to limit, for the request form: the tenants a person can be given access to. Open ones
-// let everyone in already.
+// let everyone in already. One indexed read (members_only), however many tenants are open.
 func (s *Service) RequestableTenants(ctx context.Context, a *Actor, q string, limit int) ([]RequestableTenant, error) {
 	u, err := s.requester(ctx, a)
 	if err != nil {
@@ -154,21 +210,14 @@ func (s *Service) RequestableTenants(ctx context.Context, a *Actor, q string, li
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-	out := []RequestableTenant{}
-	const page = 200
-	for offset := 0; len(out) < limit; offset += page {
-		ts, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: u.OrgID, Search: strings.TrimSpace(q), Sort: "name", Offset: offset, Limit: page})
-		if err != nil {
-			return nil, mapStore(err)
-		}
-		for _, t := range ts {
-			if t.Settings.MembersOnly && len(out) < limit {
-				out = append(out, RequestableTenant{ID: t.ID, Name: t.Name, DisplayName: t.DisplayName, Description: t.Description})
-			}
-		}
-		if len(ts) < page {
-			break
-		}
+	ts, _, err := s.Tenants.List(ctx, store.ListQuery{Scope: u.OrgID, Search: strings.TrimSpace(q), Sort: "name", Limit: limit,
+		Filters: []store.Filter{{Field: "members_only", Value: true}}})
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	out := make([]RequestableTenant, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, RequestableTenant{ID: t.ID, Name: t.Name, DisplayName: t.DisplayName, Description: t.Description})
 	}
 	return out, nil
 }
@@ -217,14 +266,15 @@ func (s *Service) CreateAccessRequest(ctx context.Context, a *Actor, in AccessRe
 		return nil, mapStore(err)
 	}
 	if _, n, err := s.Requests.List(ctx, store.ListQuery{Scope: u.OrgID, Limit: 1, Filters: []store.Filter{
-		{Field: "user_id", Value: u.ID}, {Field: "pending", Value: true}}}); err != nil {
+		{Field: "waiting_user", Value: u.ID}}}); err != nil {
 		return nil, mapStore(err)
-	} else if n >= maxPendingRequests {
+	} else if n >= s.waitingPerPerson() {
 		return nil, Invalid("tenant_id", "you have "+itoa(n)+" requests waiting already: cancel one, or wait for them to be decided")
 	}
 	now := time.Now().UTC()
 	r := &model.AccessRequest{Meta: model.Meta{ID: model.NewID()}, OrgID: u.OrgID, TenantID: t.ID, UserID: u.ID,
-		Approvers: chosen.ID, Length: in.Length, Reason: reason, State: model.RequestPending, Lapses: now.Add(model.RequestPendingFor)}
+		Approvers: chosen.ID, Length: in.Length, Reason: reason, State: model.RequestPending, Lapses: now.Add(model.RequestPendingFor),
+		Bots: chosen.bots}
 	err = s.audited(ctx, a, u.OrgID, "access_request.create", t.Name, map[string]string{"request": r.ID, "length": LengthText(in.Length),
 		"approvers": chosen.Name, "reason": reason}, func() error { return s.Requests.Create(ctx, r) })
 	if errors.Is(err, store.ErrConflict) {
@@ -256,15 +306,15 @@ func (s *Service) tenantOf(ctx context.Context, orgID, ref string) (*model.Tenan
 	return t, nil
 }
 
-// OwnAccessRequests lists the actor's requests, newest first.
-func (s *Service) OwnAccessRequests(ctx context.Context, a *Actor) ([]*model.AccessRequest, error) {
+// OwnAccessRequests lists a page of the actor's requests, newest first, and how many they have.
+func (s *Service) OwnAccessRequests(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.AccessRequest, int, error) {
 	u, err := s.requester(ctx, a)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: u.OrgID, Sort: "created", Desc: true, Limit: 100,
+	l, n, err := s.Requests.List(ctx, store.ListQuery{Scope: u.OrgID, Sort: "created", Desc: true, Offset: q.Offset, Limit: pageLimit(q),
 		Filters: []store.Filter{{Field: "user_id", Value: u.ID}}})
-	return l, mapStore(err)
+	return l, n, mapStore(err)
 }
 
 // AccessRequestsOf lists the requests of organization orgID for its administrators, newest first: state "" for all.
@@ -280,52 +330,154 @@ func (s *Service) AccessRequestsOf(ctx context.Context, a *Actor, orgID, state s
 	return l, n, mapStore(err)
 }
 
-// ApprovalQueue lists the pending requests the actor may decide: for a person, those of the approver groups they are
-// a member of (never their own); for a service account with access_requests:approve, those of the groups that let
-// service accounts approve. Oldest first.
-func (s *Service) ApprovalQueue(ctx context.Context, a *Actor) ([]*model.AccessRequest, error) {
-	now := time.Now()
-	var out []*model.AccessRequest
-	switch {
-	case a.ClientID != "":
+// pageLimit is q's page size: 50 when it gives none, at most 500.
+func pageLimit(q store.ListQuery) int {
+	if q.Limit <= 0 {
+		return 50
+	}
+	return min(q.Limit, 500)
+}
+
+// ApprovalQueue lists a page of the pending requests the actor may decide, oldest first, and how many there are: for
+// a person, those of the approver groups they are a member of (their own among them, which someone else decides); for
+// a service account with access_requests:approve, those of the groups that let service accounts decide. Each is one
+// exact indexed read (queue, bots): the page costs what it shows, however many requests the organization keeps.
+func (s *Service) ApprovalQueue(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.AccessRequest, int, error) {
+	waiting := store.Filter{Field: "due", Op: store.OpGTE, Value: time.Now()} // not lapsed (a pending one is due when it lapses)
+	if a.ClientID != "" {
 		if !a.HasScope(ScopeAccessRequestsApprove) {
-			return nil, ErrForbidden
+			return nil, 0, ErrForbidden
 		}
-		l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: a.OrgID, Limit: 500, Filters: []store.Filter{{Field: "pending", Value: true}}})
+		l, n, err := s.Requests.List(ctx, store.ListQuery{Scope: a.OrgID, Sort: "created", Offset: q.Offset, Limit: pageLimit(q),
+			Filters: []store.Filter{{Field: "bots", Value: true}, waiting}})
+		return l, n, mapStore(err)
+	}
+	u, err := s.approver(ctx, a)
+	if err != nil {
+		return nil, 0, err
+	}
+	groups, err := s.approverGroupsOf(ctx, u)
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.pageAcross(ctx, u.OrgID, groups, model.RequestPending, waiting, false, q)
+}
+
+// ApprovedByGroups lists a page of the requests the approver groups the actor is a member of approved whose access
+// still runs, newest first, and how many there are: what an approver may end early.
+func (s *Service) ApprovedByGroups(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.AccessRequest, int, error) {
+	u, err := s.approver(ctx, a)
+	if err != nil {
+		return nil, 0, err
+	}
+	groups, err := s.approverGroupsOf(ctx, u)
+	if err != nil {
+		return nil, 0, err
+	}
+	running := store.Filter{Field: "ends", Op: store.OpGTE, Value: time.Now()} // not yet marked expired by housekeeping
+	return s.pageAcross(ctx, u.OrgID, groups, model.RequestApproved, running, true, q)
+}
+
+// approverGroupsOf lists the ids of u's groups that another group names as its approvers, in id order.
+func (s *Service) approverGroupsOf(ctx context.Context, u *model.User) ([]string, error) {
+	rg, err := s.orgRequestGroups(ctx, u.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rg.approvers) == 0 {
+		return nil, nil
+	}
+	groups, err := s.UserGroups(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, g := range groups {
+		if rg.approvers[g.ID] {
+			out = append(out, g.ID)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// pageAcross pages the requests in state of several approver groups' queues (model.AccessRequestQueue) as one list,
+// sorted by when they were made (newest first when desc), with filter applied too: q's offset and limit over them
+// all, and the total. One approver group, the usual case, is one read of the page; with more, each queue is read up
+// to the end of the page and the pages merged.
+func (s *Service) pageAcross(ctx context.Context, orgID string, groups []string, state string, filter store.Filter, desc bool,
+	q store.ListQuery) ([]*model.AccessRequest, int, error) {
+	limit, offset := pageLimit(q), max(q.Offset, 0)
+	if len(groups) == 0 {
+		return []*model.AccessRequest{}, 0, nil
+	}
+	read := func(g string, offset, limit int) ([]*model.AccessRequest, int, error) {
+		l, n, err := s.Requests.List(ctx, store.ListQuery{Scope: orgID, Sort: "created", Desc: desc, Offset: offset, Limit: limit,
+			Filters: []store.Filter{{Field: "queue", Value: model.AccessRequestQueue(g, state)}, filter}})
+		return l, n, mapStore(err)
+	}
+	if len(groups) == 1 {
+		return read(groups[0], offset, limit)
+	}
+	var all []*model.AccessRequest
+	total := 0
+	for _, g := range groups {
+		l, n, err := read(g, 0, offset+limit)
 		if err != nil {
-			return nil, mapStore(err)
+			return nil, 0, err
 		}
-		for _, r := range l {
-			if ok, err := s.serviceAccountsMayDecide(ctx, r); err != nil {
-				return nil, err
-			} else if ok && r.Pending(now) {
-				out = append(out, r)
+		all, total = append(all, l...), total+n
+	}
+	slices.SortStableFunc(all, func(x, y *model.AccessRequest) int {
+		if c := x.Created.Compare(y.Created); c != 0 {
+			if desc {
+				return -c
 			}
+			return c
 		}
-	default:
-		u, err := s.approver(ctx, a)
-		if err != nil {
-			return nil, err
-		}
-		groups, err := s.UserGroups(ctx, u)
-		if err != nil {
-			return nil, err
-		}
-		for _, g := range groups {
-			l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: u.OrgID, Limit: 500, Filters: []store.Filter{
-				{Field: "approvers", Value: g.ID}, {Field: "pending", Value: true}}})
+		return strings.Compare(x.ID, y.ID)
+	})
+	if offset >= len(all) {
+		return []*model.AccessRequest{}, total, nil
+	}
+	return all[offset:min(offset+limit, len(all))], total, nil
+}
+
+// refreshRequestBots sets again, on the pending requests the approver groups decide, whether service accounts may
+// decide each (model.AccessRequest.Bots: their queue), after a group's access request settings changed or a group
+// with them was removed. Each requester's groups are read once. Best effort: deciding checks the groups again anyway.
+func (s *Service) refreshRequestBots(ctx context.Context, orgID string, approvers ...string) {
+	type verdict struct{ may, bots bool }
+	seen := map[string]verdict{}
+	for _, g := range slices.Compact(slices.Sorted(slices.Values(approvers))) {
+		const page = 500
+		for offset := 0; ; offset += page {
+			l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: orgID, Offset: offset, Limit: page,
+				Filters: []store.Filter{{Field: "queue", Value: model.AccessRequestQueue(g, model.RequestPending)}}})
 			if err != nil {
-				return nil, mapStore(err)
+				s.Log.WithError(err).Warn("access requests: could not read the pending requests of an approver group", "group", g)
+				return
 			}
 			for _, r := range l {
-				if r.UserID != u.ID && r.Pending(now) {
-					out = append(out, r)
+				v, ok := seen[r.UserID+"/"+r.Approvers]
+				if !ok {
+					may, bots, err := s.stillMayAsk(ctx, r)
+					if err != nil {
+						continue
+					}
+					v = verdict{may, bots}
+					seen[r.UserID+"/"+r.Approvers] = v
 				}
+				if want := v.may && v.bots; want != r.Bots {
+					r.Bots = want
+					_ = s.Requests.Update(ctx, r) // one changed meanwhile was decided, or set by another refresh
+				}
+			}
+			if len(l) < page {
+				break
 			}
 		}
 	}
-	slices.SortFunc(out, func(x, y *model.AccessRequest) int { return x.Created.Compare(y.Created) })
-	return out, nil
 }
 
 // approver is the account the actor decides as: a person of the organization signed in as themselves (never a guest
@@ -594,7 +746,11 @@ func (s *Service) EndAccessRequest(ctx context.Context, a *Actor, id string, rea
 			return nil, err
 		}
 	}
-	if r.State != model.RequestApproved {
+	switch r.State {
+	case model.RequestApproved:
+	case model.RequestExpired, model.RequestEnded:
+		return nil, Invalid("state", "this access has ended already")
+	default:
 		return nil, Invalid("state", "only approved access can be ended")
 	}
 	now := time.Now().UTC()
@@ -645,16 +801,17 @@ func (s *Service) EndAccessRequest(ctx context.Context, a *Actor, id string, rea
 	return r, nil
 }
 
-// endOtherRequests marks ended the other approved requests of r's requester for r's tenant whose access had not ended:
-// an extension's, whose access went with the entry r's ending removed. Best effort: one missed still shows its own end.
+// endOtherRequests marks ended the other running requests of r's requester for r's tenant: an extension's, or the
+// one it extended, whose access went with the entry r's ending removed. They are read by their exact index value
+// (running), however many requests the person has made. Best effort: one missed shows Active until its own end.
 func (s *Service) endOtherRequests(ctx context.Context, r *model.AccessRequest, name string) {
-	l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: r.OrgID, Limit: 100, Filters: []store.Filter{
-		{Field: "user_id", Value: r.UserID}, {Field: "state", Value: model.RequestApproved}}})
+	l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: r.OrgID, Limit: 500, Filters: []store.Filter{
+		{Field: "running", Value: model.AccessRequestRunning(r.UserID, r.TenantID)}}})
 	if err != nil {
 		return
 	}
 	for _, o := range l {
-		if o.ID == r.ID || o.TenantID != r.TenantID || o.Ends.IsZero() || !r.EndedAt.Before(o.Ends) {
+		if o.ID == r.ID || !o.Running() {
 			continue
 		}
 		o.State, o.EndedBy, o.EndedName, o.EndedAt = model.RequestEnded, r.EndedBy, name, r.EndedAt
@@ -677,8 +834,9 @@ func (s *Service) noticeRequest(ctx context.Context, event string, r *model.Acce
 }
 
 // ExpireAccessRequests is the housekeeping of access requests: a pending request nobody decided within
-// model.RequestPendingFor lapses, and a closed one is removed once model.RequestKeptFor has passed (the audit log
-// keeps the history). It returns how many it changed.
+// model.RequestPendingFor lapses, a running one whose access reached its end is marked expired (the access entry ends
+// by itself: ExpireAccess), and a closed one is removed once model.RequestKeptFor has passed (the audit log keeps the
+// history). It returns how many it changed.
 func (s *Service) ExpireAccessRequests(ctx context.Context) (int, error) {
 	n := 0
 	stuck := map[string]bool{}
@@ -693,7 +851,11 @@ func (s *Service) ExpireAccessRequests(ctx context.Context) (int, error) {
 				continue
 			}
 			var err error
-			if r.State == model.RequestPending {
+			switch {
+			case r.Running():
+				r.State = model.RequestExpired // it leaves the approvers' and the person's running lists
+				err = s.Requests.Update(ctx, r)
+			case r.State == model.RequestPending:
 				r.State = model.RequestLapsed
 				name := r.TenantID
 				if t, e := s.Tenants.Get(ctx, r.TenantID); e == nil {
@@ -701,7 +863,7 @@ func (s *Service) ExpireAccessRequests(ctx context.Context) (int, error) {
 				}
 				err = s.audited(ctx, System, r.OrgID, "access_request.lapse", name, map[string]string{"request": r.ID, "user": r.UserID},
 					func() error { return s.Requests.Update(ctx, r) })
-			} else {
+			default:
 				err = s.Requests.DeleteIf(ctx, r.ID, r.Version)
 			}
 			if err != nil && !errors.Is(err, store.ErrStale) && !errors.Is(err, store.ErrNotFound) {
@@ -774,6 +936,8 @@ type AccessRequestView struct {
 	LengthText        string `json:"length_text"`
 	// Live is true while the access an approved request gave lasts.
 	Live bool `json:"live"`
+	// Yours marks, in an approver's lists, the approver's own request (someone else decides it).
+	Yours bool `json:"yours,omitempty"`
 }
 
 // AccessRequestViews names the people, tenants and approver groups of rs (a removed one by its id).
@@ -809,33 +973,4 @@ func (s *Service) AccessRequestViews(ctx context.Context, rs []*model.AccessRequ
 		out = append(out, v)
 	}
 	return out
-}
-
-// ApprovedByGroups lists the approved requests of the approver groups the actor is a member of whose access still
-// lasts, newest first: what an approver may end early.
-func (s *Service) ApprovedByGroups(ctx context.Context, a *Actor) ([]*model.AccessRequest, error) {
-	u, err := s.approver(ctx, a)
-	if err != nil {
-		return nil, err
-	}
-	groups, err := s.UserGroups(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	var out []*model.AccessRequest
-	for _, g := range groups {
-		l, _, err := s.Requests.List(ctx, store.ListQuery{Scope: u.OrgID, Limit: 500, Filters: []store.Filter{
-			{Field: "approvers", Value: g.ID}, {Field: "state", Value: model.RequestApproved}}})
-		if err != nil {
-			return nil, mapStore(err)
-		}
-		for _, r := range l {
-			if !r.Ends.IsZero() && now.Before(r.Ends) {
-				out = append(out, r)
-			}
-		}
-	}
-	slices.SortFunc(out, func(x, y *model.AccessRequest) int { return y.DecidedAt.Compare(x.DecidedAt) })
-	return out, nil
 }

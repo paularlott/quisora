@@ -134,6 +134,6 @@ test('console: the access requests page lists the organization’s requests, nar
   await expect(page.getByRole('row', { name: /INC-2041/ })).toContainText('Ops tools')
   await expect(page.getByRole('row', { name: /INC-2041/ })).toContainText('Waiting for On-call leads')
   await page.locator('#f-rq-state').selectOption('approved')
-  await expect(page.getByRole('row', { name: /SUP-311/ })).toContainText('Approved')
+  await expect(page.getByRole('row', { name: /SUP-311/ })).toContainText('Active')
   await expect(page.getByRole('row', { name: /INC-2041/ })).toHaveCount(0)
 })

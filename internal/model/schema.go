@@ -93,13 +93,18 @@ var Schemas = map[Kind]Schema{
 		{Name: "approvers", Type: FieldString, Index: true}, // the groups an approver group decides for
 	}},
 	KindAccessRequest: {KindAccessRequest, []Field{
-		{Name: "user_id", Type: FieldString, Index: true},   // a person's requests
-		{Name: "approvers", Type: FieldString, Index: true}, // an approver group's queue
-		{Name: "tenant_id", Type: FieldString, Index: true},
+		// Each list of requests reads one exact index value (a value only while the request is in that list), so it
+		// reads the requests it shows, not a group's or a person's history, on every backend.
+		{Name: "user_id", Type: FieldString, Index: true},      // a person's requests (and removing a removed user's)
+		{Name: "tenant_id", Type: FieldString, Index: true},    // removing a removed tenant's
+		{Name: "waiting_user", Type: FieldString, Index: true}, // a person's pending requests: how many they may have
+		{Name: "queue", Type: FieldString, Index: true},        // "<approver group>/pending" or "/approved" (running): an approver's lists
+		{Name: "running", Type: FieldString, Index: true},      // "<user>/<tenant>" while its access runs: a person's for a tenant
+		{Name: "bots", Type: FieldBool, Index: true},           // pending, and service accounts may decide it: their queue
 		{Name: "state", Type: FieldString, Index: true},
-		{Name: "pending", Type: FieldBool, Index: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
-		{Name: "due", Type: FieldTime, Sort: true}, // lapsing, then removal (ExpireAccessRequests)
+		{Name: "ends", Type: FieldTime, Sort: true}, // a running request's end (Ends): the lists leave out one past it
+		{Name: "due", Type: FieldTime, Sort: true},  // lapsing, running out, then removal (ExpireAccessRequests)
 	}},
 	KindMember: {KindMember, []Field{
 		{Name: "group_id", Type: FieldString, Index: true}, // a group's members (SCIM, counts)
@@ -111,6 +116,7 @@ var Schemas = map[Kind]Schema{
 		{Name: "created", Type: FieldTime, Sort: true},
 		{Name: "ssh_enabled", Type: FieldBool, Index: true},       // the tenants with SSH on (housekeeping, the account page)
 		{Name: "self_registration", Type: FieldBool, Index: true}, // tenants taking self-registered applications (registration)
+		{Name: "members_only", Type: FieldBool, Index: true},      // tenants letting in only those given access (access requests)
 	}},
 	KindAccess: {KindAccess, []Field{
 		{Name: "tenant_id", Type: FieldString, Index: true}, // a tenant's access entries (ListAccess)

@@ -3,9 +3,11 @@ package login
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/paularlott/quisora/internal/model"
 	"github.com/paularlott/quisora/internal/service"
+	"github.com/paularlott/quisora/internal/store"
 	"github.com/paularlott/quisora/internal/web"
 )
 
@@ -15,11 +17,13 @@ import (
 
 func (m *Module) registerAccessRequests(h func(string, func(http.ResponseWriter, *http.Request, acct))) {
 	h("GET /api-internal/account/access-requests", m.ownRequests)
+	h("GET /api-internal/account/access-requests/options", m.requestChoices)
 	h("GET /api-internal/account/access-requests/tenants", m.requestableTenants)
 	h("POST /api-internal/account/access-requests", m.askAccess)
 	h("POST /api-internal/account/access-requests/{id}/cancel", m.cancelOwnRequest)
 	h("POST /api-internal/account/access-requests/{id}/end", m.endOwnAccess)
-	h("GET /api-internal/account/approvals", m.approvals)
+	h("GET /api-internal/account/approvals/pending", m.approvalsWaiting)
+	h("GET /api-internal/account/approvals/active", m.approvalsRunning)
 	h("POST /api-internal/account/approvals/{id}/approve", m.decide(true))
 	h("POST /api-internal/account/approvals/{id}/deny", m.decide(false))
 	h("POST /api-internal/account/approvals/{id}/end", m.endApproved)
@@ -52,25 +56,54 @@ func (m *Module) requestError(w http.ResponseWriter, r *http.Request, err error)
 	}
 }
 
-// ownRequests answers GET /api-internal/account/access-requests: the person's requests, and who may approve them
-// (with the lengths each offers).
-func (m *Module) ownRequests(w http.ResponseWriter, r *http.Request, a acct) {
-	ctx := r.Context()
-	approvers, err := m.s.Svc.RequestApproversFor(ctx, a.u)
-	if err != nil {
-		m.requestError(w, r, err)
-		return
+// pageOf reads a list call's ?offset= and ?limit= (at most 100).
+func pageOf(r *http.Request) store.ListQuery {
+	q := store.ListQuery{Limit: 10}
+	if n, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && n > 0 {
+		q.Offset = n
 	}
-	l, err := m.s.Svc.OwnAccessRequests(ctx, a.actor)
-	if err != nil && !errors.Is(err, service.ErrForbidden) {
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		q.Limit = min(n, 100)
+	}
+	return q
+}
+
+// requestList answers a page of requests: {"items": [...], "total": n}.
+func (m *Module) requestList(w http.ResponseWriter, r *http.Request, l []*model.AccessRequest, n int, mark func(*service.AccessRequestView)) {
+	views := m.s.Svc.AccessRequestViews(r.Context(), l)
+	if mark != nil {
+		for i := range views {
+			mark(&views[i])
+		}
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{"items": views, "total": n})
+}
+
+// requestChoices answers GET /api-internal/account/access-requests/options: who may approve the person's requests
+// (with the lengths each offers), and whether they are a guest (who asks in their own organization).
+func (m *Module) requestChoices(w http.ResponseWriter, r *http.Request, a acct) {
+	approvers, err := m.s.Svc.RequestApproversFor(r.Context(), a.u)
+	if err != nil {
 		m.requestError(w, r, err)
 		return
 	}
 	if approvers == nil {
 		approvers = []service.RequestApprovers{}
 	}
-	web.WriteJSON(w, http.StatusOK, map[string]any{"approvers": approvers, "items": m.s.Svc.AccessRequestViews(ctx, l),
-		"guest": len(a.actor.Sources) > 0})
+	web.WriteJSON(w, http.StatusOK, map[string]any{"approvers": approvers, "guest": len(a.actor.Sources) > 0})
+}
+
+// ownRequests answers GET /api-internal/account/access-requests: a page of the person's requests, newest first.
+func (m *Module) ownRequests(w http.ResponseWriter, r *http.Request, a acct) {
+	l, n, err := m.s.Svc.OwnAccessRequests(r.Context(), a.actor, pageOf(r))
+	if errors.Is(err, service.ErrForbidden) || err != nil && len(a.actor.Sources) > 0 {
+		l, n, err = nil, 0, nil // a guest asks nothing here
+	}
+	if err != nil {
+		m.requestError(w, r, err)
+		return
+	}
+	m.requestList(w, r, l, n, nil)
 }
 
 // requestableTenants answers GET /api-internal/account/access-requests/tenants?q=.
@@ -123,22 +156,26 @@ func (m *Module) endOwnAccess(w http.ResponseWriter, r *http.Request, a acct) {
 	web.WriteJSON(w, http.StatusOK, m.s.Svc.AccessRequestViews(r.Context(), []*model.AccessRequest{req})[0])
 }
 
-// approvals answers GET /api-internal/account/approvals: the requests waiting for the person's decision, and the
-// access their approver groups gave that still lasts.
-func (m *Module) approvals(w http.ResponseWriter, r *http.Request, a acct) {
-	ctx := r.Context()
-	pending, err := m.s.Svc.ApprovalQueue(ctx, a.actor)
+// approvalsWaiting answers GET /api-internal/account/approvals/pending: a page of the requests waiting for the
+// person's approver groups, oldest first; their own among them is marked (someone else decides it).
+func (m *Module) approvalsWaiting(w http.ResponseWriter, r *http.Request, a acct) {
+	l, n, err := m.s.Svc.ApprovalQueue(r.Context(), a.actor, pageOf(r))
 	if err != nil {
 		m.requestError(w, r, err)
 		return
 	}
-	active, err := m.s.Svc.ApprovedByGroups(ctx, a.actor)
+	m.requestList(w, r, l, n, func(v *service.AccessRequestView) { v.Yours = v.UserID == a.u.ID })
+}
+
+// approvalsRunning answers GET /api-internal/account/approvals/active: a page of the access the person's approver
+// groups gave that still runs, newest first.
+func (m *Module) approvalsRunning(w http.ResponseWriter, r *http.Request, a acct) {
+	l, n, err := m.s.Svc.ApprovedByGroups(r.Context(), a.actor, pageOf(r))
 	if err != nil {
 		m.requestError(w, r, err)
 		return
 	}
-	web.WriteJSON(w, http.StatusOK, map[string]any{"pending": m.s.Svc.AccessRequestViews(ctx, pending),
-		"active": m.s.Svc.AccessRequestViews(ctx, active)})
+	m.requestList(w, r, l, n, func(v *service.AccessRequestView) { v.Yours = v.UserID == a.u.ID })
 }
 
 // decide answers POST /api-internal/account/approvals/{id}/approve and …/deny, with an optional {"note": "..."}:

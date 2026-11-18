@@ -84,3 +84,46 @@ func TestFormat4IndexesFieldsAddedSinceFormat3(t *testing.T) {
 		t.Errorf("the access entry is not due for the sweep: %v %d", err, len(due))
 	}
 }
+
+// A store at format 4 holds tenants written before members_only was indexed: opening it with this build indexes them,
+// so the access request form finds every members-only tenant.
+func TestFormat5IndexesMembersOnlyTenants(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := OpenBadger(ctx, dir, BadgerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := model.DefaultTenantSettings()
+	set.MembersOnly = true
+	r, err := store.Encode(&model.Tenant{Meta: model.Meta{ID: "t1"}, OrgID: "o", Name: "customer-b", Settings: set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(r.Fields, "members_only") // as format 4's build encoded it
+	if err := s.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	find := func() int {
+		t.Helper()
+		res, err := s.List(ctx, model.KindTenant, store.ListQuery{Scope: "o", Filters: []store.Filter{{Field: "members_only", Value: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(res.Records)
+	}
+	if find() != 0 {
+		t.Fatal("the seeded tenant is indexed already: the test seeds nothing old")
+	}
+	if err := s.markFormat(ctx, 4); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if s, err = OpenBadger(ctx, dir, BadgerOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if n := find(); n != 1 {
+		t.Errorf("members-only tenants after the migration: %d", n)
+	}
+}

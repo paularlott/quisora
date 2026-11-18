@@ -314,15 +314,17 @@ class Client:
                             body=_drop_none({"tenant_id": tenant, "reason": reason, "length": length, "approvers": approvers}))
 
     def iter_access_requests(self, org):
-        """Your own requests, newest first."""
-        return iter(self.request("GET", self._org(org) + "/access-requests").get("items") or [])
+        """Your own requests, newest first, page by page."""
+        return self.paginate(self._org(org) + "/access-requests")
 
     def cancel_access_request(self, org, request_id):
         return self.request("POST", self._org(org) + "/access-requests/" + _seg(request_id) + "/cancel")
 
     def pending_access_requests(self, org):
-        """The requests waiting for this service account's decision, oldest first."""
-        return self.request("GET", self._org(org) + "/access-requests/pending").get("items") or []
+        """Every request waiting for this service account's decision, oldest first: all
+        pages read before it returns, so deciding them (which takes them off the
+        waiting list, and moves the pages) misses none."""
+        return list(self.paginate(self._org(org) + "/access-requests/pending"))
 
     def approve_access_request(self, org, request_id, note=None):
         """Approve: the requester gets access until now plus the length asked for."""

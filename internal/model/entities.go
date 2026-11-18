@@ -697,7 +697,8 @@ func (t *Tenant) Index() Index {
 		Partition: t.OrgID,
 		Unique:    uniq,
 		Fields: map[string]any{"name": t.Name, "display_name": t.DisplayName, "created": t.Created,
-			"ssh_enabled": t.SSH != nil && t.SSH.Enabled, "self_registration": t.Settings.SelfRegistration && len(t.Resources) > 0},
+			"ssh_enabled": t.SSH != nil && t.SSH.Enabled, "self_registration": t.Settings.SelfRegistration && len(t.Resources) > 0,
+			"members_only": t.Settings.MembersOnly},
 	}
 }
 

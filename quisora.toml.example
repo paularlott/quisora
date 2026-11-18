@@ -125,6 +125,7 @@ flows_per_ip = 50                         # sign-ins in progress one IP address 
 held_kb = 2048                            # short-lived sign-in state one IP address (an IPv6 /64; its /48 16x, its /32 64x) or signed-in user may hold at once, KiB, at least 64 and at most 8 per MiB of ephemeral_mb; past it 429 (0 = no limit)
 grants_per_user = 1000                    # refresh grants one user may hold (10 to 100000); past it the least recently used are ended; an organization may set its own
 sessions_per_user = 100                   # browser sessions one user may hold (1 to 10000); past it the least recently used end (a sign-in is never refused)
+access_requests_waiting = 10              # access requests one person may have waiting for a decision at once (1 to 10000)
 
 [log]
 level = "info"                            # trace, debug, info, warn, error

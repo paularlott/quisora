@@ -127,6 +127,10 @@ var formatMigrations = []formatMigration{
 	{"index fields: access ends, self-registration, API tokens, guest links", func(ctx context.Context, s *Store) error {
 		return s.reindexKinds(ctx, model.KindAccess, model.KindTenant, model.KindClient, model.KindIdentity)
 	}},
+	// 4 to 5: a tenant letting in only those given access (members_only: the tenants a person may ask for access to).
+	{"index fields: members-only tenants", func(ctx context.Context, s *Store) error {
+		return s.reindexKinds(ctx, model.KindTenant)
+	}},
 }
 
 // reindexKinds rebuilds the index fields and entries of every record of the kinds from its data (rewriteRecords),
