@@ -4,7 +4,13 @@
 import { execFileSync } from 'node:child_process'
 
 // Accepted advisories: url -> why it does not apply, and when that was decided. Review them at each release.
-const accepted = {}
+const accepted = {
+  'https://github.com/advisories/GHSA-fc5q-39xc-vjpf':
+    'picomatch ReDoS on crafted extglob patterns. Only Vite and tinyglobby use it, at build time, on the glob patterns ' +
+    'in our own Vite config and the paths in this repository: no pattern comes from outside, and nothing of it is ' +
+    'bundled into web/dist or runs in the server. Every release (<=4.0.7) is affected and none is fixed yet; drop this ' +
+    'when one is. Decided 2026-11-18.',
+}
 
 let report
 try {
