@@ -73,6 +73,20 @@ func (s *Service) orgRequestGroups(ctx context.Context, orgID string) (*requestG
 	return rg, nil
 }
 
+// closing sets when closed request r is removed: when it closed (model.AccessRequest.ClosedAt) plus the days the
+// server keeps closed requests now (limits.access_requests_kept_days).
+func (s *Service) closing(r *model.AccessRequest) {
+	days := 0
+	if s.Cfg != nil {
+		days = s.Cfg.LiveLimits().AccessRequestsKeptDays
+	}
+	keep := model.RequestKeptFor
+	if days > 0 {
+		keep = time.Duration(days) * 24 * time.Hour
+	}
+	r.Removes = r.ClosedAt().Add(keep)
+}
+
 // waitingPerPerson is how many requests one person may have waiting (limits.access_requests_waiting).
 func (s *Service) waitingPerPerson() int {
 	if s.Cfg != nil {
@@ -279,7 +293,7 @@ func (s *Service) CreateAccessRequest(ctx context.Context, a *Actor, in AccessRe
 	now := time.Now().UTC()
 	r := &model.AccessRequest{Meta: model.Meta{ID: model.NewID()}, OrgID: u.OrgID, TenantID: t.ID, UserID: u.ID,
 		Approvers: chosen.ID, Length: in.Length, Reason: reason, State: model.RequestPending, Lapses: now.Add(model.RequestPendingFor),
-		Bots: chosen.bots}
+		Bots: chosen.bots, RequesterName: u.FullName(), RequesterEmail: u.Email, TenantTitle: t.DisplayName}
 	err = s.audited(ctx, a, u.OrgID, "access_request.create", t.Name, map[string]string{"request": r.ID, "length": LengthText(in.Length),
 		"approvers": chosen.Name, "reason": reason}, func() error { return s.Requests.Create(ctx, r) })
 	if errors.Is(err, store.ErrConflict) {
@@ -365,12 +379,25 @@ func (s *Service) ApprovalQueue(ctx context.Context, a *Actor, q store.ListQuery
 	if err != nil {
 		return nil, 0, err
 	}
-	return s.pageAcross(ctx, u.OrgID, groups, model.RequestPending, waiting, false, q)
+	key := func(g string) store.Filter {
+		return store.Filter{Field: "queue", Value: model.AccessRequestQueue(g, model.RequestPending)}
+	}
+	return s.pageAcross(ctx, u.OrgID, groups, key, []store.Filter{waiting}, false, store.ListQuery{Offset: q.Offset, Limit: q.Limit})
 }
 
-// ApprovedByGroups lists a page of the requests the approver groups the actor is a member of approved whose access
-// still runs, newest first, and how many there are: what an approver may end early.
-func (s *Service) ApprovedByGroups(ctx context.Context, a *Actor, q store.ListQuery) ([]*model.AccessRequest, int, error) {
+// Which of an approver group's decisions GroupDecisions lists.
+const (
+	DecisionsActive = "active" // approved, and the access it gave runs: what may be ended early
+	DecisionsEnded  = "ended"  // approved, and the access ran out or was ended early
+	DecisionsDenied = "denied"
+	DecisionsAll    = "all"
+)
+
+// GroupDecisions lists a page of the decided requests of the approver groups the actor is a member of, whoever in
+// them decided, newest first, and how many there are: show narrows them (DecisionsActive, the default; ended; denied;
+// all), and q.Search finds those whose requester's name or email, tenant or reason starts with it. Each is an exact
+// indexed read of the groups' decisions.
+func (s *Service) GroupDecisions(ctx context.Context, a *Actor, show string, q store.ListQuery) ([]*model.AccessRequest, int, error) {
 	u, err := s.approver(ctx, a)
 	if err != nil {
 		return nil, 0, err
@@ -379,8 +406,24 @@ func (s *Service) ApprovedByGroups(ctx context.Context, a *Actor, q store.ListQu
 	if err != nil {
 		return nil, 0, err
 	}
-	running := store.Filter{Field: "ends", Op: store.OpGTE, Value: time.Now()} // not yet marked expired by housekeeping
-	return s.pageAcross(ctx, u.OrgID, groups, model.RequestApproved, running, true, q)
+	var key func(g string) store.Filter
+	var also []store.Filter
+	switch show {
+	case DecisionsActive, "":
+		key = func(g string) store.Filter {
+			return store.Filter{Field: "queue", Value: model.AccessRequestQueue(g, model.RequestApproved)}
+		}
+		also = []store.Filter{{Field: "ends", Op: store.OpGTE, Value: time.Now()}} // not yet marked expired
+	case DecisionsEnded, DecisionsDenied:
+		key = func(g string) store.Filter {
+			return store.Filter{Field: "decided", Value: model.AccessRequestDecided(g, show)}
+		}
+	case DecisionsAll:
+		key = func(g string) store.Filter { return store.Filter{Field: "decisions", Value: g} }
+	default:
+		return nil, 0, Invalid("show", "show active, ended, denied or all")
+	}
+	return s.pageAcross(ctx, u.OrgID, groups, key, also, true, q)
 }
 
 // approverGroupsOf lists the ids of u's groups whose members approve access requests, in id order: every member of
@@ -407,19 +450,19 @@ func (s *Service) approverGroupsOf(ctx context.Context, u *model.User) ([]string
 	return out, nil
 }
 
-// pageAcross pages the requests in state of several approver groups' queues (model.AccessRequestQueue) as one list,
-// sorted by when they were made (newest first when desc), with filter applied too: q's offset and limit over them
-// all, and the total. One approver group, the usual case, is one read of the page; with more, each queue is read up
-// to the end of the page and the pages merged.
-func (s *Service) pageAcross(ctx context.Context, orgID string, groups []string, state string, filter store.Filter, desc bool,
-	q store.ListQuery) ([]*model.AccessRequest, int, error) {
+// pageAcross pages the requests of several approver groups as one list, each group's read by its index filter key(g)
+// and also, sorted by when they were made (newest first when desc), with q's search: q's offset and limit over them
+// all, and the total. One approver group, the usual case, is one read of the page; with more, each is read up to the
+// end of the page and the pages merged.
+func (s *Service) pageAcross(ctx context.Context, orgID string, groups []string, key func(g string) store.Filter, also []store.Filter,
+	desc bool, q store.ListQuery) ([]*model.AccessRequest, int, error) {
 	limit, offset := pageLimit(q), max(q.Offset, 0)
 	if len(groups) == 0 {
 		return []*model.AccessRequest{}, 0, nil
 	}
 	read := func(g string, offset, limit int) ([]*model.AccessRequest, int, error) {
 		l, n, err := s.Requests.List(ctx, store.ListQuery{Scope: orgID, Sort: "created", Desc: desc, Offset: offset, Limit: limit,
-			Filters: []store.Filter{{Field: "queue", Value: model.AccessRequestQueue(g, state)}, filter}})
+			Search: strings.TrimSpace(q.Search), Filters: append([]store.Filter{key(g)}, also...)})
 		return l, n, mapStore(err)
 	}
 	if len(groups) == 1 {
@@ -632,6 +675,7 @@ func (s *Service) DecideAccessRequest(ctx context.Context, a *Actor, id string, 
 		}
 		if !approve {
 			r.State = model.RequestDenied
+			s.closing(r)
 			err := s.audited(ctx, a, r.OrgID, "access_request.deny", t.Name, detail, func() error { return s.Requests.Update(ctx, r) })
 			if errors.Is(err, store.ErrStale) {
 				continue
@@ -676,6 +720,9 @@ func (s *Service) DecideAccessRequest(ctx context.Context, a *Actor, id string, 
 			ops = append(ops, store.Op{Rec: rec, Match: true, Expect: accExpect})
 		}
 		r.State, r.Ends = model.RequestApproved, ends
+		if !r.Running() {
+			s.closing(r) // access with no end already: nothing runs, nothing to end
+		}
 		expect := r.Version
 		rec, err := store.Encode(r)
 		if err != nil {
@@ -722,6 +769,7 @@ func (s *Service) CancelAccessRequest(ctx context.Context, a *Actor, id string) 
 		return nil, Invalid("state", "this request was "+r.State+" already")
 	}
 	r.State, r.DecidedBy, r.DecidedName, r.DecidedAt = model.RequestCancelled, u.ID, u.FullName(), time.Now().UTC()
+	s.closing(r)
 	name := r.TenantID
 	if t, err := s.Tenants.Get(ctx, r.TenantID); err == nil {
 		name = t.Name
@@ -777,6 +825,7 @@ func (s *Service) EndAccessRequest(ctx context.Context, a *Actor, id string, rea
 		return nil, Invalid("state", "this access has no end now (an administrator gave it): remove it from the tenant's access list")
 	}
 	r.State, r.EndedBy, r.EndedName, r.EndedAt = model.RequestEnded, cmpOr(a.UserID, a.ClientID), name, now
+	s.closing(r)
 	detail := map[string]string{"request": r.ID, "user": r.UserID}
 	events := []change{{r.OrgID, "access_request.end", t.Name, detail, nil}}
 	expect := r.Version
@@ -821,6 +870,7 @@ func (s *Service) endOtherRequests(ctx context.Context, r *model.AccessRequest, 
 			continue
 		}
 		o.State, o.EndedBy, o.EndedName, o.EndedAt = model.RequestEnded, r.EndedBy, name, r.EndedAt
+		s.closing(o)
 		_ = s.Requests.Update(ctx, o)
 	}
 }
@@ -860,9 +910,11 @@ func (s *Service) ExpireAccessRequests(ctx context.Context) (int, error) {
 			switch {
 			case r.Running():
 				r.State = model.RequestExpired // it leaves the approvers' and the person's running lists
+				s.closing(r)
 				err = s.Requests.Update(ctx, r)
 			case r.State == model.RequestPending:
 				r.State = model.RequestLapsed
+				s.closing(r)
 				name := r.TenantID
 				if t, e := s.Tenants.Get(ctx, r.TenantID); e == nil {
 					name = t.Name

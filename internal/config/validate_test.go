@@ -35,6 +35,8 @@ func TestValidateMessages(t *testing.T) {
 		"sessions per user high":                 {func(c *Config) { c.Limits.SessionsPerUser = 10001 }, "limits.sessions_per_user"},
 		"access requests waiting none":           {func(c *Config) { c.Limits.AccessRequestsWaiting = 0 }, "limits.access_requests_waiting"},
 		"access requests waiting high":           {func(c *Config) { c.Limits.AccessRequestsWaiting = 10001 }, "limits.access_requests_waiting"},
+		"access requests kept none":              {func(c *Config) { c.Limits.AccessRequestsKeptDays = 0 }, "limits.access_requests_kept_days"},
+		"access requests kept long":              {func(c *Config) { c.Limits.AccessRequestsKeptDays = 3651 }, "limits.access_requests_kept_days"},
 		"theme":                                  {func(c *Config) { c.UI.DefaultTheme = "blue" }, "ui.default_theme"},
 		"backend":                                {func(c *Config) { c.Storage.Backend = "mongo" }, "storage.backend"},
 		"half tls":                               {func(c *Config) { c.Server.TLSCert = "x" }, "tls_cert and server.tls_key"},

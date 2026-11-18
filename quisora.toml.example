@@ -126,6 +126,7 @@ held_kb = 2048                            # short-lived sign-in state one IP add
 grants_per_user = 1000                    # refresh grants one user may hold (10 to 100000); past it the least recently used are ended; an organization may set its own
 sessions_per_user = 100                   # browser sessions one user may hold (1 to 10000); past it the least recently used end (a sign-in is never refused)
 access_requests_waiting = 10              # access requests one person may have waiting for a decision at once (1 to 10000)
+access_requests_kept_days = 90            # days a closed access request is kept before it is removed (1 to 3650); the audit log keeps the history
 
 [log]
 level = "info"                            # trace, debug, info, warn, error

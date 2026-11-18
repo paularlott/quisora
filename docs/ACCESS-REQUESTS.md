@@ -70,10 +70,11 @@ Approving gives the person access to the tenant from now until the end of the le
 - access until a time: its end moves later (never earlier), and nothing else changes;
 - access with no end (given meanwhile by an administrator): nothing changes, and the request says so.
 
-The person gets an email either way. The page also lists the access the approver's groups gave that has not ended,
-whoever in them approved it, newest first, with why it was asked for and **End now**. A group that no longer approves
-any group's requests still sees, and may end, the access it gave. When the access reaches its end, the request shows as **Expired** (on the person's page,
-**Ended**).
+The person gets an email either way. The page also lists **Your groups' decisions**, whoever in the groups made them,
+newest first: **Active** (access that runs, with **End now**; where it starts), **Ended** (it ran to its end, or was
+ended early), **Denied**, or **All**, and a search finds them by the person's name or email, the tenant or the reason
+(each by how it starts). A group that no longer approves any group's requests still sees its decisions, and may end
+the access it gave. When the access reaches its end, the request shows as **Expired**.
 
 ## Ending early
 
@@ -107,7 +108,9 @@ reason starts with a ticket prefix. A bot reads every page of the waiting reques
 
 ## Records and audit
 
-Requests are kept for 90 days after they close; the audit log keeps the history:
+Requests are kept for 90 days after they close (their access ends, or they are denied, cancelled or lapse); the
+server's `limits.access_requests_kept_days` changes that ([RUNNING.md](RUNNING.md)), for the requests that close from
+then on. The audit log keeps the history:
 `access_request.create`, `.approve`, `.deny`, `.cancel`, `.lapse`, `.end`, and the `tenant.access.add`,
 `tenant.access.update` and `tenant.access.remove` an approval or an early end makes (with the request's id and reason).
 The console's **Access requests** page lists every request of the organization: **Active** (its access runs),

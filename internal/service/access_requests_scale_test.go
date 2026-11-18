@@ -175,13 +175,31 @@ func busyRequests(t *testing.T, st store.Store) {
 	}
 
 	// the access the approver's groups gave that runs: 8, behind hundreds that ran out
-	if r := counter.reads(t, "running access page 1", func() { page, total, err = svc.ApprovedByGroups(ctx, actor(alex), store.ListQuery{Limit: 5}) }); err != nil || total != 8 || len(page) != 5 || r > most {
+	if r := counter.reads(t, "running access page 1", func() {
+		page, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsActive, store.ListQuery{Limit: 5})
+	}); err != nil || total != 8 || len(page) != 5 || r > most {
 		t.Errorf("running access, page 1: %d records read, %v total %d, %d on the page", r, err, total, len(page))
 	}
 	if r := counter.reads(t, "running access page 2", func() {
-		page, total, err = svc.ApprovedByGroups(ctx, actor(alex), store.ListQuery{Offset: 5, Limit: 5})
+		page, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsActive, store.ListQuery{Offset: 5, Limit: 5})
 	}); err != nil || total != 8 || len(page) != 3 || r > most {
 		t.Errorf("running access, page 2: %d records read, %v total %d, %d on the page", r, err, total, len(page))
+	}
+
+	// the groups' decisions: the ended ones, behind the running ones, and found by a search of their reason
+	if r := counter.reads(t, "ended decisions page", func() {
+		page, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsEnded, store.ListQuery{Limit: 10})
+	}); err != nil || total != history || len(page) != 10 || r > most {
+		t.Errorf("ended decisions: %d records read, %v total %d, %d on the page", r, err, total, len(page))
+	}
+	if _, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsAll, store.ListQuery{Limit: 10}); err != nil || total != history+8 {
+		t.Errorf("all decisions: %v %d, want %d", err, total, history+8)
+	}
+	if _, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsDenied, store.ListQuery{Limit: 10}); err != nil || total != 0 {
+		t.Errorf("denied decisions: %v %d", err, total)
+	}
+	if _, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsAll, store.ListQuery{Limit: 10, Search: "NOW"}); err != nil || total != 8 {
+		t.Errorf("decisions whose reason starts with now: %v %d, want 8", err, total)
 	}
 
 	// pat's own requests: a page of a long history
@@ -229,7 +247,7 @@ func busyRequests(t *testing.T, st store.Store) {
 	if r, err := e.svc.Requests.Get(ctx, first[0].ID); err != nil || r.State != model.RequestExpired {
 		t.Errorf("a running request past its end after housekeeping: %v %+v", err, r)
 	}
-	if _, total, err = svc.ApprovedByGroups(ctx, actor(alex), store.ListQuery{Limit: 5}); err != nil || total != 6 {
+	if _, total, err = svc.GroupDecisions(ctx, actor(alex), service.DecisionsActive, store.ListQuery{Limit: 5}); err != nil || total != 6 {
 		t.Errorf("running access after one ended and one ran out: %v %d, want 6", err, total)
 	}
 }

@@ -88,6 +88,20 @@ test('access requests: Alan asks, Grace approves, Alan ends it; the menu shows e
     await expect(page.locator('.toasts')).toContainText('has ended')
     await expect(mine).toContainText('Ended early')
     await expect(mine.locator('td .cell-sub').nth(0)).toHaveText(/^Ended by Alan Turing · alan\S*@acme\.example$/)
+
+    // Grace finds it among her groups' decisions: not Active any more, under Ended, by searching its reason
+    await signIn(page, 'manager')
+    await page.goto('/o/acme/account/approvals', { waitUntil: 'load' })
+    const decisions = page.locator('section[aria-labelledby="decided-h"]')
+    await expect(decisions.getByRole('row', { name: new RegExp('Requested ' + s.tag) })).toHaveCount(0)
+    await decisions.getByLabel('Show').selectOption('ended')
+    await decisions.getByRole('searchbox', { name: 'Search decisions' }).fill('INC-77')
+    const ended = decisions.getByRole('row', { name: new RegExp('Requested ' + s.tag) })
+    await expect(ended).toContainText('Ended early')
+    await expect(ended).toContainText('Ended by Alan Turing')
+    await expect(ended.getByRole('button', { name: /^End now/ })).toBeHidden()
+    await decisions.getByRole('searchbox', { name: 'Search decisions' }).fill('nothing-like-it')
+    await expect(decisions.getByText('None match.')).toBeVisible()
   } finally {
     await s.tearDown()
   }

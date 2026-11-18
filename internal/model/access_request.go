@@ -43,7 +43,8 @@ const (
 )
 
 // RequestPendingFor is how long a request waits to be decided before it lapses; RequestKeptFor how long a closed
-// one is kept (the audit log keeps the history).
+// one is kept when it does not say (Removes: the server's limits.access_requests_kept_days when it closed). The
+// audit log keeps the history.
 const (
 	RequestPendingFor = 24 * time.Hour
 	RequestKeptFor    = 90 * 24 * time.Hour
@@ -66,6 +67,11 @@ type AccessRequest struct {
 	// these approvers allowed it when it was made (or when that group's settings last changed). Their queue lists
 	// these; deciding checks the groups again.
 	Bots bool `msgpack:"bt,omitempty" json:"service_accounts"`
+	// RequesterName, RequesterEmail and TenantTitle are the requester's name and email and the tenant's display
+	// name when it was made: what a search of the requests matches (with the reason), not what the pages show.
+	RequesterName  string `msgpack:"rn,omitempty" json:"-"`
+	RequesterEmail string `msgpack:"re,omitempty" json:"-"`
+	TenantTitle    string `msgpack:"tt,omitempty" json:"-"`
 	// DecidedBy is who approved, denied or ended it: a user id, or a service account's client id (DecidedVia "api");
 	// DecidedName their name as recorded then; DecidedAt when; Note what they wrote (shown to the requester).
 	DecidedBy   string    `msgpack:"db,omitempty" json:"decided_by,omitempty"`
@@ -79,6 +85,9 @@ type AccessRequest struct {
 	EndedBy   string    `msgpack:"eb,omitempty" json:"ended_by,omitempty"`
 	EndedName string    `msgpack:"en,omitempty" json:"ended_by_name,omitempty"`
 	EndedAt   time.Time `msgpack:"ea,omitempty" json:"ended_at,omitempty"`
+	// Removes is when housekeeping removes it, set as it closes (ClosedAt, plus how long the server keeps closed
+	// requests then).
+	Removes time.Time `msgpack:"rm,omitempty" json:"removes,omitempty"`
 }
 
 func (r *AccessRequest) Kind() Kind { return KindAccessRequest }
@@ -92,29 +101,34 @@ func (r *AccessRequest) Pending(now time.Time) bool {
 func (r *AccessRequest) Running() bool { return r.State == RequestApproved && !r.Ends.IsZero() }
 
 // due is when housekeeping must look at r: a pending one when it lapses, a running one when its access ends (to mark
-// it expired), a closed one when it is no longer kept.
+// it expired), a closed one when it is no longer kept (Removes, else ClosedAt plus RequestKeptFor).
 func (r *AccessRequest) due() time.Time {
-	switch r.State {
-	case RequestPending:
+	switch {
+	case r.State == RequestPending:
 		return r.Lapses
-	case RequestApproved, RequestEnded, RequestExpired:
-		if r.Running() {
+	case r.Running():
+		return r.Ends
+	case !r.Removes.IsZero():
+		return r.Removes
+	}
+	return r.ClosedAt().Add(RequestKeptFor)
+}
+
+// ClosedAt is when r closed: when its access ended (an approval's, by its end or ended early; an approval that gave
+// nothing, when decided), or when it was denied, cancelled or lapsed.
+func (r *AccessRequest) ClosedAt() time.Time {
+	switch r.State {
+	case RequestEnded:
+		return r.EndedAt
+	case RequestApproved, RequestExpired:
+		if !r.Ends.IsZero() {
 			return r.Ends
 		}
-		last := r.Ends
-		if r.EndedAt.After(last) || last.IsZero() {
-			last = r.EndedAt
-		}
-		if last.IsZero() {
-			last = r.DecidedAt
-		}
-		return last.Add(RequestKeptFor)
+		return r.DecidedAt
+	case RequestLapsed:
+		return r.Lapses
 	}
-	at := r.DecidedAt
-	if at.IsZero() {
-		at = r.Lapses
-	}
-	return at.Add(RequestKeptFor)
+	return r.DecidedAt
 }
 
 func (r *AccessRequest) Index() Index {
@@ -128,9 +142,45 @@ func (r *AccessRequest) Index() Index {
 		Unique:    uq,
 		Fields: map[string]any{"user_id": r.UserID, "tenant_id": r.TenantID, "waiting_user": r.waitingUser(), "queue": r.queue(),
 			"running": r.running(), "bots": r.State == RequestPending && r.Bots, "state": r.State, "created": r.Created,
-			"ends": r.Ends, "due": r.due()},
+			"ends": r.Ends, "due": r.due(), "decisions": r.decisions(), "decided": r.decided(),
+			"requester": Lower(r.RequesterName), "requester_email": Lower(r.RequesterEmail), "tenant": Lower(r.TenantTitle),
+			"reason": Lower(r.Reason)},
 	}
 }
+
+// Outcome is what came of a decided request, for its approver group's list of decisions: "active" (approved, its
+// access not marked expired), "ended" (expired, or ended early) or "denied"; "" while pending, or cancelled or lapsed
+// (nobody decided it).
+func (r *AccessRequest) Outcome() string {
+	switch r.State {
+	case RequestApproved:
+		return "active"
+	case RequestExpired, RequestEnded:
+		return "ended"
+	case RequestDenied:
+		return "denied"
+	}
+	return ""
+}
+
+// decisions is the approver group whose decisions r is among (none while pending, cancelled or lapsed).
+func (r *AccessRequest) decisions() string {
+	if r.Outcome() == "" {
+		return ""
+	}
+	return r.Approvers
+}
+
+// decided is r's approver group and outcome (AccessRequestDecided).
+func (r *AccessRequest) decided() string {
+	if o := r.Outcome(); o != "" {
+		return AccessRequestDecided(r.Approvers, o)
+	}
+	return ""
+}
+
+// AccessRequestDecided is the "decided" index value of approver group groupID's decisions with outcome (Outcome).
+func AccessRequestDecided(groupID, outcome string) string { return groupID + "/" + outcome }
 
 func (r *AccessRequest) waitingUser() string {
 	if r.State == RequestPending {

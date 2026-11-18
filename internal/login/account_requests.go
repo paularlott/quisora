@@ -23,7 +23,7 @@ func (m *Module) registerAccessRequests(h func(string, func(http.ResponseWriter,
 	h("POST /api-internal/account/access-requests/{id}/cancel", m.cancelOwnRequest)
 	h("POST /api-internal/account/access-requests/{id}/end", m.endOwnAccess)
 	h("GET /api-internal/account/approvals/pending", m.approvalsWaiting)
-	h("GET /api-internal/account/approvals/active", m.approvalsRunning)
+	h("GET /api-internal/account/approvals/decisions", m.approvalsDecided)
 	h("POST /api-internal/account/approvals/{id}/approve", m.decide(true))
 	h("POST /api-internal/account/approvals/{id}/deny", m.decide(false))
 	h("POST /api-internal/account/approvals/{id}/end", m.endApproved)
@@ -167,10 +167,13 @@ func (m *Module) approvalsWaiting(w http.ResponseWriter, r *http.Request, a acct
 	m.requestList(w, r, l, n, func(v *service.AccessRequestView) { v.Yours = v.UserID == a.u.ID })
 }
 
-// approvalsRunning answers GET /api-internal/account/approvals/active: a page of the access the person's approver
-// groups gave that still runs, newest first.
-func (m *Module) approvalsRunning(w http.ResponseWriter, r *http.Request, a acct) {
-	l, n, err := m.s.Svc.ApprovedByGroups(r.Context(), a.actor, pageOf(r))
+// approvalsDecided answers GET /api-internal/account/approvals/decisions?show=&q=: a page of the decisions of the
+// person's approver groups, newest first: show active (the default: access that runs), ended, denied or all; q finds
+// those whose requester's name or email, tenant or reason starts with it.
+func (m *Module) approvalsDecided(w http.ResponseWriter, r *http.Request, a acct) {
+	q := pageOf(r)
+	q.Search = r.URL.Query().Get("q")
+	l, n, err := m.s.Svc.GroupDecisions(r.Context(), a.actor, r.URL.Query().Get("show"), q)
 	if err != nil {
 		m.requestError(w, r, err)
 		return

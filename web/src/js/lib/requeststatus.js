@@ -4,8 +4,9 @@ import { fmtDateTime, isSet } from './format.js'
 
 const person = (verb, name, email) => `${verb} ${name || 'someone'}${email ? ' · ' + email : ''}`
 
-// requestStatus gives request r (the API's view of it) { stateText, badgeClass, lines, live }: live while the access
-// an approval gave lasts.
+// requestStatus gives request r (the API's view of it) { stateText, badgeClass, lines, after, live }: lines are who,
+// when and the note; after the same without who decided (for a table that shows that in a column of its own: who
+// ended it early stays); live while the access an approval gave lasts.
 export function requestStatus(r) {
   const live = !!r.live && (!isSet(r.ends) || Date.parse(r.ends) > Date.now())
   const approved = person('Approved by', r.decided_by_name, r.decided_by_email)
@@ -54,5 +55,5 @@ export function requestStatus(r) {
     default:
       state = r.state; badge = 'badge-plain'
   }
-  return { stateText: state, badgeClass: 'badge ' + badge, lines: [who, when, message].filter(Boolean), live }
+  return { stateText: state, badgeClass: 'badge ' + badge, lines: [who, when, message].filter(Boolean), after: [r.state === 'ended' ? who : '', when, message].filter(Boolean), live }
 }

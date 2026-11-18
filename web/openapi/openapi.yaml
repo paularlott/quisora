@@ -5571,6 +5571,10 @@ components:
           type: string
           description: the email of the person who ended it early (none when a service account did)
         ended_at: {type: string, format: date-time}
+        removes:
+          type: string
+          format: date-time
+          description: when a closed request is removed (limits.access_requests_kept_days after it closed, as the server kept them then)
         live:
           type: boolean
           description: the access an approval gave still lasts

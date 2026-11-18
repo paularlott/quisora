@@ -391,7 +391,10 @@ func TestAccessRequestsLapseAndGo(t *testing.T) {
 	if _, err := w.ask(w.pat, w.tenant.ID, 3600); err != nil {
 		t.Errorf("asking again after a lapse: %v", err)
 	}
-	r.Lapses = time.Now().Add(-model.RequestKeptFor - time.Hour).UTC()
+	if want := r.Lapses.Add(model.RequestKeptFor); !r.Removes.Equal(want) { // 90 days, the default
+		t.Errorf("a lapsed request is removed %v, want %v", r.Removes, want)
+	}
+	r.Removes = time.Now().Add(-time.Hour).UTC()
 	if err := w.svc.Requests.Update(w.ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +460,7 @@ func TestApproverGroupMembersAllSeeItsLists(t *testing.T) {
 	if _, err := w.svc.DecideAccessRequest(w.ctx, actor(w.alex), r.ID, true, "", true); err != nil {
 		t.Fatal(err)
 	}
-	if l, n, err := w.svc.ApprovedByGroups(w.ctx, actor(kim), store.ListQuery{}); err != nil || n != 1 || l[0].ID != r.ID {
+	if l, n, err := w.svc.GroupDecisions(w.ctx, actor(kim), service.DecisionsActive, store.ListQuery{}); err != nil || n != 1 || l[0].ID != r.ID {
 		t.Fatalf("the access alex approved, as kim sees it: %v %d", err, n)
 	}
 
@@ -474,10 +477,53 @@ func TestApproverGroupMembersAllSeeItsLists(t *testing.T) {
 	if req, appr := w.svc.AccessRequestRoles(w.ctx, kim); req || !appr {
 		t.Errorf("kim's roles, the group named by none now: %v %v", req, appr)
 	}
-	if l, n, err := w.svc.ApprovedByGroups(w.ctx, actor(kim), store.ListQuery{}); err != nil || n != 1 || l[0].ID != r.ID {
+	if l, n, err := w.svc.GroupDecisions(w.ctx, actor(kim), service.DecisionsActive, store.ListQuery{}); err != nil || n != 1 || l[0].ID != r.ID {
 		t.Fatalf("the running access, the group named by none now: %v %d", err, n)
 	}
 	if r, err = w.svc.EndAccessRequest(w.ctx, actor(kim), r.ID, true); err != nil || r.State != model.RequestEnded {
 		t.Fatalf("kim ended it: %v %+v", err, r)
+	}
+}
+
+// Decisions are found by the requester's name or email, the tenant or the reason, and narrowed by what came of them; a
+// closed request is removed after the days the server keeps them when it closed (limits.access_requests_kept_days).
+func TestAccessRequestDecisionsAndKeeping(t *testing.T) {
+	w := newRequestWorld(t)
+	w.svc.Cfg.Limits.AccessRequestsKeptDays = 7
+	r, err := w.ask(w.pat, w.tenant.ID, 3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err = w.svc.DecideAccessRequest(w.ctx, actor(w.alex), r.ID, false, "no ticket", true); err != nil {
+		t.Fatal(err)
+	}
+	if want := r.DecidedAt.Add(7 * 24 * time.Hour); !r.Removes.Equal(want) {
+		t.Errorf("a denied request is removed %v, want %v (7 days on)", r.Removes, want)
+	}
+	for _, c := range []struct {
+		show, q string
+		n       int
+	}{
+		{service.DecisionsDenied, "", 1}, {service.DecisionsActive, "", 0}, {service.DecisionsAll, "", 1},
+		{service.DecisionsAll, "pat", 1}, {service.DecisionsAll, "PAT@", 1}, {service.DecisionsAll, w.tenant.DisplayName[:4], 1},
+		{service.DecisionsAll, "sup-1", 1}, {service.DecisionsAll, "nobody", 0},
+	} {
+		if _, n, err := w.svc.GroupDecisions(w.ctx, actor(w.alex), c.show, store.ListQuery{Search: c.q}); err != nil || n != c.n {
+			t.Errorf("show %s, search %q: %v %d, want %d", c.show, c.q, err, n, c.n)
+		}
+	}
+	if _, _, err := w.svc.GroupDecisions(w.ctx, actor(w.alex), "sometimes", store.ListQuery{}); fieldOfErr(err) != "show" {
+		t.Errorf("an unknown show: %v", err)
+	}
+	// removed once its day comes
+	r.Removes = time.Now().Add(-time.Minute).UTC()
+	if err := w.svc.Requests.Update(w.ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.ExpireAccessRequests(w.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.Requests.Get(w.ctx, r.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a closed request past its day is still there: %v", err)
 	}
 }

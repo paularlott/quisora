@@ -192,10 +192,12 @@ const (
 	MaxGrantsPerUser = 100000
 )
 
-// Bounds of limits.access_requests_waiting.
+// Bounds of limits.access_requests_waiting and limits.access_requests_kept_days.
 const (
-	MinAccessRequestsWaiting = 1
-	MaxAccessRequestsWaiting = 10000
+	MinAccessRequestsWaiting  = 1
+	MaxAccessRequestsWaiting  = 10000
+	MinAccessRequestsKeptDays = 1
+	MaxAccessRequestsKeptDays = 3650
 )
 
 // Bounds of limits.sessions_per_user.
@@ -234,7 +236,11 @@ type Limits struct {
 	// (service.CreateAccessRequest): enough for the busiest support work, few enough that one person cannot flood the
 	// approvers' queues.
 	AccessRequestsWaiting int `toml:"access_requests_waiting" flag:"access-requests-waiting" usage:"Access requests one person may have waiting for a decision at once, 1 to 10000"`
-	EphemeralMB           int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
+	// AccessRequestsKeptDays is how long an access request is kept once it closed (its access ended, or it was
+	// denied, cancelled or lapsed): a request takes the setting in force when it closes. The audit log keeps the
+	// history after that.
+	AccessRequestsKeptDays int `toml:"access_requests_kept_days" flag:"access-requests-kept-days" usage:"Days a closed access request is kept before it is removed, 1 to 3650 (the audit log keeps the history)"`
+	EphemeralMB            int `toml:"ephemeral_mb" flag:"ephemeral-mb" usage:"Memory per node for short-lived sign-in state (flows, codes, pushed requests), MiB; past it such requests get 503"`
 	// FlowsPerIP is how many authorization flows (sign-ins started at an authorization endpoint and not finished yet)
 	// one client address may hold at once, an IPv6 /64 counting as one address (its /48 allowed sixteen times as
 	// many, its /32 sixty-four times): so that a few addresses cannot fill ephemeral_mb with flows they never finish.
@@ -283,7 +289,7 @@ func Default() *Config {
 		Session:  Session{TTL: 7 * 86400, Idle: 86400, PrivilegedTTL: 12 * 3600, PrivilegedIdle: 3600, UpstreamCheckMinutes: 60},
 		Mail:     Mail{SMTPPort: 587, TLS: "starttls"},
 		Audit:    Audit{RetentionDays: 90, Logins: true, SpoolMaxMB: 256},
-		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, HeldKB: 2048, PasswordMinLength: 15, GrantsPerUser: 1000, SessionsPerUser: 100, AccessRequestsWaiting: 10},
+		Limits:   Limits{MaxInFlight: 4096, LoginPerIPMin: 300, LockoutAttempts: 10, LockoutMinutes: 15, OrgFailuresPerMin: 100, EphemeralMB: 1024, FlowsPerIP: 50, HeldKB: 2048, PasswordMinLength: 15, GrantsPerUser: 1000, SessionsPerUser: 100, AccessRequestsWaiting: 10, AccessRequestsKeptDays: 90},
 		Log:      Log{Level: "info", Format: "console", Access: true},
 		reloaded: new(atomic.Pointer[Limits]),
 	}
@@ -733,6 +739,9 @@ func limitErrors(l Limits) []error {
 	}
 	if l.AccessRequestsWaiting < MinAccessRequestsWaiting || l.AccessRequestsWaiting > MaxAccessRequestsWaiting {
 		errs = append(errs, fmt.Errorf("limits.access_requests_waiting must be between %d and %d", MinAccessRequestsWaiting, MaxAccessRequestsWaiting))
+	}
+	if l.AccessRequestsKeptDays < MinAccessRequestsKeptDays || l.AccessRequestsKeptDays > MaxAccessRequestsKeptDays {
+		errs = append(errs, fmt.Errorf("limits.access_requests_kept_days must be between %d and %d", MinAccessRequestsKeptDays, MaxAccessRequestsKeptDays))
 	}
 	if l.SessionsPerUser < MinSessionsPerUser || l.SessionsPerUser > MaxSessionsPerUser {
 		errs = append(errs, fmt.Errorf("limits.sessions_per_user must be between %d and %d", MinSessionsPerUser, MaxSessionsPerUser))

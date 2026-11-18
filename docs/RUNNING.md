@@ -229,6 +229,7 @@ TLS, the proxy's configuration decides.
 | `limits.grants_per_user`      | 1000    | Refresh grants one user may hold                                                                       | Next grant           |
 | `limits.sessions_per_user`    | 100     | Browser sessions one user may hold (1 to 10000); past it the least recently used end, never refusing a sign-in ([sessions](sign-in/README.md#sessions)) | Next sign-in         |
 | `limits.access_requests_waiting` | 10   | Access requests one person may have waiting for a decision at once (1 to 10000): [access requests](ACCESS-REQUESTS.md) | Next request         |
+| `limits.access_requests_kept_days` | 90 | Days a closed access request is kept before it is removed (1 to 3650); the audit log keeps the history: [access requests](ACCESS-REQUESTS.md) | Requests that close from then on |
 | `limits.password_workers`     | CPUs    | Passwords hashed at once                                                                               | Restart only         |
 | `limits.ephemeral_mb`         | 1024    | Memory for short-lived sign-in state (with a shared database: the bytes of it each node writes there)  | Restart only         |
 | `server.deny_networks`        | none    | Client addresses refused, below                                                                        | Next request         |

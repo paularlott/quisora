@@ -104,6 +104,13 @@ var Schemas = map[Kind]Schema{
 		{Name: "bots", Type: FieldBool, Index: true},           // pending, and service accounts may decide it: their queue
 		{Name: "state", Type: FieldString, Index: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
+		{Name: "decisions", Type: FieldString, Index: true}, // an approver group's decided requests
+		{Name: "decided", Type: FieldString, Index: true},   // "<approver group>/<outcome>": active, ended or denied
+		// what a search matches, by how it starts (lower case): the requester's name and email, the tenant, the reason
+		{Name: "requester", Type: FieldString, Search: true},
+		{Name: "requester_email", Type: FieldString, Search: true},
+		{Name: "tenant", Type: FieldString, Search: true},
+		{Name: "reason", Type: FieldString, Search: true},
 		{Name: "ends", Type: FieldTime, Sort: true}, // a running request's end (Ends): the lists leave out one past it
 		{Name: "due", Type: FieldTime, Sort: true},  // lapsing, running out, then removal (ExpireAccessRequests)
 	}},

@@ -35,28 +35,36 @@
     {{template "pager-for" "waiting-page-size"}}
   </section>
 
-  <section class="glass-card" aria-labelledby="active-h" x-data="approvalsRunning" data-noun="running approvals">
-    <h2 class="section-title mb-4" id="active-h">Access your groups approved</h2>
-    <p class="muted mb-4">Access that has not ended yet, approved by anyone in your groups. End it early when it is no longer needed: the person is signed out of the tenant's applications at once.</p>
+  <section class="glass-card" aria-labelledby="decided-h" x-data="approvalsDecided" data-noun="decisions" data-search="decisions-search">
+    <h2 class="section-title mb-1" id="decided-h">Your groups’ decisions</h2>
+    <p class="muted mb-4">What anyone in your groups approved or denied. End access early when it is no longer needed: the person is signed out of the tenant’s applications at once.</p>
+    <div class="toolbar mb-4">
+      {{template "search" (dict "id" "decisions-search" "label" "Search decisions" "placeholder" "Person, email, tenant or reason")}}
+      <div class="field"><label class="sr-only" for="f-decided-show">Show</label>
+        <select class="select" id="f-decided-show" data-filter="show" @change="setFilter">
+          <option value="active">Active</option><option value="ended">Ended</option><option value="denied">Denied</option><option value="all">All</option>
+        </select></div>
+    </div>
     <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
     <p class="muted" x-show="showEmpty" x-cloak>None at the moment.</p>
-    <div class="table-wrap" role="region" aria-label="Access your groups approved" tabindex="0" x-show="hasItems" x-cloak>
+    <p class="muted" x-show="showNoResults" x-cloak>None match.</p>
+    <div class="table-wrap" role="region" aria-label="Your groups’ decisions" tabindex="0" x-show="hasItems" x-cloak>
       <table class="table">
-        <caption class="sr-only">Access your groups approved</caption>
-        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">Until</th><th scope="col">Why</th><th scope="col">Approved by</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <caption class="sr-only">Your groups’ decisions</caption>
+        <thead><tr><th scope="col">Who</th><th scope="col">Tenant</th><th scope="col">Why</th><th scope="col">Status</th><th scope="col">Decided by</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
             <th scope="row">{{template "approvals-who"}}</th>
             <td x-text="row.tenant_display_name"></td>
-            <td x-text="row.untilText"></td>
             <td x-text="row.reason"></td>
+            <td><span :class="row.badgeClass" x-text="row.stateText"></span><div class="mt-1"><template x-for="(l, i) in row.statusLines" :key="i"><div class="cell-sub" x-text="l"></div></template></div></td>
             <td><a class="cell-title" x-show="row.deciderHref" :href="row.deciderHref" x-text="row.decided_by_name"></a><span class="cell-title" x-show="!row.deciderHref" x-text="row.decided_by_name"></span><div class="cell-sub" x-show="row.decided_by_email" x-text="row.decided_by_email"></div></td>
-            <td class="actions"><button type="button" class="btn btn-secondary btn-sm" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button></td>
+            <td class="actions"><button type="button" class="btn btn-secondary btn-sm" x-show="row.canEnd" :data-id="row.id" :aria-label="row.endLabel" @click="end">End now</button></td>
           </tr></template>
         </tbody>
       </table>
     </div>
-    {{template "pager-for" "active-page-size"}}
+    {{template "pager-for" "decided-page-size"}}
   </section>
 
   {{template "dialog-start" (dict "id" "decide-dialog" "title" "Approve the request" "titleBind" "decideTitle" "size" "sm")}}

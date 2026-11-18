@@ -10,7 +10,7 @@ import { comboMixin } from '../lib/combo.js'
 import { tableMixin } from '../lib/table.js'
 import { toast } from '../lib/announce.js'
 import { mix } from '../lib/mix.js'
-import { fmtDateTime, relTime } from '../lib/format.js'
+import { fmtDateTime, relTime, isSet } from '../lib/format.js'
 import { refetchOnReturn } from '../lib/live.js'
 import { withReauth } from './account.js'
 import { requestStatus } from '../lib/requeststatus.js'
@@ -192,10 +192,15 @@ export default function (Alpine) {
     openDeny(ev) { this.decide(ev, false) },
   }))
 
-  // Access the approver's groups gave that runs: newest first, a page at a time.
-  Alpine.data('approvalsRunning', () => mix(tableMixin(), accountTable('/approvals/active', 'approvals-changed', true), {
+  // The approver's groups' decisions: newest first, a page at a time, narrowed by what came of them (show: active, the
+  // default; ended; denied; all) and searched by person, email, tenant or reason.
+  Alpine.data('approvalsDecided', () => mix(tableMixin(), accountTable('/approvals/decisions', 'approvals-changed', true), {
+    extra: { show: 'active' },
+    get filtered() { return this.q !== '' || this.extra.show !== 'active' }, // Active is where it starts, not a filter
     transform(p) {
-      return { ...p, untilText: fmtDateTime(p.ends), userHref: userLink(this.$el, p.user_id),
+      const st = requestStatus(p)
+      return { ...p, stateText: st.stateText, badgeClass: st.badgeClass, statusLines: st.after,
+        canEnd: st.live && p.state === 'approved' && isSet(p.ends), userHref: userLink(this.$el, p.user_id),
         deciderHref: p.decided_via === 'account' ? userLink(this.$el, p.decided_by) : '', endLabel: `End now: ${p.user_name}’s access to ${p.tenant_display_name}` } },
     async end(ev) {
       const opener = ev.currentTarget
