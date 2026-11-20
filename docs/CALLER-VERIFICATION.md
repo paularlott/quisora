@@ -46,8 +46,8 @@ the code: cancel it and start again if the caller does not have it.
 ## Verifying a call
 
 On **Verify a call**, the caller first sees who is verifying them right now (the agent's name, organization and why,
-never the code), as soon as the agent starts: if someone on a call asks for a code and nobody shows there, they did
-not start a verification. The caller then enters the six digits. They then see who is asking (the agent's name and email), from
+never the code), as soon as the agent starts, and only then a box for the code: if someone on a call asks for a code
+and nobody shows there, they did not start a verification. The caller then enters the six digits. They then see who is asking (the agent's name and email), from
 which organization, and why, and a warning: confirm only if they are on a call with that person right now. **Yes,
 it's me** asks them to confirm it is them first (their passkey or second factor, unless they did within the last 5
 minutes); **Not me** tells the agent so.

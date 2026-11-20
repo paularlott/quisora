@@ -93,8 +93,9 @@ test('caller verification pages: no accessibility violations', async ({ page }) 
   expect(r.violations.length, fmt(r.violations)).toBe(0)
   await signIn(page, 'user')
   await page.goto('/o/acme/account/verify-call', { waitUntil: 'load' })
-  await expect(page.getByLabel(/Code you were given/)).toBeVisible()
-  await expect(page.getByText('Nobody is verifying you right now.')).toBeVisible() // nobody has started one for Alan
+  // nobody has started one for Alan: no code box, just what to expect
+  await expect(page.getByRole('heading', { name: 'Nobody is verifying you right now' })).toBeVisible()
+  await expect(page.getByLabel(/Code you were given/)).toBeHidden()
   r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
 })

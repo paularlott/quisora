@@ -238,6 +238,8 @@ export default function (Alpine) {
       } catch (e) { /* the next look tries again */ } finally { this.waitingLoaded = true }
     },
     get hasWaiting() { return this.waiting.length > 0 },
+    // the code box only while someone is verifying them: with nobody, there is no code to enter
+    get entryTitle() { return this.noWaiting ? 'Nobody is verifying you right now' : 'Enter the code' },
     get noWaiting() { return this.waitingLoaded && this.waiting.length === 0 },
     get showEntry() { return !this.found && !this.answered },
     get showAsk() { return !!this.found && !this.answered },
