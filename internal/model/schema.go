@@ -62,6 +62,10 @@ var Schemas = map[Kind]Schema{
 		{Name: "display_name", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 		{Name: "created", Type: FieldTime, Sort: true, SortIndex: true},
 		{Name: "verified_by_primary", Type: FieldBool, Index: true}, // the primary organization's agents may verify its users
+		// the display name from its 2nd, 3rd and 4th word on: a search finds "Northwind Traders" by "Trad" too
+		{Name: "display_word2", Type: FieldString, Search: true, Sort: true, SortIndex: true},
+		{Name: "display_word3", Type: FieldString, Search: true, Sort: true, SortIndex: true},
+		{Name: "display_word4", Type: FieldString, Search: true, Sort: true, SortIndex: true},
 	}},
 	// Sort indexes: the user console's columns (username, role, active; last sign-in lives on the sign-in records),
 	// SCIM's sortBy attributes (userName, displayName, emails, active, meta.created) and the management API's sorts.

@@ -127,3 +127,46 @@ func TestFormat5IndexesMembersOnlyTenants(t *testing.T) {
 		t.Errorf("members-only tenants after the migration: %d", n)
 	}
 }
+
+// A store at format 5 holds organizations written before a search found them by a later word of their display name:
+// opening it with this build indexes them, so "Trad" finds "Northwind Traders".
+func TestFormat6IndexesOrganizationWords(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := OpenBadger(ctx, dir, BadgerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Encode(&model.Org{Meta: model.Meta{ID: "o1"}, Name: "nwt", DisplayName: "Northwind Traders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"display_word2", "display_word3", "display_word4", "verified_by_primary"} {
+		delete(r.Fields, f) // as format 5's build encoded it
+	}
+	if err := s.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	find := func() int {
+		t.Helper()
+		res, err := s.List(ctx, model.KindOrg, store.ListQuery{Search: "Trad"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(res.Records)
+	}
+	if find() != 0 {
+		t.Fatal("the seeded organization is indexed already: the test seeds nothing old")
+	}
+	if err := s.markFormat(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if s, err = OpenBadger(ctx, dir, BadgerOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if n := find(); n != 1 {
+		t.Errorf("organizations found by a later word after the migration: %d", n)
+	}
+}

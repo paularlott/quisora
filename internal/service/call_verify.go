@@ -110,8 +110,7 @@ func (s *Service) VerifyOrgs(ctx context.Context, a *Actor, q string, limit int)
 	}
 	q = strings.TrimSpace(q)
 	out := []VerifyOrg{}
-	lq := strings.ToLower(q)
-	if q == "" || strings.HasPrefix(strings.ToLower(own.Name), lq) || strings.HasPrefix(strings.ToLower(own.DisplayName), lq) {
+	if model.OrgMatches(own, q) {
 		out = append(out, VerifyOrg{ID: own.ID, Name: own.Name, DisplayName: own.DisplayName, Own: true})
 	}
 	if !own.Primary {
@@ -165,11 +164,13 @@ func (s *Service) VerifyUsers(ctx context.Context, a *Actor, orgRef, q string, l
 }
 
 // VerifyCallInput starts a verification: the customer's organization (id or name; empty: the agent's own), the
-// customer's user id, and why (shown to the customer).
+// customer's user id, who placed the call (model.VerifyInbound: they called; model.VerifyOutbound: the agent did), and
+// why (shown to the customer).
 type VerifyCallInput struct {
-	Org    string `json:"org"`
-	UserID string `json:"user_id"`
-	Reason string `json:"reason"`
+	Org       string `json:"org"`
+	UserID    string `json:"user_id"`
+	Direction string `json:"direction"`
+	Reason    string `json:"reason"`
 }
 
 // StartCallVerification is the actor (an agent) starting a verification of a customer: it returns the verification and
@@ -188,6 +189,9 @@ func (s *Service) StartCallVerification(ctx context.Context, a *Actor, in Verify
 	if len(reason) > 200 {
 		return nil, "", Invalid("reason", "at most 200 characters")
 	}
+	if in.Direction != model.VerifyInbound && in.Direction != model.VerifyOutbound {
+		return nil, "", Invalid("direction", "say who placed the call: they called you, or you called them")
+	}
 	u, err := s.Users.Get(ctx, strings.TrimSpace(in.UserID))
 	if errors.Is(err, store.ErrNotFound) || err == nil && (u.OrgID != o.ID || !u.Active || u.Role == model.RoleSuperAdmin) {
 		return nil, "", Invalid("user_id", "choose a person of "+o.DisplayName)
@@ -205,10 +209,10 @@ func (s *Service) StartCallVerification(ctx context.Context, a *Actor, in Verify
 			return nil, "", err
 		}
 		v := &model.CallVerification{Meta: model.Meta{ID: model.NewID()}, OrgID: o.ID, UserID: u.ID, AgentOrgID: own.ID, AgentID: agent.ID,
-			AgentName: agent.FullName(), AgentEmail: agent.Email, AgentOrgName: own.DisplayName, Reason: reason,
+			AgentName: agent.FullName(), AgentEmail: agent.Email, AgentOrgName: own.DisplayName, Reason: reason, Direction: in.Direction,
 			CodeKey: model.VerifyCodeKey(u.ID, code), State: model.VerifyPending, Expires: now.Add(model.VerifyCodeFor)}
 		err = s.Verifications.Create(ctx, v)
-		detail := map[string]string{"verification": v.ID, "user": u.ID, "customer_org": o.Name, "agent": agent.ID}
+		detail := map[string]string{"verification": v.ID, "user": u.ID, "customer_org": o.Name, "agent": agent.ID, "direction": in.Direction}
 		if reason != "" {
 			detail["reason"] = reason
 		}

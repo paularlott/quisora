@@ -5,7 +5,7 @@
     <div>
       <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
       <h1 class="page-title">Verify a caller</h1>
-      <p class="page-sub">Confirm that the person you are talking to is the account holder. Start a verification and read its code to them: they enter it in their own account, see who is asking, and confirm it is them.</p>
+      <p class="page-sub page-sub-wide">Confirm that the person you are talking to is the account holder. Start a verification and read its code to them: they enter it in their own account, see who is asking, and confirm it is them.</p>
     </div>
   </div>
   <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
@@ -15,6 +15,19 @@
     <form class="stack" @submit.prevent="start" novalidate>
       {{template "combo-field" (dict "name" "org" "label" "Organization" "placeholder" "Type an organization’s name" "help" "Yours, or one that lets the primary organization’s agents verify its people." "show" "manyOrgs")}}
       {{template "combo-field" (dict "name" "user_id" "label" "Person" "placeholder" "Type their name or email" "help" "The account holder they say they are.")}}
+      <fieldset class="fieldset" aria-describedby="e-direction">
+        <legend>Who called?</legend>
+        <label class="check" for="f-direction">
+          <input type="radio" class="radio" id="f-direction" name="direction" value="inbound" x-model="form.direction" @change="clearErrors">
+          <span class="check-text">They called us</span>
+        </label>
+        <label class="check" for="f-dir-out">
+          <input type="radio" class="radio" id="f-dir-out" name="direction" value="outbound" x-model="form.direction" @change="clearErrors" aria-describedby="h-dir-out">
+          <span class="check-text">We called them<span class="help" id="h-dir-out">Only on the number held for their account, never one a caller gives you.</span></span>
+        </label>
+        <p class="help">They see which it was: a scammer passing your code on to someone they called gets caught out by it.</p>
+        <p class="field-error" id="e-direction" x-text="errors.direction"></p>
+      </fieldset>
       {{template "field" (dict "name" "reason" "label" "Why" "autocomplete" "off" "help" "Optional. They see this, for example the ticket you are calling about. At most 200 characters.")}}
       <div><button type="submit" class="btn btn-primary" :disabled="busy" x-text="startLabel">Start verification</button></div>
     </form>
@@ -46,11 +59,12 @@
     <div class="table-wrap" role="region" aria-label="Your verifications today" tabindex="0" x-show="hasToday" x-cloak>
       <table class="table">
         <caption class="sr-only">Your verifications today</caption>
-        <thead><tr><th scope="col">Who</th><th scope="col">Organization</th><th scope="col">Started</th><th scope="col">Result</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <thead><tr><th scope="col">Who</th><th scope="col">Organization</th><th scope="col">The call</th><th scope="col">Started</th><th scope="col">Result</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           <template x-for="row in today" :key="row.id"><tr>
             <th scope="row"><span class="cell-title" x-text="row.customer_name"></span><div class="cell-sub" x-text="row.customer_email"></div></th>
             <td x-text="row.customer_org_name"></td>
+            <td x-text="row.callText"></td>
             <td class="whitespace-nowrap" x-text="row.startedText"></td>
             <td><span :class="row.badgeClass" x-text="row.stateText"></span><div class="cell-sub mt-1" x-show="row.detail" x-text="row.detail"></div></td>
             <td class="actions">

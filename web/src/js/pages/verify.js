@@ -50,6 +50,9 @@ function dropCode(id) {
   try { localStorage.removeItem(CODE_KEY + id) } catch { /* nothing to drop */ }
 }
 
+// callText says who placed the call, as the customer reads it.
+const callText = (v) => v.direction === 'outbound' ? `${v.agent_org_name} called you` : `You called ${v.agent_org_name}`
+
 // verifyState is the badge and the line under it for verification v, as the agent or the customer sees it.
 function verifyState(v, forAgent) {
   switch (v.state) {
@@ -89,7 +92,7 @@ export default function (Alpine) {
   }), {
     current: null, code: '', today: [], loadError: '', loaded: false, now: Date.now(), manyOrgs: false, _poll: null, _tick: null, _resumed: false,
     async init() {
-      this.resetForm({ org: '', user_id: '', reason: '' })
+      this.resetForm({ org: '', user_id: '', direction: '', reason: '' })
       this.loadToday()
       refetchOnReturn(() => this.loadToday())
       this._tick = setInterval(() => { this.now = Date.now() }, 1000)
@@ -113,6 +116,7 @@ export default function (Alpine) {
           const open = v.state === 'pending' && v.live
           if (!open) dropCode(v.id)
           return { ...v, ...verifyState(v, true), startedText: fmtDateTime(v.created), open,
+            callText: v.direction === 'outbound' ? 'You called them' : 'They called you',
             openLabel: `Open the verification of ${v.customer_name}`, cancelLabel: `Cancel the verification of ${v.customer_name}` }
         })
         this.loadError = ''
@@ -161,7 +165,10 @@ export default function (Alpine) {
     get codeText() { return this.code ? this.code.slice(0, 3) + ' ' + this.code.slice(3) : '' },
     get codeSpoken() { return this.code.split('').join(' ') },
     get currentTitle() { return this.current ? `Verifying ${this.current.customer_name}` : '' },
-    get currentWho() { return this.current ? `${this.current.customer_email || ''} · ${this.current.customer_org_name}` : '' },
+    get currentWho() {
+      const v = this.current
+      return v ? `${v.customer_email || ''} · ${v.customer_org_name} · ${v.direction === 'outbound' ? 'You called them' : 'They called you'}` : ''
+    },
     get whereText() {
       const v = this.current
       return v ? `They enter it under Verify a call in their account menu (${location.origin}${v.verify_path}). They see your name and why you are asking.` : ''
@@ -188,8 +195,12 @@ export default function (Alpine) {
         this.setErrors(new ApiError(422, { error: 'Choose the person from the list.', field: 'user_id' }))
         return
       }
+      if (!this.form.direction) {
+        this.setErrors(new ApiError(422, { error: 'Say who placed the call.', field: 'direction' }))
+        return
+      }
       const f = this.form
-      const res = await this.run(() => post(accountApi('/verify-caller'), { org: f.org, user_id: f.user_id, reason: f.reason }))
+      const res = await this.run(() => post(accountApi('/verify-caller'), { org: f.org, user_id: f.user_id, direction: f.direction, reason: f.reason }))
       if (!res) return
       this.current = res.verification
       this.code = res.code
@@ -230,6 +241,7 @@ export default function (Alpine) {
       this.current = null
       this.code = ''
       this.form.reason = ''
+      this.form.direction = ''
       this.comboSet('user_id', '', '')
       this.$nextTick(() => { const i = document.getElementById('f-user_id'); if (i) i.focus() })
     },
@@ -254,7 +266,7 @@ export default function (Alpine) {
     async loadWaiting() {
       try {
         const r = await get(accountApi('/verify-call/waiting'))
-        this.waiting = r.items.map((w) => ({ ...w, fromText: `of ${w.agent_org_name}${w.agent_email ? ' · ' + w.agent_email : ''}`,
+        this.waiting = r.items.map((w) => ({ ...w, fromText: `of ${w.agent_org_name}${w.agent_email ? ' · ' + w.agent_email : ''}`, callText: callText(w), outbound: w.direction === 'outbound',
           whyText: w.reason ? `Why: ${w.reason}` : '' }))
       } catch (e) { /* the next look tries again */ } finally { this.waitingLoaded = true }
     },
@@ -271,9 +283,13 @@ export default function (Alpine) {
     get askAgentEmail() { return this.found ? this.found.agent_email || '' : '' },
     get askOrg() { return this.found ? this.found.agent_org_name : '' },
     get askReason() { return this.found ? this.found.reason || '' : '' },
+    get askCall() { return this.found ? callText(this.found) : '' },
     get askWarning() {
       const a = this.found
-      return a ? `Only confirm if you are on a call with ${a.agent_name} of ${a.agent_org_name} right now. If someone you did not expect asked you for a code, or to read one out, choose Not me.` : ''
+      if (!a) return ''
+      const mismatch = a.direction === 'outbound' ? `If you called them, this is not your call: choose Not me.` :
+        `If someone called you, this is not your call (it says you called ${a.agent_org_name}): choose Not me.`
+      return `Only confirm if you are on a call with ${a.agent_name} of ${a.agent_org_name} right now. ${mismatch}`
     },
     get doneTitle() { return this.answered && this.answered.state === 'confirmed' ? 'Thank you: you are verified' : 'Thank you: they have been told' },
     get doneText() {
@@ -327,7 +343,7 @@ export default function (Alpine) {
       window.addEventListener('verifications-changed', () => this.load())
       return this.initTable()
     },
-    transform(v) { return { ...v, ...verifyState(v, false), startedText: fmtDateTime(v.created) } },
+    transform(v) { return { ...v, ...verifyState(v, false), startedText: fmtDateTime(v.created), callText: callText(v) } },
     get hasLoadError() { return this.loadError !== '' },
   }))
 }

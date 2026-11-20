@@ -18,6 +18,14 @@ const (
 	VerifyExpired   = "expired"   // nobody entered the code in time
 )
 
+// Who placed the call a verification is for (CallVerification.Direction), as the agent says: the customer called the
+// organization (inbound), or the agent called the customer (outbound). The customer is shown it: a scammer passing an
+// agent's code on to someone they called makes the agent record an inbound call, which that person sees is not theirs.
+const (
+	VerifyInbound  = "inbound"
+	VerifyOutbound = "outbound"
+)
+
 // VerifyCodeFor is how long a caller verification's code may be entered; VerifyKeptFor how long a closed one is kept
 // (the audit log keeps the history).
 const (
@@ -42,6 +50,7 @@ type CallVerification struct {
 	AgentEmail   string `msgpack:"ae,omitempty" json:"agent_email,omitempty"`
 	AgentOrgName string `msgpack:"aon" json:"agent_org_name"`
 	Reason       string `msgpack:"rs,omitempty" json:"reason,omitempty"`
+	Direction    string `msgpack:"dir" json:"direction"` // VerifyInbound or VerifyOutbound
 	// CodeKey is the hash that finds a pending verification by its code (VerifyCodeKey): the code itself is shown to
 	// the agent once and kept nowhere.
 	CodeKey string    `msgpack:"ck" json:"-"`

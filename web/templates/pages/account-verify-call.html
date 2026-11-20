@@ -5,7 +5,7 @@
     <div>
       <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
       <h1 class="page-title">Verify a call</h1>
-      <p class="page-sub">When someone from a support team needs to know it is really you on the call, they read you a 6-digit code. Enter it here: you see who is asking before you confirm.</p>
+      <p class="page-sub page-sub-wide">When someone from a support team needs to know it is really you on the call, they read you a 6-digit code. Enter it here: you see who is asking before you confirm.</p>
     </div>
   </div>
 
@@ -15,7 +15,7 @@
       <div class="verify-waiting" x-show="hasWaiting" x-cloak>
         <p class="label">Verifying you now</p>
         <template x-for="w in waiting" :key="w.id">
-          <div class="mt-2"><span class="font-bold" x-text="w.agent_name"></span> <span class="muted" x-text="w.fromText"></span><div class="cell-sub" x-show="w.reason" x-text="w.whyText"></div></div>
+          <div class="mt-2"><span class="font-bold" x-text="w.agent_name"></span> <span class="muted" x-text="w.fromText"></span><div class="mt-1"><template x-if="w.outbound"><span><span x-text="w.agent_org_name"></span> <strong>called you</strong></span></template><template x-if="!w.outbound"><span><strong>You called</strong> <span x-text="w.agent_org_name"></span></span></template></div><div class="cell-sub" x-show="w.reason" x-text="w.whyText"></div></div>
         </template>
       </div>
       <p class="muted" x-show="noWaiting" x-cloak>When the person you are talking to starts a verification, their name shows here, with a box for the code they read to you. If someone asks you for a code and nothing shows, do not go on.</p>
@@ -31,6 +31,7 @@
     <dl class="kv">
       <div><dt>Who is asking</dt><dd><span class="font-bold" x-text="askAgent"></span><div class="cell-sub" x-text="askAgentEmail"></div></dd></div>
       <div><dt>From</dt><dd x-text="askOrg"></dd></div>
+      <div><dt>The call</dt><dd class="font-bold" x-text="askCall"></dd></div>
       <div x-show="askReason"><dt>Why</dt><dd x-text="askReason"></dd></div>
     </dl>
     <div class="alert alert-warning mt-4" role="note">{{template "icon" "alert"}}<span x-text="askWarning"></span></div>
@@ -54,11 +55,12 @@
     <div class="table-wrap" role="region" aria-label="Who verified you" tabindex="0" x-show="hasItems" x-cloak>
       <table class="table">
         <caption class="sr-only">Who verified you</caption>
-        <thead><tr><th scope="col">Who asked</th><th scope="col">From</th><th scope="col">When</th><th scope="col">Result</th></tr></thead>
+        <thead><tr><th scope="col">Who asked</th><th scope="col">From</th><th scope="col">The call</th><th scope="col">When</th><th scope="col">Result</th></tr></thead>
         <tbody>
           <template x-for="row in items" :key="row.id"><tr>
             <th scope="row"><span class="cell-title" x-text="row.agent_name"></span><div class="cell-sub" x-text="row.agent_email"></div></th>
             <td x-text="row.agent_org_name"></td>
+            <td x-text="row.callText"></td>
             <td class="whitespace-nowrap" x-text="row.startedText"></td>
             <td><span :class="row.badgeClass" x-text="row.stateText"></span></td>
           </tr></template>

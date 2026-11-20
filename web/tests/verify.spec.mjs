@@ -24,6 +24,10 @@ test('caller verification: Grace verifies Alan, who enters her code and confirms
   await person.fill('alan')
   await page.getByRole('option', { name: /Alan Turing/ }).click()
   await page.getByLabel('Why').fill('INC-9: billing question')
+  await page.getByRole('button', { name: 'Start verification' }).click() // who placed the call is not said yet
+  await expect(page.locator('#e-direction')).toContainText('Say who placed the call')
+  await page.getByLabel('They called us').check()
+  await expect(page.locator('#e-direction')).toBeEmpty() // answered: the message goes
   await shot(page, '1-agent-start')
   await page.getByRole('button', { name: 'Start verification' }).click()
   const current = page.locator('section[aria-labelledby="current-h"]')
@@ -45,6 +49,7 @@ test('caller verification: Grace verifies Alan, who enters her code and confirms
   await expect(entry).toContainText('Verifying you now')
   await expect(entry).toContainText('Grace Hopper')
   await expect(entry).toContainText('Why: INC-9: billing question')
+  await expect(entry.locator('strong', { hasText: 'You called' })).toBeVisible() // the direction, in bold
   await expect(entry).not.toContainText(code)
   await shot(page, '3-customer-enter')
   const wrong = code === '000000' ? '111111' : '000000'
@@ -54,12 +59,16 @@ test('caller verification: Grace verifies Alan, who enters her code and confirms
   const ask = page.locator('section[aria-labelledby="ask-h"]')
   await expect(ask).toContainText('Grace Hopper')
   await expect(ask).toContainText('INC-9: billing question')
+  await expect(ask).toContainText('You called Acme Corporation') // as Grace said: he called her
+  await expect(ask).toContainText('If someone called you, this is not your call')
   await expect(ask).toContainText('Only confirm if you are on a call with Grace Hopper')
   await shot(page, '4-customer-ask')
   await ask.getByRole('button', { name: /Yes, it’s me/ }).click()
   const done = page.locator('section[aria-labelledby="done-h"]')
   await expect(done).toContainText('you are verified')
-  await expect(page.locator('section[aria-labelledby="past-h"]').getByRole('row', { name: /Grace Hopper/ }).first()).toContainText('Confirmed')
+  const past = page.locator('section[aria-labelledby="past-h"]').getByRole('row', { name: /Grace Hopper/ }).first()
+  await expect(past).toContainText('Confirmed')
+  await expect(past).toContainText('You called Acme Corporation')
   await shot(page, '5-customer-done')
 
   // Grace sees it confirmed among today's
@@ -67,6 +76,7 @@ test('caller verification: Grace verifies Alan, who enters her code and confirms
   await page.goto('/o/acme/account/verify-caller', { waitUntil: 'load' })
   const row = page.locator('section[aria-labelledby="today-h"]').getByRole('row', { name: /Alan Turing/ }).first()
   await expect(row).toContainText('Confirmed')
+  await expect(row).toContainText('They called you')
   await shot(page, '6-agent-today')
 })
 
@@ -136,6 +146,7 @@ test('caller verification: a reload shows the waiting verification again, and th
   await page.goto('/o/acme/account/verify-caller', { waitUntil: 'load' })
   await page.getByRole('combobox', { name: 'Person' }).fill('katherine')
   await page.getByRole('option', { name: /Katherine/ }).first().click()
+  await page.getByLabel('They called us').check()
   await page.getByRole('button', { name: 'Start verification' }).click()
   const codeEl = page.locator('.verify-code')
   await expect(codeEl).toBeVisible()
@@ -175,12 +186,14 @@ test('caller verification: the caller’s page and the agent’s follow each oth
     await grace.getByRole('combobox', { name: 'Person' }).fill('alan')
     await grace.getByRole('option', { name: /Alan Turing/ }).click()
     await grace.getByLabel('Why').fill('INC-12: live')
+    await grace.getByLabel('We called them').check()
     await grace.getByRole('button', { name: 'Start verification' }).click()
     await expect(grace.locator('.verify-code')).toHaveText(/^\d{3} \d{3}$/)
     const code = (await grace.locator('.verify-code').innerText()).replace(/\s/g, '')
 
     const entry = alan.locator('section[aria-labelledby="code-h"]')
     await expect(entry).toContainText('INC-12: live', { timeout: 5000 })
+    await expect(entry).toContainText('Acme Corporation called you')
     await alan.getByLabel(/Code you were given/).fill(code)
     await alan.locator('section[aria-labelledby="ask-h"]').getByRole('button', { name: /Yes, it’s me/ }).click()
     await expect(alan.locator('section[aria-labelledby="done-h"]')).toContainText('you are verified')

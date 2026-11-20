@@ -91,10 +91,10 @@ func TestCallVerification(t *testing.T) {
 			t.Errorf("%s, not an agent, listed organizations: %v", who.Username, err)
 		}
 	}
-	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: w.custb.ID, UserID: w.lee.ID}); fieldOf(err) != "org" {
+	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, Org: w.custb.ID, UserID: w.lee.ID}); fieldOf(err) != "org" {
 		t.Errorf("started for custb: %v", err)
 	}
-	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: w.custa.ID, UserID: w.lee.ID}); fieldOf(err) != "user_id" {
+	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, Org: w.custa.ID, UserID: w.lee.ID}); fieldOf(err) != "user_id" {
 		t.Errorf("started for a person of another organization than named: %v", err)
 	}
 	// another organization's own agents verify its own people only: never custa's, even though custa lets the primary's
@@ -110,13 +110,27 @@ func TestCallVerification(t *testing.T) {
 		t.Errorf("an agent of another organization than the primary searched custa: %v", err)
 	}
 
+	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: "custa", UserID: w.pat.ID}); fieldOf(err) != "direction" {
+		t.Errorf("started without saying who placed the call: %v", err)
+	}
+	// organizations are found by any of the first words of their display name too
+	if _, err := w.svc.UpdateOrg(ctx, service.System, w.custa.ID, service.OrgInput{DisplayName: ptr("Contoso Retail Group")}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"custa", "Contoso", "ret", "group"} {
+		if orgs, err := w.svc.VerifyOrgs(ctx, actor(w.sam), q, 20); err != nil || len(orgs) != 1 || orgs[0].ID != w.custa.ID {
+			t.Errorf("organizations matching %q: %v %+v", q, err, orgs)
+		}
+	}
+
 	// start: a six-digit code, shown once
-	v, code, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: "custa", UserID: w.pat.ID, Reason: "Invoice INV-7"})
+	v, code, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, Org: "custa", UserID: w.pat.ID, Reason: "Invoice INV-7"})
 	if err != nil || len(code) != 6 || v.State != model.VerifyPending || !v.Live || v.CustomerName == "" || v.VerifyPath != "/o/custa/account/verify-call" {
 		t.Fatalf("started: %v %q %+v", err, code, v)
 	}
 	// pat sees who is verifying them now (never the code); kim, nobody
-	if l, err := w.svc.WaitingCallVerifications(ctx, actor(w.pat)); err != nil || len(l) != 1 || l[0].AgentName != w.sam.FullName() || l[0].Reason != "Invoice INV-7" {
+	if l, err := w.svc.WaitingCallVerifications(ctx, actor(w.pat)); err != nil || len(l) != 1 || l[0].AgentName != w.sam.FullName() || l[0].Reason != "Invoice INV-7" ||
+		l[0].Direction != model.VerifyInbound {
 		t.Errorf("pat's waiting verifications: %v %+v", err, l)
 	}
 	if l, err := w.svc.WaitingCallVerifications(ctx, actor(w.kim)); err != nil || len(l) != 0 {
@@ -178,7 +192,7 @@ func TestCallVerification(t *testing.T) {
 	}
 
 	// another: the customer says it is not them; and one the agent stops
-	v2, code2, _ := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{UserID: w.vendorPlain.ID})
+	v2, code2, _ := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, UserID: w.vendorPlain.ID})
 	if v2 == nil || v2.OrgID != w.vendor.ID {
 		t.Fatalf("one of the agent's own organization: %+v", v2)
 	}
@@ -188,7 +202,7 @@ func TestCallVerification(t *testing.T) {
 	if ans, err := w.svc.AnswerCallVerification(ctx, actor(w.vendorPlain), v2.ID, false, true); err != nil || ans.State != model.VerifyDenied {
 		t.Errorf("denied: %v %+v", err, ans)
 	}
-	v3, _, _ := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: w.custa.ID, UserID: w.kim.ID})
+	v3, _, _ := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, Org: w.custa.ID, UserID: w.kim.ID})
 	if _, err := w.svc.CancelCallVerification(ctx, actor(w.vendorPlain), v3.ID); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("someone else cancelled it: %v", err)
 	}
@@ -197,7 +211,7 @@ func TestCallVerification(t *testing.T) {
 	}
 
 	// never: yourself, a guest, a personal API token
-	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{UserID: w.sam.ID}); fieldOf(err) != "user_id" {
+	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, UserID: w.sam.ID}); fieldOf(err) != "user_id" {
 		t.Errorf("verified themselves: %v", err)
 	}
 	guest := actor(w.sam)
@@ -216,7 +230,7 @@ func TestCallVerification(t *testing.T) {
 func TestCallVerificationRunsOut(t *testing.T) {
 	w := newVerifyWorld(t)
 	ctx := w.ctx
-	v, code, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: w.custa.ID, UserID: w.pat.ID})
+	v, code, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, Org: w.custa.ID, UserID: w.pat.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +291,7 @@ func TestCallVerificationSettings(t *testing.T) {
 	if _, _, agent := w.svc.AccountRoles(ctx, w.sam); agent {
 		t.Error("sam is still an agent with caller verification off")
 	}
-	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Org: w.custa.ID, UserID: w.pat.ID}); !errors.Is(err, service.ErrForbidden) {
+	if _, _, err := w.svc.StartCallVerification(ctx, actor(w.sam), service.VerifyCallInput{Direction: model.VerifyInbound, Org: w.custa.ID, UserID: w.pat.ID}); !errors.Is(err, service.ErrForbidden) {
 		t.Errorf("started with caller verification off: %v", err)
 	}
 	if err := w.svc.SetMembership(ctx, actor(w.mgr), w.support.ID, w.vendorPlain.ID, true); err != nil {

@@ -27,10 +27,12 @@ may) see **Verify a call** in their account menu.
 
 On **Verify a caller**, the agent:
 
-1. chooses the **Organization**, for an agent of the primary organization while another organization lets it verify its
-   people (their own to start with); otherwise there is nothing to choose, and the form starts with the person;
-2. finds the **Person** by name, family name, username or email (how each starts), and adds **Why** if they like: the
-   caller sees it, for example the ticket being discussed;
+1. chooses the **Organization** (found by the start of its name, or of any of the first four words of its display
+   name), for an agent of the primary organization while another organization lets it verify its people (their own to
+   start with); otherwise there is nothing to choose, and the form starts with the person;
+2. finds the **Person** by name, family name, username or email (how each starts), says **Who called?** (**They
+   called us**, or **We called them**: only ever on the number held for the account, never one a caller gives), and
+   adds **Why** if they like: the caller sees it, for example the ticket being discussed;
 3. selects **Start verification**, and reads the code to the caller, telling them to open **Verify a call** in their
    account menu (the page shows its address too).
 
@@ -48,7 +50,8 @@ the code: cancel it and start again if the caller does not have it.
 On **Verify a call**, the caller first sees who is verifying them right now (the agent's name, organization and why,
 never the code), as soon as the agent starts, and only then a box for the code: if someone on a call asks for a code
 and nobody shows there, they did not start a verification. The caller then enters the six digits. They then see who is asking (the agent's name and email), from
-which organization, and why, and a warning: confirm only if they are on a call with that person right now. **Yes,
+which organization, who placed the call ("You called Acme Corporation", or "Acme Corporation called you"), and why,
+and a warning: confirm only if they are on a call with that person right now, and the call is the way round it says. **Yes,
 it's me** asks them to confirm it is them first (their passkey or second factor, unless they did within the last 5
 minutes); **Not me** tells the agent so.
 
@@ -66,9 +69,12 @@ proxy that does not keep the stream open, and for servers sharing a database wit
 A confirmed verification means the person on the call was signed in to that account and confirmed it is them with what
 the account signs in with. It says nothing about who the account holder is in the world beyond what the account says.
 
-A code read over the phone can be relayed: someone who has the agent on one line and the account holder on another
-could pass the code on. The caller is shown who is asking and warned to confirm only a call they are on; the agent
-should still treat a verification as one piece of evidence, not the only one, for anything that cannot be undone.
+A code read over the phone can be relayed: a scammer who calls the account holder, posing as the organization, while
+calling the organization's support as the account holder, can pass the agent's code on. Saying who placed the call
+catches that: the agent records that the "customer" called them, so the account holder's page says "You called Acme
+Corporation", while they were the one called. Calls out go only to the number held for the account, so a scammer
+cannot be on the receiving end of one. The agent should still treat a verification as one piece of evidence, not the
+only one, for anything that cannot be undone.
 
 ## Records and audit
 

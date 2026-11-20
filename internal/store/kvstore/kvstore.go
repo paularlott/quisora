@@ -131,6 +131,11 @@ var formatMigrations = []formatMigration{
 	{"index fields: members-only tenants", func(ctx context.Context, s *Store) error {
 		return s.reindexKinds(ctx, model.KindTenant)
 	}},
+	// 5 to 6: an organization's display name from a later word on (display_word2-4: a search finds it by any of its
+	// first four words), and whether the primary organization's agents may verify its users (verified_by_primary).
+	{"index fields: organization words, caller verification", func(ctx context.Context, s *Store) error {
+		return s.reindexKinds(ctx, model.KindOrg)
+	}},
 }
 
 // reindexKinds rebuilds the index fields and entries of every record of the kinds from its data (rewriteRecords),

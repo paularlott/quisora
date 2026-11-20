@@ -220,9 +220,40 @@ func (o *Org) Index() Index {
 	return Index{
 		Partition: "", // global: every organization's page and sign-in reads the organization list
 		Unique:    uq,
-		Fields: map[string]any{"name": o.Name, "display_name": o.DisplayName, "created": o.Created,
-			"verified_by_primary": o.Settings.VerifiedByPrimary},
+		Fields:    orgFields(o),
 	}
+}
+
+// orgWordFields are the search fields holding an organization's display name from its second, third and fourth word on:
+// a search matches the start of a field, so "Trad" finds "Northwind Traders" by its second.
+var orgWordFields = []string{"display_word2", "display_word3", "display_word4"}
+
+func orgFields(o *Org) map[string]any {
+	f := map[string]any{"name": o.Name, "display_name": o.DisplayName, "created": o.Created,
+		"verified_by_primary": o.Settings.VerifiedByPrimary}
+	words := strings.Fields(o.DisplayName)
+	for i, name := range orgWordFields {
+		f[name] = ""
+		if i+1 < len(words) {
+			f[name] = strings.Join(words[i+1:], " ")
+		}
+	}
+	return f
+}
+
+// OrgMatches reports whether a search for q finds organization o, as the store's search does: its name, its display
+// name, or its display name from a later word on (orgWordFields), starts with q, ignoring case.
+func OrgMatches(o *Org, q string) bool {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return true
+	}
+	for _, v := range orgFields(o) {
+		if s, ok := v.(string); ok && strings.HasPrefix(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	return false
 }
 
 // OrgNameKey is the unique key for an organization name.

@@ -19,7 +19,7 @@ indexes), so that lists and filters run without decoding `data`.
 
 | Table                | Holds                                                                                                                              |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `organizations`      | Organizations and their settings. Its `verified_by_primary` column (indexed) is true for one whose people the primary organization's agents may verify ([caller verification](CALLER-VERIFICATION.md)). |
+| `organizations`      | Organizations and their settings. Its `verified_by_primary` column (indexed) is true for one whose people the primary organization's agents may verify ([caller verification](CALLER-VERIFICATION.md)); `display_word2` to `display_word4` hold the display name from its second, third and fourth word on, so a search finds an organization by any of them. |
 | `organization_logos` | An organization's logos (light and dark) and their image types: a record of their own, so that the organization's record stays small. Served by Quisora at `/o/<org>/branding/`. |
 | `users`              | User accounts, including service accounts.                                                                                         |
 | `user_groups`        | Groups of users. A group's record is also the commit point for changes to its member list.                                         |
