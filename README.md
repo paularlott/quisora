@@ -11,7 +11,8 @@ It runs on Linux, macOS and Windows. Licensed under the [Apache License 2.0](LIC
 - **Organizations, tenants, applications.** Any number of organizations, each with its own users, groups, sign-in
   providers and policies. Tenants group applications that share sign-in rules and access lists (users and groups,
   application roles, [time-limited access](docs/TIMED-ACCESS.md) that ends, and signs people out, at a set time, and
-  [access requests](docs/ACCESS-REQUESTS.md): people ask for a tenant for a while, and an approver group decides). Organizations are self-contained: each has its own address space (`/o/<org>/…`: its
+  [access requests](docs/ACCESS-REQUESTS.md): people ask for a tenant for a while, and an approver group decides), and
+  [caller verification](docs/CALLER-VERIFICATION.md): a support agent confirms the person on a call is the account holder. Organizations are self-contained: each has its own address space (`/o/<org>/…`: its
   sign-in pages, account page, invitations and OAuth endpoints), its own OAuth issuer and its own browser session.
 - **Sign-in.** Passkeys (as the whole sign-in or a second factor), password plus authenticator app (TOTP), recovery
   codes for a lost second factor, codes by email as a second factor for users without an app or passkey where an organization allows it, and upstream providers per organization: Google, Microsoft, GitHub, GitLab, Auth0

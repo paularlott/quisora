@@ -192,32 +192,34 @@ type Service struct {
 	// and the system actor is shown as cli:<os user>@<host>.
 	Origin map[string]string
 
-	Orgs       *store.Table[model.Org, *model.Org]
-	Users      *store.Table[model.User, *model.User]
-	Groups     *store.Table[model.Group, *model.Group]
-	Members    *store.Table[model.Member, *model.Member]
-	Tenants    *store.Table[model.Tenant, *model.Tenant]
-	Access     *store.Table[model.TenantAccess, *model.TenantAccess]
-	Requests   *store.Table[model.AccessRequest, *model.AccessRequest]
-	Clients    *store.Table[model.Client, *model.Client]
-	Providers  *store.Table[model.Provider, *model.Provider]
-	Passkeys   *store.Table[model.Passkey, *model.Passkey]
-	Identities *store.Table[model.Identity, *model.Identity]
-	Sessions   *store.Table[model.Session, *model.Session]
-	Grants     *store.Table[model.Grant, *model.Grant]
-	Consents   *store.Table[model.Consent, *model.Consent]
-	APITokens  *store.Table[model.APIToken, *model.APIToken]
-	Keys       *store.Table[model.SigningKey, *model.SigningKey]
-	SSHCAKeys  *store.Table[model.SSHKey, *model.SSHKey]
-	SSHCerts   *store.Table[model.SSHCert, *model.SSHCert]
-	Audits     *store.Table[model.Audit, *model.Audit]
-	Links      *store.Table[model.LinkToken, *model.LinkToken]
-	SignIns    *store.Table[model.SignIn, *model.SignIn]
-	OrgLogos   *store.Table[model.OrgLogo, *model.OrgLogo]
-	EmailTpls  *store.Table[model.EmailTemplates, *model.EmailTemplates]
-	Skins      *store.Table[model.Skin, *model.Skin]
-	Locks      *store.Table[model.Lock, *model.Lock]
-	Replays    *store.Table[model.Replay, *model.Replay]
+	Orgs     *store.Table[model.Org, *model.Org]
+	Users    *store.Table[model.User, *model.User]
+	Groups   *store.Table[model.Group, *model.Group]
+	Members  *store.Table[model.Member, *model.Member]
+	Tenants  *store.Table[model.Tenant, *model.Tenant]
+	Access   *store.Table[model.TenantAccess, *model.TenantAccess]
+	Requests *store.Table[model.AccessRequest, *model.AccessRequest]
+	// Verifications are caller verifications (call_verify.go).
+	Verifications *store.Table[model.CallVerification, *model.CallVerification]
+	Clients       *store.Table[model.Client, *model.Client]
+	Providers     *store.Table[model.Provider, *model.Provider]
+	Passkeys      *store.Table[model.Passkey, *model.Passkey]
+	Identities    *store.Table[model.Identity, *model.Identity]
+	Sessions      *store.Table[model.Session, *model.Session]
+	Grants        *store.Table[model.Grant, *model.Grant]
+	Consents      *store.Table[model.Consent, *model.Consent]
+	APITokens     *store.Table[model.APIToken, *model.APIToken]
+	Keys          *store.Table[model.SigningKey, *model.SigningKey]
+	SSHCAKeys     *store.Table[model.SSHKey, *model.SSHKey]
+	SSHCerts      *store.Table[model.SSHCert, *model.SSHCert]
+	Audits        *store.Table[model.Audit, *model.Audit]
+	Links         *store.Table[model.LinkToken, *model.LinkToken]
+	SignIns       *store.Table[model.SignIn, *model.SignIn]
+	OrgLogos      *store.Table[model.OrgLogo, *model.OrgLogo]
+	EmailTpls     *store.Table[model.EmailTemplates, *model.EmailTemplates]
+	Skins         *store.Table[model.Skin, *model.Skin]
+	Locks         *store.Table[model.Lock, *model.Lock]
+	Replays       *store.Table[model.Replay, *model.Replay]
 
 	// SSHRevokedSignIns are the sign-ins taken back, whose certificates are revoked (RevokeSSHCertsFrom).
 	SSHRevokedSignIns *store.Table[model.SSHRevokedSignIn, *model.SSHRevokedSignIn]
@@ -244,7 +246,7 @@ type Service struct {
 	// settings, or its members, whose changes are written on the group's record; a node never told of other nodes'
 	// changes keeps them briefly (ShortRequestGroups). The pages and every call check the groups as they are.
 	requestGroups *ttlcache.Cache[*requestGroups]
-	requestRoles  *ttlcache.Cache[[2]bool]
+	requestRoles  *ttlcache.Cache[[3]bool]
 	skinCache     *ttlcache.Cache[*model.Skin] // custom skins by name; nil: there is none (skin)
 	primaryID     atomic.Pointer[string]       // the primary organization's id, once read (PrimaryOrgID)
 	bg            background                   // Background work
@@ -287,32 +289,33 @@ func (s *Service) SessionsEnding(ctx context.Context, userID string, sessionIDs 
 func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 	return &Service{
 		Cfg: cfg, Store: s, Hasher: secure.NewHasher(cfg.Limits.PasswordWorkers), Sealer: sealer, Log: logger.NewNullLogger(),
-		Orgs:       store.NewTable[model.Org](s),
-		Users:      store.NewTable[model.User](s),
-		Groups:     store.NewTable[model.Group](s),
-		Members:    store.NewTable[model.Member](s),
-		Tenants:    store.NewTable[model.Tenant](s),
-		Access:     store.NewTable[model.TenantAccess](s),
-		Requests:   store.NewTable[model.AccessRequest](s),
-		Clients:    store.NewTable[model.Client](s),
-		Providers:  store.NewTable[model.Provider](s),
-		Passkeys:   store.NewTable[model.Passkey](s),
-		Identities: store.NewTable[model.Identity](s),
-		Sessions:   store.NewTable[model.Session](s),
-		Grants:     store.NewTable[model.Grant](s),
-		Consents:   store.NewTable[model.Consent](s),
-		APITokens:  store.NewTable[model.APIToken](s),
-		Keys:       store.NewTable[model.SigningKey](s),
-		SSHCAKeys:  store.NewTable[model.SSHKey](s),
-		SSHCerts:   store.NewTable[model.SSHCert](s),
-		Audits:     store.NewTable[model.Audit](s),
-		Links:      store.NewTable[model.LinkToken](s),
-		SignIns:    store.NewTable[model.SignIn](s),
-		OrgLogos:   store.NewTable[model.OrgLogo](s),
-		EmailTpls:  store.NewTable[model.EmailTemplates](s),
-		Skins:      store.NewTable[model.Skin](s),
-		Locks:      store.NewTable[model.Lock](s),
-		Replays:    store.NewTable[model.Replay](s),
+		Orgs:          store.NewTable[model.Org](s),
+		Users:         store.NewTable[model.User](s),
+		Groups:        store.NewTable[model.Group](s),
+		Members:       store.NewTable[model.Member](s),
+		Tenants:       store.NewTable[model.Tenant](s),
+		Access:        store.NewTable[model.TenantAccess](s),
+		Requests:      store.NewTable[model.AccessRequest](s),
+		Verifications: store.NewTable[model.CallVerification](s),
+		Clients:       store.NewTable[model.Client](s),
+		Providers:     store.NewTable[model.Provider](s),
+		Passkeys:      store.NewTable[model.Passkey](s),
+		Identities:    store.NewTable[model.Identity](s),
+		Sessions:      store.NewTable[model.Session](s),
+		Grants:        store.NewTable[model.Grant](s),
+		Consents:      store.NewTable[model.Consent](s),
+		APITokens:     store.NewTable[model.APIToken](s),
+		Keys:          store.NewTable[model.SigningKey](s),
+		SSHCAKeys:     store.NewTable[model.SSHKey](s),
+		SSHCerts:      store.NewTable[model.SSHCert](s),
+		Audits:        store.NewTable[model.Audit](s),
+		Links:         store.NewTable[model.LinkToken](s),
+		SignIns:       store.NewTable[model.SignIn](s),
+		OrgLogos:      store.NewTable[model.OrgLogo](s),
+		EmailTpls:     store.NewTable[model.EmailTemplates](s),
+		Skins:         store.NewTable[model.Skin](s),
+		Locks:         store.NewTable[model.Lock](s),
+		Replays:       store.NewTable[model.Replay](s),
 
 		SSHRevokedSignIns: store.NewTable[model.SSHRevokedSignIn](s),
 		Pictures:          store.NewTable[model.UserPicture](s),
@@ -322,7 +325,7 @@ func New(cfg *config.Config, s store.Store, sealer *secure.Sealer) *Service {
 		skinCache: ttlcache.New[*model.Skin](orgTTL, 1_000),
 
 		requestGroups: ttlcache.New[*requestGroups](requestGroupsTTL, 20_000),
-		requestRoles:  ttlcache.New[[2]bool](requestGroupsTTL, 100_000),
+		requestRoles:  ttlcache.New[[3]bool](requestGroupsTTL, 100_000),
 	}
 }
 

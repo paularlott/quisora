@@ -325,6 +325,7 @@ func (s *Service) UpdateOrg(ctx context.Context, a *Actor, id string, in OrgInpu
 	}
 	err = s.audited(ctx, a, o.ID, "org.update", o.Name, addChanges(nil, was, o), func() error { return s.Orgs.Update(ctx, o) })
 	s.InvalidateOrgs() // the change counts at once here, as it did when this node wrote it (also a write that may have landed)
+	s.InvalidateRequestGroups()
 	if err != nil {
 		return nil, orgConflict(err)
 	}
@@ -539,6 +540,40 @@ func (s *Service) takeOrgGuard(ctx context.Context, orgID string) (g *model.Lock
 // record, which every use of a token reads.
 const maxAPITokenGroups = 20
 
+// maxVerifyLists bounds the agent groups chosen to verify callers: the list is part of the organization's record.
+const maxVerifyLists = 20
+
+// validVerifySettings checks organization orgID's caller verification settings: agent groups of the organization (at
+// least one while it verifies callers), and VerifiedByPrimary on another organization than the primary one (its own
+// agents verify its users already). Only a list being changed is looked up: a group removed since does not stop other
+// settings being saved.
+func (s *Service) validVerifySettings(ctx context.Context, orgID string, st model.OrgSettings, old *model.OrgSettings) error {
+	if len(st.VerifyAgentGroups) > maxVerifyLists {
+		return Invalid("verify_agent_groups", "choose at most "+itoa(maxVerifyLists)+" groups")
+	}
+	if st.VerifyCallers && len(st.VerifyAgentGroups) == 0 {
+		return Invalid("verify_agent_groups", "choose the groups whose members verify callers")
+	}
+	if old == nil || !slices.Equal(st.VerifyAgentGroups, old.VerifyAgentGroups) {
+		for _, id := range st.VerifyAgentGroups {
+			g, err := s.Groups.Get(ctx, id)
+			if errors.Is(err, store.ErrNotFound) || err == nil && g.OrgID != orgID {
+				return Invalid("verify_agent_groups", "unknown group "+id)
+			} else if err != nil {
+				return mapStore(err)
+			}
+		}
+	}
+	if st.VerifiedByPrimary && (old == nil || !old.VerifiedByPrimary) {
+		if primary, err := s.PrimaryOrgID(ctx); err != nil {
+			return err
+		} else if primary == orgID {
+			return Invalid("verified_by_primary", "the primary organization's own agents verify its users already")
+		}
+	}
+	return nil
+}
+
 // validOrgSettings checks the settings of organization orgID: session lifetimes are not negative and not longer than
 // the server's (session.ttl and session.idle are the most an organization may set; 0 keeps the server's), and the
 // api token setting is one of its modes, with groups of the organization for the groups mode only.
@@ -576,6 +611,9 @@ func (s *Service) validOrgSettings(ctx context.Context, orgID string, st model.O
 		}
 	default:
 		return Invalid("api_tokens", "must be "+model.APITokensOff+", "+model.APITokensGroups+" or "+model.APITokensEveryone)
+	}
+	if err := s.validVerifySettings(ctx, orgID, st, old); err != nil {
+		return err
 	}
 	switch st.Pictures {
 	case "", model.PicturesEveryone, model.PicturesAdmins, model.PicturesOff:

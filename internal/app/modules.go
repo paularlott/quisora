@@ -160,6 +160,9 @@ func modules(ctx context.Context, a *App) []web.Module {
 			if n, err := a.Svc.ExpireAccessRequests(ctx); hk.ok("access requests", err) && n > 0 {
 				a.Log.Info("access requests lapsed or removed", "count", n)
 			}
+			if n, err := a.Svc.ExpireCallVerifications(ctx); hk.ok("caller verifications", err) && n > 0 {
+				a.Log.Info("caller verifications run out or removed", "count", n)
+			}
 			// A change of a group's members whose writer died after committing it is finished here (it is visible
 			// to every reader meanwhile): its membership records are written and the entry cleared.
 			if n, err := a.Svc.FinishGroupChanges(ctx, service.GroupChangeGrace); hk.ok("finishing group changes", err) && n > 0 {

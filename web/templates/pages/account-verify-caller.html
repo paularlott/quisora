@@ -1,0 +1,61 @@
+{{template "base" .}}
+{{define "content"}}
+<div class="stack-lg" x-data="verifyCaller">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
+      <h1 class="page-title">Verify a caller</h1>
+      <p class="page-sub">Confirm that the person you are talking to is the account holder. Start a verification and read its code to them: they enter it in their own account, see who is asking, and confirm it is them.</p>
+    </div>
+  </div>
+  <div class="alert alert-error" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+
+  <section class="glass-card" aria-labelledby="start-h" x-show="showStart">
+    <h2 class="section-title mb-4" id="start-h">Who are you verifying?</h2>
+    <form class="stack" @submit.prevent="start" novalidate>
+      {{template "combo-field" (dict "name" "org" "label" "Organization" "placeholder" "Type an organization’s name" "help" "Yours, or one that lets the primary organization’s agents verify its people." "show" "manyOrgs")}}
+      {{template "combo-field" (dict "name" "user_id" "label" "Person" "placeholder" "Type their name or email" "help" "The account holder they say they are.")}}
+      {{template "field" (dict "name" "reason" "label" "Why" "autocomplete" "off" "help" "Optional. They see this, for example the ticket you are calling about. At most 200 characters.")}}
+      <div><button type="submit" class="btn btn-primary" :disabled="busy" x-text="startLabel">Start verification</button></div>
+    </form>
+  </section>
+
+  <section class="glass-card" aria-labelledby="current-h" x-show="hasCurrent" x-cloak>
+    <h2 class="section-title mb-1" id="current-h" tabindex="-1" x-text="currentTitle"></h2>
+    <p class="muted mb-4" x-text="currentWho"></p>
+    <div x-show="showCode">
+      <p class="label">Read this code to them</p>
+      <p class="verify-code" x-text="codeText" :aria-label="codeSpoken"></p>
+      <p class="help mt-2" x-text="whereText"></p>
+      <p class="help" x-text="runsOutText" aria-live="off"></p>
+    </div>
+    <div role="status" aria-live="polite" class="mt-4">
+      <span :class="statusClass" x-text="statusText"></span>
+      <p class="mt-2" x-show="statusDetail" x-text="statusDetail"></p>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button type="button" class="btn btn-secondary" x-show="canCancel" @click="cancel">Cancel verification</button>
+      <button type="button" class="btn btn-primary" x-show="isDone" x-cloak @click="another">Verify someone else</button>
+    </div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="today-h">
+    <h2 class="section-title mb-4" id="today-h">Your verifications today</h2>
+    <p class="muted" x-show="noneToday" x-cloak>None yet.</p>
+    <div class="table-wrap" role="region" aria-label="Your verifications today" tabindex="0" x-show="hasToday" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Your verifications today</caption>
+        <thead><tr><th scope="col">Who</th><th scope="col">Organization</th><th scope="col">Started</th><th scope="col">Result</th></tr></thead>
+        <tbody>
+          <template x-for="row in today" :key="row.id"><tr>
+            <th scope="row"><span class="cell-title" x-text="row.customer_name"></span><div class="cell-sub" x-text="row.customer_email"></div></th>
+            <td x-text="row.customer_org_name"></td>
+            <td class="whitespace-nowrap" x-text="row.startedText"></td>
+            <td><span :class="row.badgeClass" x-text="row.stateText"></span><div class="cell-sub mt-1" x-show="row.detail" x-text="row.detail"></div></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{{end}}

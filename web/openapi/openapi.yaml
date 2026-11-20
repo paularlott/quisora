@@ -6059,6 +6059,16 @@ components:
             none at all (uploads refused, SCIM photos ignored, nothing copied from sign-in providers, no picture claim,
             no picture in user JSON, picture URLs 404) and deletes the pictures held, so turning it on again starts
             with none
+        verify_callers:
+          type: boolean
+          description: the members of verify_agent_groups verify callers (Verify a caller in their account menu) - confirm that the person on a support call is the account holder, a user of this organization (or, for the primary organization's agents, of an organization whose verified_by_primary is on; see docs/CALLER-VERIFICATION.md); off by default
+        verify_agent_groups:
+          type: array
+          description: ids of groups of the organization whose members verify callers; at least one when verify_callers is on (at most 20). Only administrators change their members while verify_callers is on
+          items: {type: string}
+        verified_by_primary:
+          type: boolean
+          description: the primary organization's agents may verify this organization's people (its own agents always can); off by default, and not for the primary organization itself
         mcp_server:
           type: boolean
           description: serve the organization's own MCP server at /o/{organization id}/mcp, through which AI clients manage

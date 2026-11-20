@@ -52,6 +52,9 @@ type Page struct {
 	// CanRequest and CanApprove show the account menu's Request access and Approvals: the user is in a group whose
 	// members may ask for access, or in a group that approves another's requests (never for a guest's session).
 	CanRequest, CanApprove bool
+	// CanVerifyCallers shows Verify a caller (a member of an agent group of an organization that verifies callers);
+	// CanVerifyCall shows Verify a call (a person of an organization whose users can be verified). Never for a guest.
+	CanVerifyCallers, CanVerifyCall bool
 	// KeyRotation: a master key rotation is in progress on this node (previous master keys are configured); super
 	// admins get the master key rotation page in the menu.
 	KeyRotation bool

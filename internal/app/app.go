@@ -322,7 +322,8 @@ func (a *App) evict(rec *store.Record) {
 	case model.KindUser:
 		a.Server.Sessions.Evict("", rec.ID)
 	case model.KindOrg:
-		a.Server.Svc.InvalidateOrgs() // its name, settings or emergency sign-out counters may have moved
+		a.Server.Svc.InvalidateOrgs()          // its name, settings or emergency sign-out counters may have moved
+		a.Server.Svc.InvalidateRequestGroups() // who verifies callers (its agent groups)
 	case model.KindSkin:
 		a.Server.Svc.InvalidateSkins()
 	case model.KindGroup:

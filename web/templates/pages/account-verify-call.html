@@ -1,0 +1,62 @@
+{{template "base" .}}
+{{define "content"}}
+<div class="stack-lg" x-data="verifyCall">
+  <div class="page-head glass">
+    <div>
+      <p class="eyebrow">Your account · {{with .Org}}{{.DisplayName}}{{end}}</p>
+      <h1 class="page-title">Verify a call</h1>
+      <p class="page-sub">When someone from a support team needs to know it is really you on the call, they read you a 6-digit code. Enter it here: you see who is asking before you confirm.</p>
+    </div>
+  </div>
+
+  <section class="glass-card" aria-labelledby="code-h" x-show="showEntry">
+    <h2 class="section-title mb-4" id="code-h">Enter the code</h2>
+    <form class="stack" @submit.prevent="find" novalidate>
+      {{template "otp-field" (dict "name" "code" "label" "Code you were given" "help" "The 6 digits the person on the call reads to you." "autofocus" true)}}
+      <div><button type="submit" class="btn btn-primary" :disabled="busy" x-text="findLabel">Continue</button></div>
+    </form>
+  </section>
+
+  <section class="glass-card" aria-labelledby="ask-h" x-show="showAsk" x-cloak>
+    <h2 class="section-title mb-4" id="ask-h" tabindex="-1">Is this you?</h2>
+    <dl class="kv">
+      <div><dt>Who is asking</dt><dd><span class="font-bold" x-text="askAgent"></span><div class="cell-sub" x-text="askAgentEmail"></div></dd></div>
+      <div><dt>From</dt><dd x-text="askOrg"></dd></div>
+      <div x-show="askReason"><dt>Why</dt><dd x-text="askReason"></dd></div>
+    </dl>
+    <div class="alert alert-warning mt-4" role="note">{{template "icon" "alert"}}<span x-text="askWarning"></span></div>
+    <div class="flex gap-2 mt-4">
+      <button type="button" class="btn btn-primary" :disabled="busy" @click="confirm" x-text="confirmLabel">Yes, it’s me</button>
+      <button type="button" class="btn btn-secondary" :disabled="busy" @click="deny">Not me</button>
+    </div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="done-h" x-show="showDone" x-cloak>
+    <h2 class="section-title mb-2" id="done-h" tabindex="-1" x-text="doneTitle"></h2>
+    <p x-text="doneText"></p>
+    <div class="mt-4"><button type="button" class="btn btn-secondary" @click="again">Enter another code</button></div>
+  </section>
+
+  <section class="glass-card" aria-labelledby="past-h" x-data="pastVerifications" data-noun="verifications">
+    <h2 class="section-title mb-1" id="past-h">Who verified you</h2>
+    <p class="muted mb-4">Everyone who asked to verify you, and what came of it. If you see one you do not recognise, tell the organization it came from.</p>
+    <div class="alert alert-error mb-4" role="alert" x-show="hasLoadError" x-cloak>{{template "icon" "alert"}}<span x-text="loadError"></span></div>
+    <p class="muted" x-show="showEmpty" x-cloak>Nobody has asked yet.</p>
+    <div class="table-wrap" role="region" aria-label="Who verified you" tabindex="0" x-show="hasItems" x-cloak>
+      <table class="table">
+        <caption class="sr-only">Who verified you</caption>
+        <thead><tr><th scope="col">Who asked</th><th scope="col">From</th><th scope="col">When</th><th scope="col">Result</th></tr></thead>
+        <tbody>
+          <template x-for="row in items" :key="row.id"><tr>
+            <th scope="row"><span class="cell-title" x-text="row.agent_name"></span><div class="cell-sub" x-text="row.agent_email"></div></th>
+            <td x-text="row.agent_org_name"></td>
+            <td class="whitespace-nowrap" x-text="row.startedText"></td>
+            <td><span :class="row.badgeClass" x-text="row.stateText"></span></td>
+          </tr></template>
+        </tbody>
+      </table>
+    </div>
+    {{template "pager-for" "past-page-size"}}
+  </section>
+</div>
+{{end}}

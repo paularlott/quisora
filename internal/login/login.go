@@ -157,6 +157,8 @@ func (m *Module) Register(s *web.Server) {
 	inOrg("POST /logout", s.WithSession(http.HandlerFunc(m.logout)))
 	inOrg("GET /account", s.RequirePage(m.accountPage))
 	inOrg("GET /account/requests", s.RequirePage(m.requestsPage))
+	inOrg("GET /account/verify-caller", s.RequirePage(m.verifyCallerPage))
+	inOrg("GET /account/verify-call", s.RequirePage(m.verifyCallPage))
 	inOrg("GET /account/approvals", s.RequirePage(m.approvalsPage))
 
 	// anonymous sign-in JSON

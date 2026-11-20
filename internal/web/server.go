@@ -336,7 +336,10 @@ func (s *Server) Page(w http.ResponseWriter, r *http.Request, title, nav string,
 		p.IsAdmin = u.Role.Rank() >= model.RoleAdmin.Rank()
 		p.IsMgr = u.Role.Privileged()
 		if sess := Session(r); sess == nil || len(sess.Sources) == 0 {
-			p.CanRequest, p.CanApprove = s.Svc.AccessRequestRoles(r.Context(), u)
+			p.CanRequest, p.CanApprove, p.CanVerifyCallers = s.Svc.AccountRoles(r.Context(), u)
+			if o, err := s.Svc.Org(r.Context(), u.OrgID); err == nil {
+				p.CanVerifyCall = o.Settings.CallsVerified()
+			}
 		}
 		p.KeyRotation = p.IsSuper && s.Svc.Sealer.Previous()
 	} else {

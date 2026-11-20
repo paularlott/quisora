@@ -33,18 +33,20 @@ const requestGroupsTTL = time.Hour
 // never told of the other nodes' writes, whose caches follow them only as they expire. Call it before serving.
 func (s *Service) ShortRequestGroups(ttl time.Duration) {
 	s.requestGroups = ttlcache.New[*requestGroups](ttl, 20_000)
-	s.requestRoles = ttlcache.New[[2]bool](ttl, 100_000)
+	s.requestRoles = ttlcache.New[[3]bool](ttl, 100_000)
 }
 
-// requestGroups are an organization's groups whose members may ask for access (requesters) and the groups whose
-// members approve access requests (approvers: model.Group.ApprovesRequests, which every group named as approvers is).
+// requestGroups are an organization's groups whose members may ask for access (requesters), the groups whose members
+// approve access requests (approvers: model.Group.ApprovesRequests, which every group named as approvers is), and the
+// groups whose members verify callers while the organization does (agents: model.OrgSettings.VerifyAgentGroups).
 type requestGroups struct {
-	requesters, approvers map[string]bool
+	requesters, approvers, agents map[string]bool
 }
 
-// InvalidateRequestGroups drops what is kept of who asks for and approves access (requestGroups, requestRoles): call
-// it when a group's record changes, here or on another node (its settings, or its members: a change of members is
-// written on the group's record). Each organization's groups and each user's roles are read again when next needed.
+// InvalidateRequestGroups drops what is kept of who asks for and approves access and who verifies callers
+// (requestGroups, requestRoles): call it when a group's record or an organization's changes, here or on another node
+// (a group's settings, or its members: a change of members is written on the group's record; an organization's agent
+// groups). Each organization's groups and each user's roles are read again when next needed.
 func (s *Service) InvalidateRequestGroups() {
 	s.requestGroups.Clear()
 	s.requestRoles.Clear()
@@ -57,7 +59,16 @@ func (s *Service) orgRequestGroups(ctx context.Context, orgID string) (*requestG
 		return v, nil
 	}
 	tok := s.requestGroups.Token(orgID)
-	rg := &requestGroups{requesters: map[string]bool{}, approvers: map[string]bool{}}
+	rg := &requestGroups{requesters: map[string]bool{}, approvers: map[string]bool{}, agents: map[string]bool{}}
+	o, err := s.OrgPolicy(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	if o.Settings.VerifyCallers {
+		for _, id := range o.Settings.VerifyAgentGroups {
+			rg.agents[id] = true
+		}
+	}
 	const page = 500
 	for _, field := range []string{"requests", "approves"} {
 		for offset := 0; ; offset += page {
@@ -197,28 +208,36 @@ func (s *Service) RequestApproversFor(ctx context.Context, u *model.User) ([]Req
 // reads nothing for it, and a miss reads u's groups (and, once an hour, the organization's request groups). The pages
 // and every call check again.
 func (s *Service) AccessRequestRoles(ctx context.Context, u *model.User) (requester, approver bool) {
+	requester, approver, _ = s.AccountRoles(ctx, u)
+	return requester, approver
+}
+
+// AccountRoles is AccessRequestRoles and whether u verifies callers (a member of one of their organization's agent
+// groups while it verifies callers): the account menu's Request access, Approvals and Verify a caller.
+func (s *Service) AccountRoles(ctx context.Context, u *model.User) (requester, approver, agent bool) {
 	if v, ok := s.requestRoles.Get(u.ID); ok {
-		return v[0], v[1]
+		return v[0], v[1], v[2]
 	}
 	tok := s.requestRoles.Token(u.ID)
 	rg, err := s.orgRequestGroups(ctx, u.OrgID)
 	if err != nil {
-		return false, false
+		return false, false, false
 	}
-	if len(rg.requesters)+len(rg.approvers) > 0 { // an organization without access requests reads nothing more
+	if len(rg.requesters)+len(rg.approvers)+len(rg.agents) > 0 { // an organization with neither reads nothing more
 		// u's groups as every reader of memberships sees them (UserGroups): a change of members is committed on the
 		// group's record before its membership records are written, here or on another node
 		groups, err := s.UserGroups(ctx, u)
 		if err != nil {
-			return false, false
+			return false, false, false
 		}
 		for _, g := range groups {
 			requester = requester || rg.requesters[g.ID]
 			approver = approver || rg.approvers[g.ID]
+			agent = agent || rg.agents[g.ID]
 		}
 	}
-	s.requestRoles.PutIf(u.ID, [2]bool{requester, approver}, tok)
-	return requester, approver
+	s.requestRoles.PutIf(u.ID, [3]bool{requester, approver, agent}, tok)
+	return requester, approver, agent
 }
 
 // RequestableTenant is a tenant a person may ask for access to.

@@ -20,11 +20,11 @@ test('organization: the API token setting is shown, and saved with the chosen gr
   const dlg = await openAcme(page)
   const who = dlg.getByRole('combobox', { name: 'Who may make them' })
   await expect(who).toHaveValue('everyone') // as the demo's Acme is set up
-  await expect(dlg.getByRole('combobox', { name: 'Groups' })).toBeHidden()
+  await expect(dlg.getByRole('combobox', { name: 'Groups', exact: true })).toBeHidden()
 
   // choose groups: chips and the search box in one field, as the tag field looks
   await who.selectOption('groups')
-  const picker = dlg.getByRole('combobox', { name: 'Groups' })
+  const picker = dlg.getByRole('combobox', { name: 'Groups', exact: true })
   await picker.fill('Engin')
   await dlg.getByRole('option', { name: /Engineering/ }).click()
   await picker.fill('Design')

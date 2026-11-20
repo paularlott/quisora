@@ -56,7 +56,23 @@ type OrgSettings struct {
 	// set them too), PicturesAdmins (users cannot change their own: only those who manage users, the directory and
 	// sign-in providers) or PicturesOff (none at all: none is stored, served or sent, and those held are deleted).
 	Pictures string `msgpack:"pic,omitempty" json:"pictures"`
+	// VerifyCallers lets the members of VerifyAgentGroups (groups of the organization) verify callers: confirm that the
+	// person on a support call is the account holder, a user of this organization (CallVerification). The primary
+	// organization's agents may also verify the users of the organizations whose VerifiedByPrimary is on.
+	VerifyCallers     bool     `msgpack:"vc,omitempty" json:"verify_callers"`
+	VerifyAgentGroups []string `msgpack:"vag,omitempty" json:"verify_agent_groups"`
+	VerifiedByPrimary bool     `msgpack:"vbp,omitempty" json:"verified_by_primary"`
 }
+
+// VerifyAgentGroup reports whether group id is one of the organization's caller verification agent groups while the
+// organization verifies callers.
+func (s OrgSettings) VerifyAgentGroup(id string) bool {
+	return s.VerifyCallers && slices.Contains(s.VerifyAgentGroups, id)
+}
+
+// CallsVerified reports whether the organization's users can be asked to verify a call: its own agents, or the
+// primary organization's, may verify them.
+func (s OrgSettings) CallsVerified() bool { return s.VerifyCallers || s.VerifiedByPrimary }
 
 // Who sets users' profile pictures (OrgSettings.Pictures).
 const (
@@ -68,11 +84,21 @@ const (
 // PicturesOn reports whether the organization has users' profile pictures at all (OrgSettings.Pictures not off).
 func (s OrgSettings) PicturesOn() bool { return s.Pictures != PicturesOff }
 
-// Equal reports whether two settings are the same (OrgSettings holds a slice, so == does not compile).
+// Equal reports whether two settings are the same (OrgSettings holds slices, so == does not compile; an empty and a
+// nil list are the same).
 func (s OrgSettings) Equal(o OrgSettings) bool {
-	g, og := s.APITokenGroups, o.APITokenGroups
-	s.APITokenGroups, o.APITokenGroups = nil, nil
-	return reflect.DeepEqual(s, o) && slices.Equal(g, og)
+	lists := func(x *OrgSettings) [][]string {
+		return [][]string{x.APITokenGroups, x.VerifyAgentGroups}
+	}
+	a, b := lists(&s), lists(&o)
+	for i := range a {
+		if !slices.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	s.APITokenGroups, s.VerifyAgentGroups = nil, nil
+	o.APITokenGroups, o.VerifyAgentGroups = nil, nil
+	return reflect.DeepEqual(s, o)
 }
 
 // APITokensNoLimit is OrgSettings.APITokenMaxDays for an organization whose personal API tokens may never expire.
@@ -194,7 +220,8 @@ func (o *Org) Index() Index {
 	return Index{
 		Partition: "", // global: every organization's page and sign-in reads the organization list
 		Unique:    uq,
-		Fields:    map[string]any{"name": o.Name, "display_name": o.DisplayName, "created": o.Created},
+		Fields: map[string]any{"name": o.Name, "display_name": o.DisplayName, "created": o.Created,
+			"verified_by_primary": o.Settings.VerifiedByPrimary},
 	}
 }
 

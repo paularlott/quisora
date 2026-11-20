@@ -1157,7 +1157,15 @@ export default function (Alpine) {
     },
   })
 
-  Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), brandingMixin(), pickerMixin({
+  // Caller verification settings of the organization being edited: its agent groups, added from a search and shown
+  // as chips.
+  const verifyGroupSource = {
+    async search(q) {
+      const r = await get(`/api/orgs/${enc(this.editing.name)}/groups${qs({ q, limit: 8 })}`)
+      return r.items.filter((g) => !this.form.verify_agent_groups.includes(g.id)).map((g) => ({ value: g.id, label: g.display_name }))
+    },
+  }
+  Alpine.data('adminOrgs', () => mix(tableMixin(), formMixin(), dialogMixin(), brandingMixin(), comboMixin({ vf_group: verifyGroupSource }), pickerMixin({
     // the groups of the organization being edited
     async search(q) {
       const r = await get(`/api/orgs/${enc(this.editing.name)}/groups${qs({ q, limit: 8 })}`)
@@ -1178,7 +1186,7 @@ export default function (Alpine) {
       if (id) this.dropGroup(id)
     },
   }), {
-    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 }, groupNames: {}, help: {},
+    editing: null, base: '', publicUrl: '', defaults: { ttl: 0, idle: 0 }, groupNames: {}, verifyNames: {}, help: {},
     init() {
       this.base = this.$el.dataset.base
       this.publicUrl = this.$el.dataset.public
@@ -1230,8 +1238,43 @@ export default function (Alpine) {
       const gs = await Promise.all(ids.map((id) => getOrNull(`/api/orgs/${enc(o.name)}/groups/${enc(id)}`)))
       if (this.editing === o) this.groupNames = Object.fromEntries(ids.map((id, i) => [id, gs[i] && gs[i].display_name]).filter(([, n]) => n))
     },
-    // a new organization's branding is refused as branding.<field>
-    errorKey(f) { return f === 'api_token_groups' ? 'api_group' : f.replace(/^branding\./, '') },
+    // a new organization's branding is refused as branding.<field>; the agent groups at their search field
+    errorKey(f) {
+      return { api_token_groups: 'api_group', verify_agent_groups: 'vf_group' }[f] || f.replace(/^branding\./, '')
+    },
+    // a group chosen in the agent groups search joins the list, and the search empties
+    comboChanged(name) {
+      const id = this.form[name]
+      if (name !== 'vf_group' || !id) return
+      if (!this.form.verify_agent_groups.includes(id)) {
+        if (this.form.verify_agent_groups.length >= API_GROUP_LIMIT) { toast(`At most ${API_GROUP_LIMIT} groups.`, 'error'); return }
+        const label = this.combo.vf_group.label || id
+        this.verifyNames = { ...this.verifyNames, [id]: label }
+        this.form.verify_agent_groups = [...this.form.verify_agent_groups, id]
+        announce(`${label} added.`)
+      }
+      this.comboSet('vf_group', '', '')
+    },
+    get verifyGroupChips() {
+      return (this.form.verify_agent_groups || []).map((id) => { const name = this.verifyNames[id] || 'Deleted group'; return { id, name, removeLabel: 'Remove ' + name } })
+    },
+    // the primary organization's own agents verify its people already: the switch is for the others
+    get notPrimary() { return !!this.editing && !this.editing.primary },
+    removeVerifyGroup(ev) {
+      const id = ev.currentTarget.dataset.id
+      this.form.verify_agent_groups = this.form.verify_agent_groups.filter((g) => g !== id)
+      announce(`${this.verifyNames[id] || 'Deleted group'} removed.`)
+      focusWhenShown('f-vf_group')
+    },
+    // the names of the chosen agent groups, by id (one deleted since shows as such)
+    async loadVerifyNames(o) {
+      const gids = o.settings.verify_agent_groups || []
+      const gs = await Promise.all(gids.map((id) => getOrNull(`/api/orgs/${enc(o.name)}/groups/${enc(id)}`)))
+      if (this.editing !== o) return
+      const names = {}
+      gids.forEach((id, i) => { if (gs[i]) names[id] = gs[i].display_name })
+      this.verifyNames = names
+    },
     get noMethod() { return !this.form.password_login && !this.form.passkey_login },
     get resetOff() { return !this.form.password_login },
     // Codes by email need the server to send email. Without it the switch can only be turned off (it was on when the
@@ -1253,6 +1296,7 @@ export default function (Alpine) {
         api_token_no_limit: s.api_token_max_days === -1,
         privileged_ttl: s.privileged_ttl ? String(Math.round(s.privileged_ttl / 3600)) : '', privileged_idle: s.privileged_idle ? String(Math.round(s.privileged_idle / 60)) : '',
         grants_per_user: s.grants_per_user ? String(s.grants_per_user) : '', pictures: s.pictures || 'everyone',
+        verify_callers: !!s.verify_callers, verify_agent_groups: [...(s.verify_agent_groups || [])], verified_by_primary: !!s.verified_by_primary, vf_group: '',
         primary_color: (o.branding && o.branding.primary_color) || '', footer: (o.branding && o.branding.footer) || '',
         skin: (o.branding && o.branding.skin) || '' }
     },
@@ -1261,6 +1305,7 @@ export default function (Alpine) {
       this.resetForm(this.orgToForm({ name: '', display_name: '', settings: { password_login: true, password_reset: true, passkey_login: true, require_mfa: false, email_codes: false, mcp_server: false } }))
       this.resetBranding({})
       this.groupNames = {}
+      this.verifyNames = {}
       this.resetPicker()
       this.openDlg('org-dialog', ev.currentTarget)
     },
@@ -1270,8 +1315,11 @@ export default function (Alpine) {
       this.resetForm(this.orgToForm(o))
       this.resetBranding(o.branding, o.primary, '/o/' + o.name)
       this.groupNames = {}
+      this.verifyNames = {}
       this.resetPicker()
+      this.comboSet('vf_group', '', '')
       this.loadGroupNames(o)
+      this.loadVerifyNames(o)
       this.openDlg('org-dialog', ev.currentTarget)
       this.watchEdit({ kinds: ['org'], record: o, fetchOne: () => getOrNull(`/api/orgs/${enc(o.name)}`) })
     },
@@ -1291,7 +1339,8 @@ export default function (Alpine) {
           password_min_length: num(f.password_min_length, 1, 'password_min_length'), lockout_attempts: num(f.lockout_attempts, 1, 'lockout_attempts'),
           lockout_minutes: num(f.lockout_minutes, 1, 'lockout_minutes'), api_token_max_days: f.api_token_no_limit ? -1 : num(f.api_token_max_days, 1, 'api_token_max_days'),
           privileged_ttl: num(f.privileged_ttl, 3600, 'privileged_ttl'), privileged_idle: num(f.privileged_idle, 60, 'privileged_idle'),
-          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user'), pictures: f.pictures }
+          grants_per_user: num(f.grants_per_user, 1, 'grants_per_user'), pictures: f.pictures,
+          verify_callers: f.verify_callers, verify_agent_groups: f.verify_agent_groups, verified_by_primary: f.verified_by_primary }
         const body = { name: f.name.trim(), display_name: f.display_name.trim(), settings }
         if (!body.display_name) delete body.display_name
         // A new organization takes its branding with it; an existing one's is changed apart, by id (the settings may
@@ -2151,6 +2200,7 @@ export default function (Alpine) {
     { value: 'login.', label: 'Sign-in' }, { value: 'password.', label: 'Password resets' }, { value: 'invite.', label: 'Invitations' },
     { value: 'account.', label: 'Own account changes' }, { value: 'user.', label: 'Users' }, { value: 'group.', label: 'Groups' },
     { value: 'org.', label: 'Organizations' }, { value: 'tenant.', label: 'Tenants and access' }, { value: 'access_request.', label: 'Access requests' },
+    { value: 'call_verify.', label: 'Caller verification' },
     { value: 'client.', label: 'Applications' },
     { value: 'service_account.', label: 'Service accounts' }, { value: 'ssh.', label: 'SSH certificates' },
     { value: 'oauth.', label: 'Application sign-ins and tokens' }, { value: 'provider.', label: 'Sign-in providers' }, { value: 'identity.', label: 'Linked sign-ins' },
@@ -2159,7 +2209,8 @@ export default function (Alpine) {
     { value: 'unique.', label: 'Duplicate values' }, { value: 'server.', label: 'Whole server' },
   ]
   const AUDIT_ACTIONS = ['access_request.approve', 'access_request.cancel', 'access_request.create', 'access_request.deny',
-    'access_request.end', 'access_request.lapse', 'account.app.revoke', 'account.email.verify', 'account.passkey.add', 'account.passkey.delete',
+    'access_request.end', 'access_request.lapse', 'call_verify.cancel', 'call_verify.confirm', 'call_verify.deny', 'call_verify.start',
+    'account.app.revoke', 'account.email.verify', 'account.passkey.add', 'account.passkey.delete',
     'account.provider.connect', 'account.provider.connect_refused', 'account.provider.disconnect',
     'account.recovery_codes.create', 'account.session.revoke', 'account.session.revoke_others', 'account.totp.disable',
     'account.totp.enable', 'account.totp.replace', 'apitoken.create', 'apitoken.delete', 'apitoken.regenerate',
@@ -2428,6 +2479,12 @@ export default function (Alpine) {
       const n = (s.api_token_groups || []).length
       if (s.api_tokens === 'everyone') return 'Everyone may make them'
       return s.api_tokens === 'groups' ? `Members of ${n} chosen group${n === 1 ? '' : 's'}` : 'Nobody'
+    },
+    get verifyText() {
+      const s = this.org.settings
+      const n = (s.verify_agent_groups || []).length
+      const own = s.verify_callers ? `Agents in ${n} group${n === 1 ? '' : 's'}` : 'Off'
+      return s.verified_by_primary ? `${own}; the primary organization’s agents may verify its people` : own
     },
     get ttlText() { const t = this.org.settings.session_ttl; return t ? hours(t) : 'Server default' },
     get idleText() { const t = this.org.settings.session_idle; return t ? minutes(t) : 'Server default' },

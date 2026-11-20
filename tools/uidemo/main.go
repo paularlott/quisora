@@ -373,6 +373,7 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	pat := mkUser(nw, "pat", "Pat Passkey", model.RoleUser, true, false)
 	mkUser(nw, "quinn", "Quinn Newcomer", model.RoleUser, true, false)
 	must(svc.Passkeys.Create(ctx, &model.Passkey{UserID: pat.ID, OrgID: nw.ID, Name: "Laptop", CredentialID: secure.RandomBytes(32), PublicKey: secure.RandomBytes(32)}))
+	seedCallVerification(ctx, svc, acme, nw, out["manager"], super)
 
 	// Signing keys for the keys page (metadata only: the demo has no token endpoint): the previous key, the one
 	// signing now and the next one, already published.
@@ -590,5 +591,30 @@ func seedAccessRequests(ctx context.Context, svc *service.Service, acme *model.O
 		Reason: "Look at last month's invoices"})
 	must(err)
 	_, err = svc.DecideAccessRequest(ctx, service.ActorForUser(grace, ""), r.ID, false, "Needs a ticket number", true)
+	must(err)
+}
+
+// seedCallVerification: acme verifies callers, its agents being the "Customer support" group (Grace); the primary
+// organization does too (its "Support desk": the super admin), and Northwind lets the primary organization's agents
+// verify its people.
+func seedCallVerification(ctx context.Context, svc *service.Service, acme, nw *model.Org, grace, super *model.User) {
+	sys := service.System
+	agents := func(orgID, name string, member *model.User) {
+		g, err := svc.CreateGroupWithMembers(ctx, sys, orgID, service.GroupInput{DisplayName: ptr(name)}, []string{member.ID})
+		must(err)
+		cur, err := svc.Orgs.Get(ctx, orgID)
+		must(err)
+		set := cur.Settings
+		set.VerifyCallers, set.VerifyAgentGroups = true, []string{g.ID}
+		_, err = svc.UpdateOrg(ctx, sys, orgID, service.OrgInput{Settings: &set})
+		must(err)
+	}
+	agents(acme.ID, "Customer support", grace)
+	agents(super.OrgID, "Support desk", super)
+	cur, err := svc.Orgs.Get(ctx, nw.ID)
+	must(err)
+	set := cur.Settings
+	set.VerifiedByPrimary = true
+	_, err = svc.UpdateOrg(ctx, sys, nw.ID, service.OrgInput{Settings: &set})
 	must(err)
 }

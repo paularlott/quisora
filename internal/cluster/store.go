@@ -328,7 +328,7 @@ func (s *Store) gatedScope(ctx context.Context, kind model.Kind, scope string) e
 		return s.n.readable(ctx, globalPartition)
 	}
 	switch kind {
-	case model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindAccessRequest, model.KindClient, model.KindProvider,
+	case model.KindUser, model.KindGroup, model.KindMember, model.KindTenant, model.KindAccess, model.KindAccessRequest, model.KindCallVerification, model.KindClient, model.KindProvider,
 		model.KindSSHKey, model.KindSSHCert:
 		if scope != "" {
 			return s.n.readable(ctx, partitionNum(scope))

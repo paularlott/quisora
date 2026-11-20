@@ -147,6 +147,21 @@
         {{template "picker-chips" (dict "id" "f-api_group" "list" "api-group-picks" "label" "Groups" "listLabel" "Groups" "placeholder" "Type a group name" "chips" "groupChips" "chipsLabel" "Groups that may make API tokens" "remove" "removeGroup" "show" "groupsMode" "help" "Anyone in a chosen group may make API tokens, including people who join later.")}}
       </fieldset>
 
+      <fieldset class="fieldset">
+        <legend>Caller verification</legend>
+        <p class="help mb-2" x-show="!isEdit">Set up once the organization exists.</p>
+        <div class="stack" x-show="isEdit">
+          {{template "check-field" (dict "name" "verify_callers" "label" "Agents can verify callers" "switch" true "help" "Members of the chosen groups can confirm a caller is the account holder. Only administrators change who is in those groups.")}}
+          <div x-show="form.verify_callers" x-cloak>
+            <ul class="tag-list mb-2" aria-label="Agent groups" x-show="verifyGroupChips.length > 0" x-cloak>
+              <template x-for="c in verifyGroupChips" :key="c.id"><li class="tag-chip"><span class="tag-chip-text" x-text="c.name"></span><button type="button" class="tag-chip-x" :aria-label="c.removeLabel" :data-id="c.id" @click="removeVerifyGroup">{{template "icon" "x"}}</button></li></template>
+            </ul>
+            {{template "combo-field" (dict "name" "vf_group" "label" "Agent groups" "placeholder" "Type a group name to add it" "help" "Members of these groups see Verify a caller in their account menu.")}}
+          </div>
+          {{template "check-field" (dict "name" "verified_by_primary" "label" "Let the primary organization’s agents verify this organization’s people" "switch" true "show" "notPrimary" "help" "Agents of the primary organization can find this organization’s people by name or email and verify them on a call.")}}
+        </div>
+      </fieldset>
+
       {{if .Site.MCP}}
       <fieldset class="fieldset">
         <legend>AI assistants</legend>

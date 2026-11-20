@@ -86,6 +86,7 @@ func (m *Module) registerAccount(s *web.Server) {
 
 	h("GET /api-internal/account/apps", m.listApps)
 	m.registerAccessRequests(h)
+	m.registerCallVerification(h)
 	h("DELETE /api-internal/account/apps/{client}", m.revokeApp)
 }
 

@@ -98,12 +98,22 @@ func (s *Service) applyGroupRequests(ctx context.Context, g *model.Group, in *Gr
 }
 
 // groupProtected reports whether g's members may be changed by administrators only: its members may ask for access,
-// or they approve access requests (otherwise a manager could add someone to either and approve their way in).
-func groupProtected(g *model.Group) bool { return g.Requests != nil || g.ApprovesRequests }
+// or they approve access requests (otherwise a manager could add someone to either and approve their way in), or
+// they verify callers for the organization (whoever is in it may look up and vouch for customers).
+func (s *Service) groupProtected(ctx context.Context, g *model.Group) (bool, error) {
+	if g.Requests != nil || g.ApprovesRequests {
+		return true, nil
+	}
+	o, err := s.OrgPolicy(ctx, g.OrgID)
+	if err != nil {
+		return false, err
+	}
+	return o.Settings.VerifyAgentGroup(g.ID), nil
+}
 
 // errProtectedGroup refuses a change of the members of a protected group (groupProtected) by someone who is not an
 // administrator.
-var errProtectedGroup = Invalid("members", "only administrators can change the members of a group used for access requests")
+var errProtectedGroup = Invalid("members", "only administrators can change the members of a group used for access requests or caller verification")
 
 // MaxMembersPerChange bounds the memberships one change of a group may add and remove, so the change entry kept in
 // the group's record (model.Group.Pending) stays small. A larger change is refused with ErrTooLarge; make it in parts.
@@ -468,7 +478,9 @@ func (s *Service) ChangeGroup(ctx context.Context, a *Actor, g *model.Group, in 
 		return nil, ErrTooLarge
 	}
 	if len(add)+len(remove) > 0 && !s.canAdminOrg(a, g.OrgID) {
-		if groupProtected(g) {
+		if protected, err := s.groupProtected(ctx, g); err != nil {
+			return nil, err
+		} else if protected {
 			return nil, errProtectedGroup
 		}
 	}

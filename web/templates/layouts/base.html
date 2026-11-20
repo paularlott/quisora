@@ -48,7 +48,9 @@
           <div class="cell-sub">{{.User.Email}}</div>
           <div class="mt-2"><span class="badge badge-accent">{{if eq .User.Role "super_admin"}}Super administrator{{else if eq .User.Role "admin"}}Administrator{{else if eq .User.Role "manager"}}Manager{{else}}User{{end}}</span></div>
         </div>
+        {{if .CanVerifyCallers}}<a class="menu-item" href="/o/{{.User.OrgID}}/account/verify-caller">{{template "icon" "phone"}} Verify a caller</a>{{end}}
         <a class="menu-item" href="/o/{{.User.OrgID}}/account">{{template "icon" "user"}} Your account</a>
+        {{if .CanVerifyCall}}<a class="menu-item" href="/o/{{.User.OrgID}}/account/verify-call">{{template "icon" "shield-check"}} Verify a call</a>{{end}}
         {{if .CanRequest}}<a class="menu-item" href="/o/{{.User.OrgID}}/account/requests">{{template "icon" "key"}} Request access</a>{{end}}
         {{if .CanApprove}}<a class="menu-item" href="/o/{{.User.OrgID}}/account/approvals">{{template "icon" "check-circle"}} Approvals</a>{{end}}
         <div x-data="systemTheme"><button type="button" class="menu-item" @click="use">{{template "icon" "sliders"}} Match system theme</button></div>
@@ -73,6 +75,8 @@
     <div class="nav-group">
       <span class="eyebrow nav-heading">Account</span>
       <a class="nav-link" href="/o/{{.User.OrgID}}/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{template "icon" "user"}} Your account</a>
+      {{if .CanVerifyCallers}}<a class="nav-link" href="/o/{{.User.OrgID}}/account/verify-caller"{{if eq .Nav "verify-caller"}} aria-current="page"{{end}}>{{template "icon" "phone"}} Verify a caller</a>{{end}}
+      {{if .CanVerifyCall}}<a class="nav-link" href="/o/{{.User.OrgID}}/account/verify-call"{{if eq .Nav "verify-call"}} aria-current="page"{{end}}>{{template "icon" "shield-check"}} Verify a call</a>{{end}}
       {{if .CanRequest}}<a class="nav-link" href="/o/{{.User.OrgID}}/account/requests"{{if eq .Nav "requests"}} aria-current="page"{{end}}>{{template "icon" "key"}} Request access</a>{{end}}
       {{if .CanApprove}}<a class="nav-link" href="/o/{{.User.OrgID}}/account/approvals"{{if eq .Nav "approvals"}} aria-current="page"{{end}}>{{template "icon" "check-circle"}} Approvals</a>{{end}}
     </div>

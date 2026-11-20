@@ -97,6 +97,7 @@ func (m *Module) updateOrg(w http.ResponseWriter, r *http.Request) {
 	// slice it is given, and the organization read is shared.
 	set := o.Settings
 	set.APITokenGroups = slices.Clone(set.APITokenGroups)
+	set.VerifyAgentGroups = slices.Clone(set.VerifyAgentGroups)
 	in := service.OrgInput{Settings: &set}
 	if !web.DecodeJSON(w, r, &in) {
 		return
