@@ -21,6 +21,7 @@ is made, so if you are demoted or your account is disabled, the token loses that
 | `import` | super admins | With `admin`: creating users with the password hash, authenticator secret and provider links they had in another system (`password_hash`, `totp_secret`, `identities`) |
 | `api` | whoever the organization allows ([below](#who-may-make-api-tokens)) | Nothing in Quisora itself: it is for **your own applications**, which check it through token introspection |
 | `access_requests` | everyone | The owner's own [access requests](ACCESS-REQUESTS.md#through-the-api): asking, listing, cancelling, ending their own access (never approving) |
+| `call_verify` | agents | [Verifying callers](CALLER-VERIFICATION.md#from-a-crm-or-helpdesk) as the owner, from a CRM or helpdesk: offered to members of their organization's agent groups |
 
 A token with the `api` scope cannot also have another scope: applications that see an `api` token
 must never be able to administer Quisora with it. Make a separate token for each purpose.

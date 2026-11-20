@@ -204,3 +204,22 @@ test('caller verification: the caller’s page and the agent’s follow each oth
     await graceCtx.close()
   }
 })
+
+// The call_verify scope of a personal API token (a CRM verifying callers as its owner) is offered to agents only; the
+// organization's overview lists its caller verification API for such CRMs.
+test('caller verification: agents may make a token to verify callers from a CRM, others are not offered it', async ({ page }) => {
+  await signIn(page, 'manager') // Grace, an agent
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
+  await page.locator('#tokens').getByRole('button', { name: 'New token' }).click()
+  let dlg = page.getByRole('dialog', { name: 'New API token' })
+  await expect(dlg.getByRole('checkbox', { name: /Verify callers as you/ })).toBeVisible()
+  await signIn(page, 'user') // Alan, not one
+  await page.goto('/o/acme/account', { waitUntil: 'load' })
+  await page.locator('#tokens').getByRole('button', { name: 'New token' }).click()
+  dlg = page.getByRole('dialog', { name: 'New API token' })
+  await expect(dlg.getByRole('checkbox').first()).toBeVisible()
+  await expect(dlg.getByRole('checkbox', { name: /Verify callers as you/ })).toHaveCount(0)
+  await signIn(page, 'admin')
+  await page.goto('/admin/orgs/acme', { waitUntil: 'load' })
+  await expect(page.getByText('Caller verification API (for CRMs)')).toBeVisible()
+})

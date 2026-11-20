@@ -799,6 +799,12 @@ func (c *Config) OrgIssuer(orgID string) string { return c.Server.PublicURL + "/
 // what a tenant lists to turn it on, and what AI clients ask tokens for.
 func (c *Config) OrgMCP(orgID string) string { return c.OrgIssuer(orgID) + "/mcp" }
 
+// OrgVerifyAPI is organization orgID's caller verification API (/api/orgs/<id>/verifications): also the resource an
+// application signing agents in through Quisora asks for, to call it as the agent (RFC 8707).
+func (c *Config) OrgVerifyAPI(orgID string) string {
+	return strings.TrimSuffix(c.Server.PublicURL, "/") + "/api/orgs/" + orgID + "/verifications"
+}
+
 // MCPServer reports whether an organization whose settings say on (model.OrgSettings.MCPServer) serves its own MCP
 // server: unless server.disable_mcp turns them all off.
 func (c *Config) MCPServer(on bool) bool { return on && !c.Server.DisableMCP }

@@ -64,6 +64,34 @@ then asks again through the account API. The customer's page shows a verificatio
 the agent's page the answer the moment it is given. The pages also look again every 10 to 15 seconds, for a browser or
 proxy that does not keep the stream open, and for servers sharing a database without change notices.
 
+## From a CRM or helpdesk
+
+The management API verifies callers too, so a CRM's or helpdesk's own button can do what the page does:
+
+| Call | What |
+| --- | --- |
+| `GET /api/orgs/{org}/verifications/orgs?q=` | the organizations you may verify the people of |
+| `GET /api/orgs/{org}/verifications/users?org=&q=` | the people of one you may verify, by name or email |
+| `POST /api/orgs/{org}/verifications` | start one: `{"user_id", "direction": "inbound" or "outbound", "reason", "org"}`; the answer has the `code`, this once |
+| `GET /api/orgs/{org}/verifications/{id}` | how it stands: `pending`, `confirmed` (with `second_factor`), `denied`, `cancelled` or `expired` |
+| `POST /api/orgs/{org}/verifications/{id}/cancel` | stop it |
+| `GET /api/orgs/{org}/verifications` | your verifications of today and yesterday |
+
+It is always called as the agent, never as a service account: the person being verified is shown the agent's own name,
+so no shared credential may claim to be someone. Either:
+
+- **The agent's personal API token** with the `call_verify` scope (offered to members of agent groups on their account
+  page): the CRM keeps each agent's token; or
+- **The agent's sign-in through Quisora**: a CRM that signs its agents in through Quisora asks for the organization's
+  caller verification API as a resource (`resource=https://<server>/api/orgs/<organization id>/verifications`, RFC
+  8707; the organization's overview lists it under **Addresses** while caller verification is on), and calls the API
+  with the access token it gets: the agent's own, short-lived, ending with their sign-in. The CRM's application in
+  Quisora, and its tenant, list that address under **Resources**, as for an MCP client. The token works for that
+  organization's API only; removing the address from the application, or the agent's access to it, stops it at once.
+
+The [Scriptling](../scriptling/README.md) library wraps these calls (`verify_users`, `start_verification`,
+`verification`, …), and `examples/verify_caller.py` verifies a caller from the command line and waits for the answer.
+
 ## What it proves, and what it does not
 
 A confirmed verification means the person on the call was signed in to that account and confirmed it is them with what

@@ -47,7 +47,7 @@ test('a super admin switches an organization\'s MCP server on and off', async ({
     await page.goto('/admin/orgs/acme', { waitUntil: 'load' })
     await expect(setting).toHaveText('On')
     await expect(addresses.locator('#addr-mcp')).toHaveText(mcp)
-    await expect(addresses.locator('dt').last()).toHaveText('MCP server (for AI clients)')
+    await expect(addresses.locator('#addr-mcp-l')).toHaveText('MCP server (for AI clients)') // by its own label: others may follow it
     await addresses.getByRole('button', { name: 'Copy MCP server (for AI clients)' }).click()
     await expect(page.locator('#live-polite')).toContainText('Copied MCP server address')
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(mcp)

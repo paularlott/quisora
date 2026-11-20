@@ -207,6 +207,7 @@ func modules(ctx context.Context, a *App) []web.Module {
 	adm.RemoveKey = op.RemoveKey
 	adm.ClusterStatus = func() any { return a.Node.Status() }
 	adm.ReloadCluster = func(ctx context.Context) (any, error) { return a.Node.ReloadCluster(ctx) }
+	adm.ResourceToken = resourceActor(a)
 	if adminMail != nil {
 		adm.Mailer = adminMail
 	}

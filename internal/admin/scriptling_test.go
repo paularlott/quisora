@@ -216,3 +216,46 @@ func TestScriptlingApprovalBot(t *testing.T) {
 		t.Fatalf("bot --deny: %v\n%s", ok, out)
 	}
 }
+
+// The caller verification example through the Scriptling CLI, as an agent with their personal token (call_verify):
+// it finds the person, starts a verification, prints the code, and waits for the answer, here the person confirming.
+func TestScriptlingVerifyCaller(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	agent, customer := w.users["manager"], w.users["user"]
+	g, err := w.env.Svc.CreateGroupWithMembers(ctx, service.System, w.acme.ID, service.GroupInput{DisplayName: ptr("Support")}, []string{agent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, _ := w.env.Svc.Orgs.Get(ctx, w.acme.ID)
+	set := o.Settings
+	set.VerifyCallers, set.VerifyAgentGroups = true, []string{g.ID}
+	if _, err := w.env.Svc.UpdateOrg(ctx, service.System, w.acme.ID, service.OrgInput{Settings: &set}); err != nil {
+		t.Fatal(err)
+	}
+	tok := w.withBearer("manager", service.ScopeCallVerify).bearer
+
+	// the person answers as soon as the verification is there
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			if l, err := w.env.Svc.WaitingCallVerifications(ctx, service.ActorForUser(customer, "")); err == nil && len(l) == 1 {
+				_, _ = w.env.Svc.AnswerCallVerification(ctx, service.ActorForUser(customer, ""), l[0].ID, true, true)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+	out, ok := w.scriptling(t, tok, "examples/verify_caller.py", "acme", customer.Email, "in", "CRM-7")
+	<-done
+	if !ok || !strings.Contains(out, "Verifying "+customer.FullName()) || !strings.Contains(out, "Read them the code: ") ||
+		!strings.Contains(out, "Confirmed: it is them (with a passkey or second factor)") {
+		t.Fatalf("verify_caller: %v\n%s", ok, out)
+	}
+	// more than one match: it says so, and starts nothing
+	if out, ok := w.scriptling(t, tok, "examples/verify_caller.py", "acme", "", "in"); ok || !strings.Contains(out, "be more precise") {
+		t.Fatalf("an unclear person: %v\n%s", ok, out)
+	}
+}

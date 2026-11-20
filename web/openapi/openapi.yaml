@@ -38,6 +38,8 @@ tags:
     description: Which users and groups may use a tenant's applications, with their roles, tags and end dates.
   - name: Access requests
     description: People asking for access to a tenant for a while, and the approver group's members (or a service account) deciding. Approving gives a timed access entry.
+  - name: Caller verification
+    description: "A support agent confirming that the person on a call is the account holder: start a verification, read its code to them, and see their answer. Called as the agent, from a CRM or helpdesk: with their personal API token (call_verify) or the access token their sign-in through Quisora gave it for the organization's caller verification API."
   - name: SSH certificates
     description: "A tenant's SSH certificate authority: its settings, CA keys, issued certificates, and signing host certificates. Servers trust the tenant's CA keys (TrustedUserCAKeys); the public endpoints under /o/{org}/ssh/{tenant} serve them, and `quisora ssh` is the client."
   - name: Clients
@@ -1720,6 +1722,171 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/AccessRequest"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/verifications:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Caller verification]
+      summary: Your verifications of today and yesterday
+      description: "As the agent (a member of one of the organization's agent groups): signed in, with their personal API token holding call_verify, or with an access token an application they signed in to through Quisora got for the organization's caller verification API (resource https://<server>/api/orgs/<organization id>/verifications, RFC 8707). Never a service account: the person verified is shown the agent's own name. Newest first."
+      operationId: get_orgs_org_verifications
+      security:
+        - session: []
+        - bearer: [call_verify]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CallVerificationList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [Caller verification]
+      summary: Start a caller verification
+      description: "Start verifying that the person on a call is the account holder: the answer carries the six-digit code (this once) to read to them, which they enter under Verify a call in their own account. As the agent (a member of one of the organization's agent groups): signed in, with their personal API token holding call_verify, or with an access token an application they signed in to through Quisora got for the organization's caller verification API (resource https://<server>/api/orgs/<organization id>/verifications, RFC 8707). Never a service account: the person verified is shown the agent's own name."
+      operationId: post_orgs_org_verifications
+      security:
+        - session: []
+        - bearer: [call_verify]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CallVerificationInput"}
+      responses:
+        "201":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CallVerificationStarted"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "429": {description: "too many verifications started by the agent in the last hour"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/verifications/orgs:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Caller verification]
+      summary: Organizations you may verify the people of
+      description: "Your own, and for the primary organization's agents those that let them (verified_by_primary), whose name or a word of whose display name starts with q. As the agent (a member of one of the organization's agent groups): signed in, with their personal API token holding call_verify, or with an access token an application they signed in to through Quisora got for the organization's caller verification API (resource https://<server>/api/orgs/<organization id>/verifications, RFC 8707). Never a service account: the person verified is shown the agent's own name."
+      operationId: get_orgs_org_verifications_orgs
+      security:
+        - session: []
+        - bearer: [call_verify]
+      parameters:
+        - {$ref: "#/components/parameters/Q"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VerifyOrgList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/verifications/users:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+    get:
+      tags: [Caller verification]
+      summary: People you may verify
+      description: "The active people of organization org (query) whose name, family name, username or email starts with q: their name and email only. As the agent (a member of one of the organization's agent groups): signed in, with their personal API token holding call_verify, or with an access token an application they signed in to through Quisora got for the organization's caller verification API (resource https://<server>/api/orgs/<organization id>/verifications, RFC 8707). Never a service account: the person verified is shown the agent's own name."
+      operationId: get_orgs_org_verifications_users
+      security:
+        - session: []
+        - bearer: [call_verify]
+      parameters:
+        - {name: org, in: query, description: "the organization's id or name (default: yours)", schema: {type: string}}
+        - {$ref: "#/components/parameters/Q"}
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VerifyUserList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/verifications/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+      - {name: id, in: path, required: true, description: "the verification's id", schema: {type: string}}
+    get:
+      tags: [Caller verification]
+      summary: How a verification stands
+      description: "The agent who started it only: pending (the code still works), confirmed (with second_factor), denied, cancelled or expired. As the agent (a member of one of the organization's agent groups): signed in, with their personal API token holding call_verify, or with an access token an application they signed in to through Quisora got for the organization's caller verification API (resource https://<server>/api/orgs/<organization id>/verifications, RFC 8707). Never a service account: the person verified is shown the agent's own name."
+      operationId: get_orgs_org_verifications_id
+      security:
+        - session: []
+        - bearer: [call_verify]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CallVerification"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/ValidationFailed"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/orgs/{org}/verifications/{id}/cancel:
+    parameters:
+      - {$ref: "#/components/parameters/Org"}
+      - {$ref: "#/components/parameters/ApiVersion"}
+      - {name: id, in: path, required: true, description: "the verification's id", schema: {type: string}}
+    post:
+      tags: [Caller verification]
+      summary: Cancel a verification
+      description: "The agent who started it stops it while the code still works. As the agent (a member of one of the organization's agent groups): signed in, with their personal API token holding call_verify, or with an access token an application they signed in to through Quisora got for the organization's caller verification API (resource https://<server>/api/orgs/<organization id>/verifications, RFC 8707). Never a service account: the person verified is shown the agent's own name."
+      operationId: post_orgs_org_verifications_id_cancel
+      security:
+        - session: []
+        - bearer: [call_verify]
+      responses:
+        "200":
+          description: Success
+          headers:
+            Api-Version: {$ref: "#/components/headers/ApiVersion"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CallVerification"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -5586,6 +5753,84 @@ components:
           description: in an approver's list of waiting requests, the approver's own (someone else decides it)
         created: {type: string, format: date-time}
         updated: {type: string, format: date-time}
+    CallVerification:
+      type: object
+      properties:
+        id: {type: string}
+        org_id: {type: string, description: the person's organization}
+        user_id: {type: string}
+        customer_name: {type: string}
+        customer_email: {type: string}
+        customer_org_name: {type: string}
+        agent_org_id: {type: string}
+        agent_id: {type: string}
+        agent_name: {type: string}
+        agent_email: {type: string}
+        agent_org_name: {type: string}
+        reason: {type: string}
+        direction:
+          type: string
+          enum: [inbound, outbound]
+          description: "who placed the call: inbound, they called you; outbound, you called them (only on the number held for their account)"
+        state:
+          type: string
+          enum: [pending, confirmed, denied, cancelled, expired]
+        live: {type: boolean, description: pending and its code still works}
+        expires: {type: string, format: date-time, description: when the code stops working (5 minutes after it started)}
+        decided_at: {type: string, format: date-time}
+        second_factor: {type: boolean, description: "confirmed with a passkey or second factor (else with the password alone: an account with neither)"}
+        verify_path: {type: string, description: "where the person enters the code: their organization's /o/<org>/account/verify-call"}
+        created: {type: string, format: date-time}
+        updated: {type: string, format: date-time}
+    CallVerificationList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/CallVerification"}
+        total: {type: integer}
+    CallVerificationInput:
+      type: object
+      required: [user_id, direction]
+      properties:
+        org: {type: string, description: "the person's organization (id or name; default: yours)"}
+        user_id: {type: string}
+        direction: {type: string, enum: [inbound, outbound]}
+        reason: {type: string, maxLength: 200, description: shown to the person}
+    CallVerificationStarted:
+      type: object
+      required: [verification, code]
+      properties:
+        verification: {$ref: "#/components/schemas/CallVerification"}
+        code: {type: string, description: "the six digits to read to the person: shown this once (only a hash is kept)"}
+    VerifyOrgList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              name: {type: string}
+              display_name: {type: string}
+              own: {type: boolean}
+        total: {type: integer}
+    VerifyUserList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              name: {type: string}
+              email: {type: string}
+        total: {type: integer}
     AccessRequestList:
       type: object
       required: [items, total]

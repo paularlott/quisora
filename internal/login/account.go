@@ -1444,11 +1444,12 @@ func (m *Module) listTokens(w http.ResponseWriter, r *http.Request, a acct) {
 		web.WriteError(w, err)
 		return
 	}
-	asks, _ := m.s.Svc.AccessRequestRoles(r.Context(), a.u)
+	asks, _, agent := m.s.Svc.AccountRoles(r.Context(), a.u)
 	scopes := []string{}
 	for _, sc := range service.APITokenScopes {
 		if sc == service.ScopeAPI && !apiOK || (sc == service.ScopeSCIM || sc == service.ScopeAdmin) && !a.actor.Role.Privileged() ||
-			service.SuperOnlyScope(sc) && !a.actor.IsSuper() || sc == service.ScopeAccessRequests && !asks {
+			service.SuperOnlyScope(sc) && !a.actor.IsSuper() || sc == service.ScopeAccessRequests && !asks ||
+			sc == service.ScopeCallVerify && !agent {
 			continue
 		}
 		scopes = append(scopes, sc)

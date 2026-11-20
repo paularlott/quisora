@@ -40,6 +40,9 @@ type View struct {
 	SignInURL string
 	SCIMURL   string
 	MCPURL    string // config.Config.OrgMCP while the organization's MCP server is on (OrgSettings.MCPServer); else ""
+	// VerifyURL is the organization's caller verification API while it verifies callers (OrgSettings.VerifyCallers):
+	// also the resource a CRM signing its agents in through Quisora asks for (docs/CALLER-VERIFICATION.md); else "".
+	VerifyURL string
 	// MCPNoTenant: the MCP server is on, but no tenant owns its address and accepts self-registered apps (AI clients),
 	// so no AI client can sign in to it yet.
 	MCPNoTenant bool
@@ -209,6 +212,9 @@ func (m *Module) pageOrgHome(w http.ResponseWriter, r *http.Request) {
 		v.MCPURL = m.s.Cfg.OrgMCP(org.ID)
 		_, err := m.s.Svc.TenantForResources(r.Context(), org.ID, []string{v.MCPURL})
 		v.MCPNoTenant = errors.Is(err, service.ErrNotFound)
+	}
+	if org.Settings.VerifyCallers {
+		v.VerifyURL = m.s.Cfg.OrgVerifyAPI(org.ID)
 	}
 	m.renderOrgPage(w, r, org, "admin-org", org.DisplayName, "overview", v)
 }

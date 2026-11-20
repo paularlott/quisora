@@ -31,7 +31,7 @@ const (
 )
 
 // APITokenScopes are the scopes a user may choose from.
-var APITokenScopes = []string{ScopeAPI, ScopeSCIM, ScopeAdmin, ScopeBackup, ScopeImport, ScopeAccessRequests}
+var APITokenScopes = []string{ScopeAPI, ScopeSCIM, ScopeAdmin, ScopeBackup, ScopeImport, ScopeAccessRequests, ScopeCallVerify}
 
 // SuperOnlyScope reports whether only super admins may hold a token with scope sc.
 func SuperOnlyScope(sc string) bool { return sc == ScopeBackup || sc == ScopeImport }

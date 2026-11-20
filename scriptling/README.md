@@ -49,6 +49,9 @@ owns the organization it creates and configures it as a super admin would ([owni
 `approve_requests.py` is an approval bot: a service account with `access_requests:approve` approves the waiting
 [access requests](../docs/ACCESS-REQUESTS.md) whose reason starts with one of the prefixes (`--deny` denies the
 others), for the groups whose settings let service accounts approve.
+`verify_caller.py` verifies a caller as an agent, with their personal token holding `call_verify`: it finds the
+person, starts a [caller verification](../docs/CALLER-VERIFICATION.md), prints the code to read to them and waits for
+their answer.
 `guest_token.py` is an application's side, not the management API's: it asks with the application's own client id and
 secret, and names a guest's home organization and tenant when the application asked for the `idp` scope.
 
@@ -73,7 +76,7 @@ except quisora.QuisoraError as e:
 ```
 
 It covers organizations, sign-in providers, tenants and their access lists (with an end: `give_access(..., hours=3)`),
-access requests (`request_access`, `pending_access_requests`, `approve_access_request`, …),
+access requests (`request_access`, `pending_access_requests`, `approve_access_request`, …), caller verification (`verify_users`, `start_verification`, `verification`, …),
 users (invitations, sign-out, lock-out), groups and their members, service accounts and the audit log. Anything else is one call away with `qs.request(method, path, params=..., body=...)`, and
 `qs.paginate(path, params)` walks any list.
 

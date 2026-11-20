@@ -23,6 +23,9 @@ import (
 // recent re-authentication): the agent's page then says so. Nothing is sent to the customer: they go to their own
 // account themselves, so a caller cannot send them to a page of their choosing.
 
+// ScopeCallVerify lets a personal API token verify callers as its owner, an agent (a CRM calling the API for them).
+const ScopeCallVerify = "call_verify"
+
 // VerifyOrg is an organization an agent may verify the users of.
 type VerifyOrg struct {
 	ID          string `json:"id"`
@@ -49,11 +52,13 @@ type CallVerificationView struct {
 	Live       bool   `json:"live"` // pending, and its code still works
 }
 
-// verifyAgent is the agent the actor acts as, with their organization: a person signed in as themselves (never a guest
-// from another organization, a personal API token or a service account) who is a member of one of their
-// organization's agent groups while it verifies callers.
+// verifyAgent is the agent the actor acts as, with their organization: a person (never a guest from another
+// organization, nor a service account: what the customer is shown is the agent's own name) who is a member of one of
+// their organization's agent groups while it verifies callers. They act signed in to Quisora, through a personal API
+// token holding call_verify, or through an application they signed in to that holds a token for the organization's
+// caller verification API (Actor.App: the API checked it was issued for that address).
 func (s *Service) verifyAgent(ctx context.Context, a *Actor) (*model.User, *model.Org, error) {
-	if a == nil || a.UserID == "" || a.ClientID != "" || a.TokenID != "" || len(a.Sources) > 0 {
+	if a == nil || a.UserID == "" || a.ClientID != "" || len(a.Sources) > 0 || a.TokenID != "" && !a.HasScope(ScopeCallVerify) {
 		return nil, nil, ErrForbidden
 	}
 	u, err := s.Users.Get(ctx, a.UserID)
@@ -294,10 +299,10 @@ func (s *Service) CancelCallVerification(ctx context.Context, a *Actor, id strin
 	return s.verificationView(ctx, v), nil
 }
 
-// customer is the account the actor verifies as: a person signed in as themselves (not a guest, a token or a service
-// account).
+// customer is the account the actor verifies as: a person signed in as themselves (not a guest, a token, an
+// application acting for them or a service account): they confirm it is them on their own account page.
 func (s *Service) customer(ctx context.Context, a *Actor) (*model.User, error) {
-	if a == nil || a.UserID == "" || a.ClientID != "" || a.TokenID != "" || len(a.Sources) > 0 {
+	if a == nil || a.UserID == "" || a.ClientID != "" || a.TokenID != "" || a.App != "" || len(a.Sources) > 0 {
 		return nil, ErrForbidden
 	}
 	u, err := s.Users.Get(ctx, a.UserID)

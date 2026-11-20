@@ -344,6 +344,44 @@ class Client:
         a service account needs the access scope)."""
         return self.paginate(self._org(org) + "/access-requests/all", params={"state": state})
 
+    # --- caller verification --------------------------------------------
+    # A support agent confirms the person on a call is the account holder: start a verification, read its six-digit
+    # code to them, and they enter it under Verify a call in their own account. Called as the agent (never a service
+    # account: the person is shown the agent's name): their personal token with the call_verify scope, or the access
+    # token an application they signed in to through Quisora got for the organization's caller verification API.
+
+    def verify_orgs(self, org, q=None):
+        """The organizations you may verify the people of: yours, and (agents of
+        the primary organization) those that let you, whose name or a word of
+        whose display name starts with q."""
+        return self.request("GET", self._org(org) + "/verifications/orgs", params={"q": q}).get("items") or []
+
+    def verify_users(self, org, q, customer_org=None):
+        """The people of customer_org (default: yours) you may verify whose name,
+        family name, username or email starts with q: {"id", "name", "email"}."""
+        return self.request("GET", self._org(org) + "/verifications/users",
+                            params={"org": customer_org, "q": q}).get("items") or []
+
+    def start_verification(self, org, user_id, direction, reason=None, customer_org=None):
+        """Start verifying user_id. direction: "inbound" (they called you) or
+        "outbound" (you called them, on the number held for their account).
+        Returns {"verification": {...}, "code": "123456"}: the code is shown
+        this once; read it to them."""
+        return self.request("POST", self._org(org) + "/verifications", body=_drop_none(
+            {"org": customer_org, "user_id": user_id, "direction": direction, "reason": reason}))
+
+    def verification(self, org, verification_id):
+        """How a verification stands: state pending, confirmed (second_factor:
+        with a passkey or second factor), denied, cancelled or expired."""
+        return self.request("GET", self._org(org) + "/verifications/" + _seg(verification_id))
+
+    def cancel_verification(self, org, verification_id):
+        return self.request("POST", self._org(org) + "/verifications/" + _seg(verification_id) + "/cancel")
+
+    def verifications_today(self, org):
+        """Your verifications of today and yesterday, newest first."""
+        return self.request("GET", self._org(org) + "/verifications").get("items") or []
+
     # --- users ----------------------------------------------------------
 
     def _user_filters(self, q, role, active, tag, sort, desc):

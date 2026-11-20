@@ -59,6 +59,10 @@ type Module struct {
 	// ReloadCluster has every node re-read its configuration (wired to cluster.Node.ReloadCluster by the app): the
 	// nodes' reports, and an error when nothing or not everything was applied.
 	ReloadCluster func(ctx context.Context) (any, error)
+	// ResourceToken resolves a user's access token issued for resource (RFC 8707) to that user acting through the
+	// application it was issued to (wired to the OAuth provider by the app): the caller verification API takes an
+	// agent's token for the organization's (verifyAuth).
+	ResourceToken func(r *http.Request, tok, resource string) (*service.Actor, error)
 	s             *web.Server
 	audits        auditGate // the audit pages read at once on this node (auditBudget)
 }
@@ -73,7 +77,12 @@ func (m *Module) Register(s *web.Server) {
 		m.Mailer = noopMailer{}
 	}
 	for _, rt := range m.routes() {
-		s.Mux.Handle(rt.Method+" "+rt.Path, s.RequireManagementFor(rt.Scope, tokenScopes[rt.Method+" "+rt.Path], rt.Handler))
+		pattern := rt.Method + " " + rt.Path
+		h := s.RequireManagementFor(rt.Scope, tokenScopes[pattern], rt.Handler)
+		if isVerifyRoute(pattern) {
+			h = m.verifyAuth(rt.Handler, h) // also an agent's own token for the organization's caller verification API
+		}
+		s.Mux.Handle(pattern, h)
 	}
 	m.registerPages(s)
 }
@@ -203,6 +212,12 @@ func (m *Module) routes() []Route {
 		{"POST", o + "/access-requests/{id}/deny", m.decideRequest(false), service.ScopeAccessRequestsApprove},
 		{"POST", o + "/access-requests/{id}/end", m.endRequest, service.ScopeAccessRequestsApprove},
 		{"GET", o + "/access-requests/all", m.listAllRequests, service.ScopeAccess},
+		{"GET", o + "/verifications", m.listVerifications, ""},
+		{"POST", o + "/verifications", m.startVerificationAPI, ""},
+		{"GET", o + "/verifications/orgs", m.verifyOrgsAPI, ""},
+		{"GET", o + "/verifications/users", m.verifyUsersAPI, ""},
+		{"GET", o + "/verifications/{id}", m.getVerificationAPI, ""},
+		{"POST", o + "/verifications/{id}/cancel", m.cancelVerificationAPI, ""},
 		{"GET", o + "/providers/{id}", m.getProvider, service.ScopeProviders},
 		{"PATCH", o + "/providers/{id}", m.updateProvider, service.ScopeProviders},
 		{"DELETE", o + "/providers/{id}", m.deleteProvider, service.ScopeProviders},

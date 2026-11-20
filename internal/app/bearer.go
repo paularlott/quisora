@@ -59,6 +59,18 @@ func scimVerifier(a *App) func(r *http.Request, scheme, tok string) (*service.Ac
 	}
 }
 
+// resourceActor resolves a user's access token issued for resource (RFC 8707) to that user acting through the
+// application it was issued to: an agent calling the caller verification API through an application they signed in to.
+func resourceActor(a *App) func(r *http.Request, tok, resource string) (*service.Actor, error) {
+	return func(r *http.Request, tok, resource string) (*service.Actor, error) {
+		cl, u, err := a.OIDC.VerifyResourceToken(r, "Bearer", tok, resource)
+		if err != nil {
+			return nil, err
+		}
+		return service.ActorForApp(u, cl.ClientID, web.ClientIP(r)), nil
+	}
+}
+
 // mcpVerifier accepts, for Quisora's own MCP server, a user's access token issued for its address: the tools run as
 // that user, acting through the application the token was issued to.
 func mcpVerifier(a *App) mcpapi.Verifier {
