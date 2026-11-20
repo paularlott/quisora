@@ -373,7 +373,7 @@ func seed(ctx context.Context, svc *service.Service, super *model.User) (map[str
 	pat := mkUser(nw, "pat", "Pat Passkey", model.RoleUser, true, false)
 	mkUser(nw, "quinn", "Quinn Newcomer", model.RoleUser, true, false)
 	must(svc.Passkeys.Create(ctx, &model.Passkey{UserID: pat.ID, OrgID: nw.ID, Name: "Laptop", CredentialID: secure.RandomBytes(32), PublicKey: secure.RandomBytes(32)}))
-	seedCallVerification(ctx, svc, acme, nw, out["manager"], super)
+	seedCallVerification(ctx, svc, acme, nw, out, super)
 
 	// Signing keys for the keys page (metadata only: the demo has no token endpoint): the previous key, the one
 	// signing now and the next one, already published.
@@ -597,8 +597,9 @@ func seedAccessRequests(ctx context.Context, svc *service.Service, acme *model.O
 // seedCallVerification: acme verifies callers, its agents being the "Customer support" group (Grace); the primary
 // organization does too (its "Support desk": the super admin), and Northwind lets the primary organization's agents
 // verify its people.
-func seedCallVerification(ctx context.Context, svc *service.Service, acme, nw *model.Org, grace, super *model.User) {
+func seedCallVerification(ctx context.Context, svc *service.Service, acme, nw *model.Org, users map[string]*model.User, super *model.User) {
 	sys := service.System
+	grace := users["manager"]
 	agents := func(orgID, name string, member *model.User) {
 		g, err := svc.CreateGroupWithMembers(ctx, sys, orgID, service.GroupInput{DisplayName: ptr(name)}, []string{member.ID})
 		must(err)
@@ -617,4 +618,34 @@ func seedCallVerification(ctx context.Context, svc *service.Service, acme, nw *m
 	set.VerifiedByPrimary = true
 	_, err = svc.UpdateOrg(ctx, sys, nw.ID, service.OrgInput{Settings: &set})
 	must(err)
+
+	// Grace's verifications of the day, one of each outcome, and two earlier ones of Alan's for his Who verified you
+	// list (one he confirmed, one he said was not him).
+	verified := func(u *model.User, direction, reason, outcome string, ago time.Duration) {
+		v, _, err := svc.StartCallVerification(ctx, service.ActorForUser(grace, ""), service.VerifyCallInput{
+			UserID: u.ID, Direction: direction, Reason: reason})
+		must(err)
+		switch outcome {
+		case model.VerifyConfirmed, model.VerifyDenied:
+			_, err = svc.AnswerCallVerification(ctx, service.ActorForUser(u, ""), v.ID, outcome == model.VerifyConfirmed, true)
+		case model.VerifyCancelled:
+			_, err = svc.CancelCallVerification(ctx, service.ActorForUser(grace, ""), v.ID)
+		}
+		must(err)
+		rec, err := svc.Verifications.Get(ctx, v.ID)
+		must(err)
+		rec.Created = time.Now().UTC().Add(-ago)
+		rec.Expires = rec.Created.Add(model.VerifyCodeFor)
+		rec.DecidedAt = rec.Created.Add(time.Minute)
+		if outcome == model.VerifyExpired {
+			rec.State, rec.DecidedAt = model.VerifyExpired, rec.Expires
+		}
+		must(svc.Verifications.Update(ctx, rec))
+	}
+	verified(users["user"], model.VerifyOutbound, "SUP-277: card on file expiring", model.VerifyConfirmed, 9*24*time.Hour)
+	verified(users["user"], model.VerifyInbound, "Reset my authenticator app", model.VerifyDenied, 4*24*time.Hour)
+	verified(users["otp"], model.VerifyInbound, "SUP-311: change the billing contact", model.VerifyConfirmed, 25*time.Minute)
+	verified(users["account"], model.VerifyInbound, "Locked out of the laptop", model.VerifyDenied, 50*time.Minute)
+	verified(users["pictures"], model.VerifyOutbound, "SUP-305: callback about the refund", model.VerifyExpired, 80*time.Minute)
+	verified(users["account"], model.VerifyOutbound, "Follow-up on the locked laptop", model.VerifyCancelled, 110*time.Minute)
 }
