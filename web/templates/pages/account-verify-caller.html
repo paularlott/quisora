@@ -23,6 +23,7 @@
   <section class="glass-card" aria-labelledby="current-h" x-show="hasCurrent" x-cloak>
     <h2 class="section-title mb-1" id="current-h" tabindex="-1" x-text="currentTitle"></h2>
     <p class="muted mb-4" x-text="currentWho"></p>
+    <p class="muted" x-show="noCodeHere" x-cloak>The code was shown where you started this verification, and is not kept here. If they do not have it, cancel this one and start again.</p>
     <div x-show="showCode">
       <p class="label">Read this code to them</p>
       <p class="verify-code" x-text="codeText" :aria-label="codeSpoken"></p>
@@ -45,13 +46,17 @@
     <div class="table-wrap" role="region" aria-label="Your verifications today" tabindex="0" x-show="hasToday" x-cloak>
       <table class="table">
         <caption class="sr-only">Your verifications today</caption>
-        <thead><tr><th scope="col">Who</th><th scope="col">Organization</th><th scope="col">Started</th><th scope="col">Result</th></tr></thead>
+        <thead><tr><th scope="col">Who</th><th scope="col">Organization</th><th scope="col">Started</th><th scope="col">Result</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           <template x-for="row in today" :key="row.id"><tr>
             <th scope="row"><span class="cell-title" x-text="row.customer_name"></span><div class="cell-sub" x-text="row.customer_email"></div></th>
             <td x-text="row.customer_org_name"></td>
             <td class="whitespace-nowrap" x-text="row.startedText"></td>
             <td><span :class="row.badgeClass" x-text="row.stateText"></span><div class="cell-sub mt-1" x-show="row.detail" x-text="row.detail"></div></td>
+            <td class="actions">
+              <button type="button" class="btn btn-secondary btn-sm" x-show="row.open" :data-id="row.id" :aria-label="row.openLabel" @click="openFromList">Open</button>
+              <button type="button" class="btn btn-secondary btn-sm" x-show="row.open" :data-id="row.id" :aria-label="row.cancelLabel" @click="cancelFromList">Cancel</button>
+            </td>
           </tr></template>
         </tbody>
       </table>

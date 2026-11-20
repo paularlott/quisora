@@ -36,7 +36,12 @@ On **Verify a caller**, the agent:
 
 The code works for 5 minutes, for that person only. The page shows the answer as it comes: **Confirmed** (with a
 passkey or second factor, or, for an account that has neither, with the password alone, which the page points out),
-**Not them**, **Ran out** or **Cancelled**. The agent's verifications of the day are listed below it.
+**Not them**, **Ran out** or **Cancelled**. The agent's verifications of the day are listed below it, the waiting
+ones with **Open** and **Cancel**.
+
+The server keeps only a hash of the code; the agent's browser keeps the code until it runs out, so reloading the page
+shows the waiting verification again with its code. In another browser it shows how the verification stands, without
+the code: cancel it and start again if the caller does not have it.
 
 ## Verifying a call
 

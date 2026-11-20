@@ -127,3 +127,31 @@ test('organization: caller verification settings are shown, chosen by search, an
   expect(saved.settings.verify_agent_groups).toHaveLength(1)
   expect(saved.settings.verified_by_primary).toBe(true)
 })
+
+// A reload while the caller has the code: the page shows the verification again, with its code (kept by this browser
+// until it runs out). Without it (another browser, or the storage cleared) it says so, and the list cancels it.
+test('caller verification: a reload shows the waiting verification again, and the list opens or cancels it', async ({ page }) => {
+  await signIn(page, 'manager')
+  await page.goto('/o/acme/account/verify-caller', { waitUntil: 'load' })
+  await page.getByRole('combobox', { name: 'Person' }).fill('katherine')
+  await page.getByRole('option', { name: /Katherine/ }).first().click()
+  await page.getByRole('button', { name: 'Start verification' }).click()
+  const codeEl = page.locator('.verify-code')
+  await expect(codeEl).toBeVisible()
+  const code = await codeEl.innerText()
+  await page.reload({ waitUntil: 'load' })
+  await expect(page.locator('section[aria-labelledby="current-h"]')).toContainText('Verifying Katherine')
+  await expect(codeEl).toHaveText(code)
+  // the code not kept here: the page says so; the list cancels it
+  await page.evaluate(() => localStorage.clear())
+  await page.reload({ waitUntil: 'load' })
+  await expect(page.getByText('is not kept here')).toBeVisible()
+  await expect(codeEl).toBeHidden()
+  const row = page.locator('section[aria-labelledby="today-h"]').getByRole('row', { name: /Katherine/ }).first()
+  await expect(row.getByRole('button', { name: /^Open/ })).toBeVisible()
+  await row.getByRole('button', { name: /^Cancel/ }).click()
+  await expect(row).toContainText('Cancelled')
+  await expect(row.getByRole('button', { name: /^Open/ })).toBeHidden()
+  const r = await axe(page)
+  expect(r.violations.length, fmt(r.violations)).toBe(0)
+})

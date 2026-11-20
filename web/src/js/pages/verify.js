@@ -16,6 +16,25 @@ const enc = encodeURIComponent
 const POLL = 2000 // the agent's page asks this often while the customer has the code
 const WAITING_POLL = 3000 // the customer's page looks this often for who is verifying them
 
+// The code is shown to the agent when they start a verification, and the server keeps only a hash of it: this browser
+// keeps it too, until it runs out, so a reload (or another tab) can show it again. Browser storage may be missing
+// (a private window, blocked site data): then a reloaded page shows how the verification stands, without the code.
+const CODE_KEY = 'quisora-verify-code:'
+function keepCode(id, code, expires) {
+  try { localStorage.setItem(CODE_KEY + id, JSON.stringify({ code, expires })) } catch { /* not kept */ }
+}
+function keptCode(id) {
+  try {
+    const v = JSON.parse(localStorage.getItem(CODE_KEY + id) || 'null')
+    if (v && Date.parse(v.expires) > Date.now()) return v.code
+  } catch { /* none */ }
+  dropCode(id)
+  return ''
+}
+function dropCode(id) {
+  try { localStorage.removeItem(CODE_KEY + id) } catch { /* nothing to drop */ }
+}
+
 // verifyState is the badge and the line under it for verification v, as the agent or the customer sees it.
 function verifyState(v, forAgent) {
   switch (v.state) {
@@ -53,7 +72,7 @@ export default function (Alpine) {
       },
     },
   }), {
-    current: null, code: '', today: [], loadError: '', loaded: false, now: Date.now(), manyOrgs: false, _poll: null, _tick: null,
+    current: null, code: '', today: [], loadError: '', loaded: false, now: Date.now(), manyOrgs: false, _poll: null, _tick: null, _resumed: false,
     async init() {
       this.resetForm({ org: '', user_id: '', reason: '' })
       this.loadToday()
@@ -74,10 +93,45 @@ export default function (Alpine) {
     async loadToday() {
       try {
         const r = await get(accountApi('/verify-caller'))
-        this.today = r.items.map((v) => ({ ...v, ...verifyState(v, true), startedText: fmtDateTime(v.created) }))
+        this.today = r.items.map((v) => {
+          const open = v.state === 'pending' && v.live
+          if (!open) dropCode(v.id)
+          return { ...v, ...verifyState(v, true), startedText: fmtDateTime(v.created), open,
+            openLabel: `Open the verification of ${v.customer_name}`, cancelLabel: `Cancel the verification of ${v.customer_name}` }
+        })
         this.loadError = ''
+        // back on the page (a reload): the newest verification still waiting is shown again, with its code if kept
+        if (!this.current && !this._resumed) {
+          this._resumed = true
+          const waiting = this.today.find((v) => v.open)
+          if (waiting) this.watch(waiting)
+        }
       } catch (e) { this.loadError = e.message } finally { this.loaded = true }
     },
+    // watch shows verification v as the current one and follows its answer
+    watch(v) {
+      this.current = v
+      this.code = keptCode(v.id)
+      clearInterval(this._poll)
+      this._poll = setInterval(() => this.poll(), POLL)
+    },
+    openFromList(ev) {
+      const v = this.today.find((x) => x.id === ev.currentTarget.dataset.id)
+      if (!v) return
+      this.watch(v)
+      this.$nextTick(() => { const h = document.getElementById('current-h'); if (h) h.focus() })
+    },
+    async cancelFromList(ev) {
+      const id = ev.currentTarget.dataset.id
+      try {
+        const v = await post(accountApi(`/verify-caller/${enc(id)}/cancel`))
+        dropCode(id)
+        if (this.current && this.current.id === id) { this.current = v; this.code = ''; clearInterval(this._poll) }
+        toast('Verification cancelled.')
+        this.loadToday()
+      } catch (e) { toast(e.message, 'error') }
+    },
+    get noCodeHere() { return this.isPending && this.code === '' },
     get hasLoadError() { return this.loadError !== '' },
     get hasToday() { return this.today.length > 0 },
     get noneToday() { return this.loaded && this.today.length === 0 },
@@ -123,6 +177,7 @@ export default function (Alpine) {
       if (!res) return
       this.current = res.verification
       this.code = res.code
+      keepCode(res.verification.id, res.code, res.verification.expires)
       announce(`Verification started. The code is ${res.code.split('').join(' ')}.`)
       this.$nextTick(() => { const h = document.getElementById('current-h'); if (h) h.focus() })
       clearInterval(this._poll)
@@ -138,6 +193,7 @@ export default function (Alpine) {
         if (v.state !== 'pending' || !v.live) {
           clearInterval(this._poll)
           this.code = ''
+          dropCode(v.id)
           if (was === 'pending') this.loadToday()
         }
       } catch (e) { /* the next one tries again */ }
@@ -148,6 +204,7 @@ export default function (Alpine) {
         this.current = await post(accountApi(`/verify-caller/${enc(this.current.id)}/cancel`))
         clearInterval(this._poll)
         this.code = ''
+        dropCode(this.current.id)
         toast('Verification cancelled.')
         this.loadToday()
       } catch (e) { toast(e.message, 'error') }
