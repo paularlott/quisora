@@ -55,6 +55,12 @@ minutes); **Not me** tells the agent so.
 Wrong codes are limited to 5 in 10 minutes for each account. The page also lists **Who verified you**: everyone who
 asked, from where, when, and what came of it, so a person can spot a verification they did not expect.
 
+Both pages follow each other live: each person's browser keeps a stream open (Server-Sent Events, at
+`/o/<org>/api-internal/account/events`) that says only that a verification about them changed, never what, and the page
+then asks again through the account API. The customer's page shows a verification the moment the agent starts it, and
+the agent's page the answer the moment it is given. The pages also look again every 10 to 15 seconds, for a browser or
+proxy that does not keep the stream open, and for servers sharing a database without change notices.
+
 ## What it proves, and what it does not
 
 A confirmed verification means the person on the call was signed in to that account and confirmed it is them with what

@@ -70,6 +70,7 @@ var (
 
 type subscriber struct {
 	ch     chan Event
+	own    string // a person's own stream (personal.go): their user id; "" for the console's
 	orgID  string // organization the viewer administers
 	super  bool
 	actor  *service.Actor // the viewer: what of a user's records they may see is the service's rule for this actor
@@ -201,6 +202,10 @@ func NewHub() *Hub {
 // super admin, so a viewer who is not one gets no event about one (or about a user the hub cannot tell). It never
 // blocks: a subscriber whose buffer is full is marked lagged and told to resynchronise.
 func (h *Hub) Publish(rec *store.Record) {
+	if personal[rec.Kind] {
+		h.publishPersonal(rec)
+		return
+	}
 	if !streamed[rec.Kind] {
 		return
 	}
@@ -242,8 +247,8 @@ func (h *Hub) Publish(rec *store.Record) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
-		if !s.wants(ev) || !s.sees(rec.Kind, user, hide, in, known) {
-			continue
+		if s.own != "" || !s.wants(ev) || !s.sees(rec.Kind, user, hide, in, known) {
+			continue // a person's own stream gets only their own records (publishPersonal)
 		}
 		e := ev
 		if ev.org == "" || (ev.org != s.orgID && !s.super) || (anonymous && !s.super) {
@@ -370,6 +375,7 @@ type Module struct {
 func (m *Module) Register(s *web.Server) {
 	m.s = s
 	s.Mux.Handle("GET "+web.EventsPath, s.RequireManagement("", m.stream))
+	s.Mux.Handle("GET /o/{org}"+web.AccountEventsPath, s.WithSession(http.HandlerFunc(m.ownStream)))
 }
 
 func (m *Module) stream(w http.ResponseWriter, r *http.Request) {

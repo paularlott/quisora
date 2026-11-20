@@ -13,8 +13,23 @@ import { refetchOnReturn } from '../lib/live.js'
 import { withReauth } from './account.js'
 
 const enc = encodeURIComponent
-const POLL = 2000 // the agent's page asks this often while the customer has the code
-const WAITING_POLL = 3000 // the customer's page looks this often for who is verifying them
+// Both pages follow the person's own stream (GET /o/<org>/api-internal/account/events: Server-Sent Events), which
+// says when a verification about them changed: the customer's page shows a verification as soon as the agent starts
+// it, the agent's the answer as soon as it is given. They also look again now and then, slowly, in case the stream is
+// not there (a proxy that will not stream, or another server's change it did not hear of).
+const POLL = 10000 // the agent's page, while the customer has the code
+const WAITING_POLL = 15000 // the customer's page, while the code is to be entered
+
+// ownStream calls onChange when a verification about the person changes (or the stream was behind and missed some),
+// until close() is called.
+function ownStream(onChange) {
+  let es = null
+  try { es = new EventSource(accountApi('/events')) } catch { return () => {} }
+  es.addEventListener('change', onChange)
+  es.addEventListener('resync', onChange)
+  es.addEventListener('ended', () => es.close()) // signed out: the page's own calls say so
+  return () => es.close()
+}
 
 // The code is shown to the agent when they start a verification, and the server keeps only a hash of it: this browser
 // keeps it too, until it runs out, so a reload (or another tab) can show it again. Browser storage may be missing
@@ -78,6 +93,7 @@ export default function (Alpine) {
       this.loadToday()
       refetchOnReturn(() => this.loadToday())
       this._tick = setInterval(() => { this.now = Date.now() }, 1000)
+      this._unstream = ownStream(() => { if (this.isPending) this.poll(); this.loadToday() })
       // their own organization to start with: most calls are about it. With no other to choose from (an agent of another
       // organization than the primary one, or no organization lets the primary's agents verify its people) the form
       // asks only for the person.
@@ -88,7 +104,7 @@ export default function (Alpine) {
         if (own && !this.form.org) this.comboSet('org', own.id, own.display_name)
       } catch (e) { this.loadError = e.message }
     },
-    destroy() { clearInterval(this._poll); clearInterval(this._tick) },
+    destroy() { clearInterval(this._poll); clearInterval(this._tick); if (this._unstream) this._unstream() },
     comboChanged(name) { if (name === 'org') this.comboSet('user_id', '', '') }, // another organization: another person
     async loadToday() {
       try {
@@ -226,10 +242,15 @@ export default function (Alpine) {
       this.resetForm({ code: '' })
       this.loadWaiting()
       refetchOnReturn(() => this.loadWaiting())
-      // who is verifying them shows as soon as the agent starts: the page looks again while the code is to be entered
+      // who is verifying them shows as soon as the agent starts (the stream), or at the next look while the code is
+      // to be entered
+      this._unstream = ownStream(() => {
+        if (this.showEntry) this.loadWaiting()
+        window.dispatchEvent(new CustomEvent('verifications-changed'))
+      })
       this._poll = setInterval(() => { if (!document.hidden && this.showEntry) this.loadWaiting() }, WAITING_POLL)
     },
-    destroy() { clearInterval(this._poll) },
+    destroy() { clearInterval(this._poll); if (this._unstream) this._unstream() },
     async loadWaiting() {
       try {
         const r = await get(accountApi('/verify-call/waiting'))

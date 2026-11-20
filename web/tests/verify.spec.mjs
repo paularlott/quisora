@@ -156,3 +156,38 @@ test('caller verification: a reload shows the waiting verification again, and th
   const r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
 })
+
+// Both pages follow each other through the person's own stream (Server-Sent Events): Alan's page shows Grace's
+// verification as soon as she starts it, and hers his answer as soon as he gives it, sooner than either page's slow
+// fallback look (15 and 10 seconds) could.
+test('caller verification: the caller’s page and the agent’s follow each other live', async ({ browser }) => {
+  const { baseURL, ignoreHTTPSErrors } = test.info().project.use // a context of our own does not take the project's
+  const alanCtx = await browser.newContext({ baseURL, ignoreHTTPSErrors })
+  const graceCtx = await browser.newContext({ baseURL, ignoreHTTPSErrors })
+  try {
+    const alan = await alanCtx.newPage()
+    const grace = await graceCtx.newPage()
+    await signIn(alan, 'user')
+    await alan.goto('/o/acme/account/verify-call', { waitUntil: 'load' })
+    await expect(alan.getByRole('heading', { name: 'Nobody is verifying you right now' })).toBeVisible()
+    await signIn(grace, 'manager')
+    await grace.goto('/o/acme/account/verify-caller', { waitUntil: 'load' })
+    await grace.getByRole('combobox', { name: 'Person' }).fill('alan')
+    await grace.getByRole('option', { name: /Alan Turing/ }).click()
+    await grace.getByLabel('Why').fill('INC-12: live')
+    await grace.getByRole('button', { name: 'Start verification' }).click()
+    await expect(grace.locator('.verify-code')).toHaveText(/^\d{3} \d{3}$/)
+    const code = (await grace.locator('.verify-code').innerText()).replace(/\s/g, '')
+
+    const entry = alan.locator('section[aria-labelledby="code-h"]')
+    await expect(entry).toContainText('INC-12: live', { timeout: 5000 })
+    await alan.getByLabel(/Code you were given/).fill(code)
+    await alan.locator('section[aria-labelledby="ask-h"]').getByRole('button', { name: /Yes, it’s me/ }).click()
+    await expect(alan.locator('section[aria-labelledby="done-h"]')).toContainText('you are verified')
+
+    await expect(grace.locator('section[aria-labelledby="current-h"]')).toContainText('Confirmed', { timeout: 5000 })
+  } finally {
+    await alanCtx.close()
+    await graceCtx.close()
+  }
+})

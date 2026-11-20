@@ -418,7 +418,7 @@ func unshed(p string) bool {
 		return true // an organization's metadata at its RFC 8414 address
 	}
 	switch InOrgPath(p) {
-	case EventsPath, "/healthz", "/readyz", "/metrics", "/oauth/jwks", "/.well-known/openid-configuration",
+	case EventsPath, AccountEventsPath, "/healthz", "/readyz", "/metrics", "/oauth/jwks", "/.well-known/openid-configuration",
 		"/.well-known/oauth-authorization-server":
 		return true
 	}
@@ -444,8 +444,12 @@ func APIPath(p string) bool {
 	return strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/api-internal/")
 }
 
-// EventsPath is the Server-Sent Events stream of the management API (the admin console's live updates).
-const EventsPath = "/api/events"
+// EventsPath is the Server-Sent Events stream of the management API (the admin console's live updates);
+// AccountEventsPath, within an organization, a signed-in person's own stream (their account pages: internal/events).
+const (
+	EventsPath        = "/api/events"
+	AccountEventsPath = "/api-internal/account/events"
+)
 
 // Session returns the request's session (set by WithSession / RequireUser).
 func Session(r *http.Request) *model.Session {
