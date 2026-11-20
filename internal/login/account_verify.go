@@ -24,6 +24,7 @@ func (m *Module) registerCallVerification(h func(string, func(http.ResponseWrite
 	h("GET /api-internal/account/verify-caller/{id}", m.agentVerification)
 	h("POST /api-internal/account/verify-caller/{id}/cancel", m.cancelVerification)
 	h("GET /api-internal/account/verify-call", m.customerVerifications)
+	h("GET /api-internal/account/verify-call/waiting", m.waitingVerifications)
 	h("POST /api-internal/account/verify-call/find", m.findVerification)
 	h("POST /api-internal/account/verify-call/{id}/confirm", m.answerVerification(true))
 	h("POST /api-internal/account/verify-call/{id}/deny", m.answerVerification(false))
@@ -146,6 +147,17 @@ func (m *Module) customerVerifications(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, map[string]any{"items": l, "total": n})
+}
+
+// waitingVerifications answers GET /api-internal/account/verify-call/waiting: who is verifying the person right now
+// (their verifications waiting for a code), newest first.
+func (m *Module) waitingVerifications(w http.ResponseWriter, r *http.Request, a acct) {
+	l, err := m.s.Svc.WaitingCallVerifications(r.Context(), a.actor)
+	if err != nil {
+		m.verifyError(w, err)
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{"items": l})
 }
 
 // findVerification answers POST /api-internal/account/verify-call/find {code}: the verification waiting for that code

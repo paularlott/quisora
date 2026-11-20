@@ -115,6 +115,13 @@ func TestCallVerification(t *testing.T) {
 	if err != nil || len(code) != 6 || v.State != model.VerifyPending || !v.Live || v.CustomerName == "" || v.VerifyPath != "/o/custa/account/verify-call" {
 		t.Fatalf("started: %v %q %+v", err, code, v)
 	}
+	// pat sees who is verifying them now (never the code); kim, nobody
+	if l, err := w.svc.WaitingCallVerifications(ctx, actor(w.pat)); err != nil || len(l) != 1 || l[0].AgentName != w.sam.FullName() || l[0].Reason != "Invoice INV-7" {
+		t.Errorf("pat's waiting verifications: %v %+v", err, l)
+	}
+	if l, err := w.svc.WaitingCallVerifications(ctx, actor(w.kim)); err != nil || len(l) != 0 {
+		t.Errorf("kim's waiting verifications: %v %d", err, len(l))
+	}
 	stored, _ := w.svc.Verifications.Get(ctx, v.ID)
 	if strings.Contains(stored.CodeKey, code) {
 		t.Error("the code is kept as it is")
@@ -151,6 +158,9 @@ func TestCallVerification(t *testing.T) {
 	}
 	if _, err := w.svc.FindCallVerification(ctx, actor(w.pat), code); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("the code works after it was answered: %v", err)
+	}
+	if l, _ := w.svc.WaitingCallVerifications(ctx, actor(w.pat)); len(l) != 0 {
+		t.Errorf("an answered verification is still waiting: %d", len(l))
 	}
 
 	// the agent sees it: theirs only

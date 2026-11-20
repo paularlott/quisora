@@ -40,6 +40,12 @@ test('caller verification: Grace verifies Alan, who enters her code and confirms
   await expect(page.locator('#user-menu').getByRole('link', { name: 'Verify a call' })).toBeVisible()
   await expect(page.locator('#user-menu').getByRole('link', { name: 'Verify a caller' })).toHaveCount(0)
   await page.keyboard.press('Escape')
+  // who is verifying him now shows above the code (never the code itself)
+  const entry = page.locator('section[aria-labelledby="code-h"]')
+  await expect(entry).toContainText('Verifying you now')
+  await expect(entry).toContainText('Grace Hopper')
+  await expect(entry).toContainText('Why: INC-9: billing question')
+  await expect(entry).not.toContainText(code)
   await shot(page, '3-customer-enter')
   const wrong = code === '000000' ? '111111' : '000000'
   await page.getByLabel(/Code you were given/).fill(wrong) // checked as soon as all six are in
@@ -88,6 +94,7 @@ test('caller verification pages: no accessibility violations', async ({ page }) 
   await signIn(page, 'user')
   await page.goto('/o/acme/account/verify-call', { waitUntil: 'load' })
   await expect(page.getByLabel(/Code you were given/)).toBeVisible()
+  await expect(page.getByText('Nobody is verifying you right now.')).toBeVisible() // nobody has started one for Alan
   r = await axe(page)
   expect(r.violations.length, fmt(r.violations)).toBe(0)
 })

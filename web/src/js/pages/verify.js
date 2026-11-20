@@ -14,6 +14,7 @@ import { withReauth } from './account.js'
 
 const enc = encodeURIComponent
 const POLL = 2000 // the agent's page asks this often while the customer has the code
+const WAITING_POLL = 3000 // the customer's page looks this often for who is verifying them
 
 // verifyState is the badge and the line under it for verification v, as the agent or the customer sees it.
 function verifyState(v, forAgent) {
@@ -163,8 +164,24 @@ export default function (Alpine) {
 
   // ---- Verify a call (the customer) --------------------------------------------------------------------------
   Alpine.data('verifyCall', () => mix(formMixin(), {
-    found: null, answered: null,
-    init() { this.resetForm({ code: '' }) },
+    found: null, answered: null, waiting: [], waitingLoaded: false, _poll: null,
+    init() {
+      this.resetForm({ code: '' })
+      this.loadWaiting()
+      refetchOnReturn(() => this.loadWaiting())
+      // who is verifying them shows as soon as the agent starts: the page looks again while the code is to be entered
+      this._poll = setInterval(() => { if (!document.hidden && this.showEntry) this.loadWaiting() }, WAITING_POLL)
+    },
+    destroy() { clearInterval(this._poll) },
+    async loadWaiting() {
+      try {
+        const r = await get(accountApi('/verify-call/waiting'))
+        this.waiting = r.items.map((w) => ({ ...w, fromText: `of ${w.agent_org_name}${w.agent_email ? ' · ' + w.agent_email : ''}`,
+          whyText: w.reason ? `Why: ${w.reason}` : '' }))
+      } catch (e) { /* the next look tries again */ } finally { this.waitingLoaded = true }
+    },
+    get hasWaiting() { return this.waiting.length > 0 },
+    get noWaiting() { return this.waitingLoaded && this.waiting.length === 0 },
     get showEntry() { return !this.found && !this.answered },
     get showAsk() { return !!this.found && !this.answered },
     get showDone() { return !!this.answered },
@@ -217,6 +234,7 @@ export default function (Alpine) {
       this.found = null
       this.answered = null
       this.resetForm({ code: '' })
+      this.loadWaiting()
       this.$nextTick(() => { const i = document.getElementById('f-code'); if (i) i.focus() })
     },
   }))

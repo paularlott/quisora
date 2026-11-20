@@ -11,6 +11,15 @@
 
   <section class="glass-card" aria-labelledby="code-h" x-show="showEntry">
     <h2 class="section-title mb-4" id="code-h">Enter the code</h2>
+    <div class="mb-4" role="status" aria-live="polite">
+      <div class="verify-waiting" x-show="hasWaiting" x-cloak>
+        <p class="label">Verifying you now</p>
+        <template x-for="w in waiting" :key="w.id">
+          <div class="mt-2"><span class="font-bold" x-text="w.agent_name"></span> <span class="muted" x-text="w.fromText"></span><div class="cell-sub" x-show="w.reason" x-text="w.whyText"></div></div>
+        </template>
+      </div>
+      <p class="muted" x-show="noWaiting" x-cloak>Nobody is verifying you right now. When the person you are talking to starts a verification, their name shows here. If they ask for a code and nothing shows, do not go on.</p>
+    </div>
     <form class="stack" @submit.prevent="find" novalidate>
       {{template "otp-field" (dict "name" "code" "label" "Code you were given" "help" "The 6 digits the person on the call reads to you." "autofocus" true)}}
       <div><button type="submit" class="btn btn-primary" :disabled="busy" x-text="findLabel">Continue</button></div>

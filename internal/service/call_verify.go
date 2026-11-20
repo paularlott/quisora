@@ -366,6 +366,30 @@ func (s *Service) AnswerCallVerification(ctx context.Context, a *Actor, id strin
 	return s.verificationView(ctx, v), nil
 }
 
+// WaitingCallVerifications lists the verifications waiting for the actor (a customer) to enter their code, newest
+// first: who is verifying them right now (never the code). Their Verify a call page shows them above the code, so a
+// caller who asks for a code without having started a verification shows up as such.
+func (s *Service) WaitingCallVerifications(ctx context.Context, a *Actor) ([]*CallVerificationView, error) {
+	u, err := s.customer(ctx, a)
+	if err != nil {
+		return nil, err
+	}
+	l, _, err := s.Verifications.List(ctx, store.ListQuery{Scope: u.OrgID, Limit: 50, Filters: []store.Filter{
+		{Field: "user_id", Value: u.ID}, {Field: "state", Value: model.VerifyPending}}})
+	if err != nil {
+		return nil, mapStore(err)
+	}
+	now := time.Now()
+	out := []*CallVerificationView{}
+	for _, v := range l {
+		if v.Pending(now) {
+			out = append(out, s.verificationView(ctx, v))
+		}
+	}
+	slices.SortFunc(out, func(x, y *CallVerificationView) int { return y.Created.Compare(x.Created) })
+	return out, nil
+}
+
 // CustomerVerifications lists a page of the actor's verifications (who asked to verify them, and what came of it),
 // newest first, and how many there are.
 func (s *Service) CustomerVerifications(ctx context.Context, a *Actor, q store.ListQuery) ([]*CallVerificationView, int, error) {

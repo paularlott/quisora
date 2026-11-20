@@ -500,6 +500,8 @@
   @media (prefers-reduced-motion: reduce) {
     .table tbody tr.row-live > * { animation: none; background-color: color-mix(in srgb, var(--accent-solid) 12%, transparent); }
   }
+  /* who is verifying the person right now, above where they enter the code */
+  .verify-waiting { border: 1px solid var(--ctl-border); border-radius: var(--radius-ctl); padding: 0.75rem 1rem; background: color-mix(in srgb, var(--accent-solid) 8%, transparent); }
   /* a caller verification's code, read out over the phone: large, spaced in two threes */
   .verify-code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 2.5rem; font-weight: 700; letter-spacing: 0.15em; line-height: 1.1; color: var(--fg); }
   .kv { display: grid; gap: 0.9rem 1.5rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
