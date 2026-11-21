@@ -164,8 +164,8 @@ labs and testing. **Production, and any deployment whose compliance standard or 
 audit trail, must send audit events to VictoriaLogs** (`audit.victorialogs_url`), with retention set there: each node
 spools every event to disk before the action that recorded it completes, and it reaches VictoriaLogs through an
 outage, a restart or a crash.
-How it works, the delivery guarantee and what to alert on: [docs/RUNNING.md](docs/RUNNING.md#audit-log). Controls,
-evidence and the VictoriaLogs set-up for SOC 2 (vmauth, retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
+How it works, the delivery guarantee and what to alert on: [docs/RUNNING.md](docs/RUNNING.md#audit-log). Ideas for
+keeping audit evidence, such as for SOC 2 (vmauth, retention, the completeness check): [docs/SOC2.md](docs/SOC2.md).
 
 ## Development
 

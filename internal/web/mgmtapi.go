@@ -83,7 +83,7 @@ func WriteBearerLimited(w http.ResponseWriter) {
 
 // auditRefused records a management API request refused for an authenticated actor (a token without the scope, a
 // request without the CSRF header, a console session without a second factor): the attempt is an access-control
-// event (SOC 2 CC6.1). Requests nobody can be named for (no session, an unknown token) are counted, not audited.
+// event. Requests nobody can be named for (no session, an unknown token) are counted, not audited.
 func (s *Server) auditRefused(r *http.Request, a *service.Actor, reason string) {
 	if s.Svc == nil || a == nil {
 		return

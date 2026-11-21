@@ -3,6 +3,9 @@
 The threat model Quisora is built for, what the operator must provide, and what to do when something goes wrong.
 How to report a vulnerability: [SECURITY.md](../SECURITY.md).
 
+> **These are ideas, not a definitive list.** Quisora's authors are not compliance auditors. Check with your
+> organization's security officer that what you run meets your company's policy and the standards you answer to.
+
 ## Threat model
 
 Quisora is an identity provider: whoever controls it controls every application that trusts it. It is built to

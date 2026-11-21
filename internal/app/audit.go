@@ -34,10 +34,10 @@ func (a *App) setupAudit(c *config.Config, node *cluster.Node, log logger.Logger
 		a.Svc.AuditWriter, a.Svc.AuditReader = vl, vl
 		return nil
 	}
-	// Said at every start, so a deployment that needs an audit trail (SOC 2, or any production one) does not run on
-	// the development one unnoticed.
-	log.Warn("audit events are kept in the database only, for audit.retention_days: not an audit trail for "+
-		"production or SOC 2; set audit.victorialogs_url", "retention_days", c.Audit.RetentionDays)
+	// Said at every start, so a production deployment, which needs a retained audit trail, does not run on the
+	// development one unnoticed.
+	log.Warn("audit events are kept in the database only, for audit.retention_days: not a retained audit trail for "+
+		"production; set audit.victorialogs_url", "retention_days", c.Audit.RetentionDays)
 	if !node.Standalone() {
 		a.Svc.AuditReader = clusterAudit{node: node}
 	}

@@ -729,8 +729,8 @@ VictoriaLogs:
 
 - set its retention to cover the audit period (`-retentionPeriod=1y` or more);
 - make it the protected copy: only Quisora may write to that VictoriaLogs, nobody may delete from or rewrite it during
-  the retention period, and its storage is backed up to write-once (immutable) storage. [SOC2.md](SOC2.md) shows how
-  (vmauth in front of it) and how to check that no event is missing (every event is numbered per node: `boot`,
+  the retention period, and its storage is backed up to write-once (immutable) storage. [Audit evidence](SOC2.md) has one way to
+  do it (vmauth in front of it) and how to check that no event is missing (every event is numbered per node: `boot`,
   `seq`);
 - give every node room for the spool (below) in its data directory;
 - ship Quisora's structured log too, and alert on `audit.undelivered`: each such line is an event VictoriaLogs will
@@ -830,7 +830,7 @@ Every event has:
 - `ip`;
 - with VictoriaLogs, `node`, `boot` and `seq`: the node that recorded it, that process start's random id, and the
   event's number in that start's sequence (1, 2, 3…), so a gap is an event VictoriaLogs does not hold
-  ([SOC2.md](SOC2.md#completeness)).
+  ([audit evidence](SOC2.md#completeness)).
 
 `quisora invite` and `quisora sign-out` carried out by a running node (a gossip cluster, or a node-local
 store that a server holds) are recorded with the actor `command:invite` or `command:sign-out`, the address the request came from in `ip`, and

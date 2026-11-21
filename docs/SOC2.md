@@ -1,6 +1,9 @@
-# SOC 2 with Quisora and VictoriaLogs
+# Audit evidence: SOC 2 with Quisora and VictoriaLogs
 
-This maps the SOC 2 Trust Services Criteria an identity provider is examined against to what Quisora does, what you
+> **These are ideas, not a definitive list.** Quisora's authors are not compliance auditors. Check with your
+> organization's security officer that what you run meets your company's policy and the standards you answer to.
+
+One way to map the SOC 2 Trust Services Criteria an identity provider is examined against to what Quisora does, what you
 must run around it, and where the evidence comes from. It assumes audit events go to VictoriaLogs
 ([RUNNING.md](RUNNING.md#audit-log)): the database audit trail is not meant for an audit (it is kept for days, and in a
 gossip cluster each node keeps only the events it recorded itself, so a lost node's events are lost with it).

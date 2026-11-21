@@ -192,4 +192,4 @@ Every change a service account makes is recorded in the [audit log](RUNNING.md#a
 `service_account.update`, `service_account.secret.rotate`, `service_account.delete`, with the scopes granted). Calls
 refused for a missing scope are recorded as `api.request.refused`. Name accounts for what uses them, so the log reads
 `service:hr-sync` rather than something to look up, and review the list of accounts and their scopes with your other
-access reviews ([SOC2.md](SOC2.md)).
+access reviews.
